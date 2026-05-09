@@ -14,6 +14,12 @@ This repository only contains the Rust/Tauri version. The old Python/PyQt packag
 - Restores the user's original files when they click restore.
 - Supports macOS and Windows builds.
 
+## User Guide
+
+For non-technical users, see:
+
+- [codex-config 使用说明](docs/USER_GUIDE.md)
+
 ## User Files
 
 The app reads and writes:
