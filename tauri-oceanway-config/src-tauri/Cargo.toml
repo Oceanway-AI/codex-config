@@ -1,0 +1,16 @@
+[package]
+name = "codex-config"
+version = "1.0.0"
+description = "OceanWay Codex provider configuration tool"
+authors = ["OceanWay"]
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+chrono = { version = "0.4", features = ["clock"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = [] }

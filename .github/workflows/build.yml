@@ -1,0 +1,82 @@
+name: Build codex-config
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - "tauri-oceanway-config/**"
+      - ".github/workflows/build.yml"
+  pull_request:
+    paths:
+      - "tauri-oceanway-config/**"
+      - ".github/workflows/build.yml"
+
+jobs:
+  build:
+    name: Build ${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: tauri-oceanway-config
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-arm64
+            os: macos-latest
+            bundle_args: --bundles app
+            artifact_name: codex-config-macOS
+            artifact_path: |
+              tauri-oceanway-config/dist/codex-config-macOS.zip
+          - platform: windows-x64
+            os: windows-latest
+            bundle_args: --bundles nsis
+            artifact_name: codex-config-Windows
+            artifact_path: |
+              tauri-oceanway-config/src-tauri/target/release/bundle/nsis/*.exe
+              tauri-oceanway-config/src-tauri/target/release/codex-config.exe
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: tauri-oceanway-config/package-lock.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tauri-oceanway-config/src-tauri -> target
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Run Rust tests
+        run: cargo test
+        working-directory: tauri-oceanway-config/src-tauri
+
+      - name: Build Tauri bundle
+        run: npm exec tauri -- build ${{ matrix.bundle_args }}
+
+      - name: Package macOS app
+        if: matrix.platform == 'macos-arm64'
+        run: |
+          mkdir -p dist
+          ditto -c -k --keepParent "src-tauri/target/release/bundle/macos/codex-config.app" "dist/codex-config-macOS.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.artifact_path }}
+          if-no-files-found: error
