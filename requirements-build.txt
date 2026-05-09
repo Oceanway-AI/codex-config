@@ -1,2 +1,0 @@
-# Tauri 构建不再使用 Python/PyInstaller 依赖。
-# 运行 ./build.sh 或 .\build.ps1 时请安装 Node.js 与 Rust。

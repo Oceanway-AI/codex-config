@@ -1,27 +1,55 @@
 # Build
 
-Rust/Tauri 版本已经拆到独立目录：
+This repository is a Tauri/Rust desktop app. It does not use Python packaging.
 
-```text
-tauri-oceanway-config/
-```
+## Requirements
 
-构建前需要安装：
+- Node.js and npm
+- Rust and Cargo from `https://rustup.rs`
 
-- Node.js / npm
-- Rust / Cargo
-
-macOS:
+## Development
 
 ```bash
-cd tauri-oceanway-config
-chmod +x ./build.sh
+npm install
+npm run dev
+```
+
+## Test
+
+```bash
+cd src-tauri
+cargo test
+```
+
+## macOS
+
+```bash
 ./build.sh
 ```
 
-Windows:
+Output:
+
+```text
+src-tauri/target/release/bundle/macos/codex-config.app
+dist/codex-config-macOS.zip
+```
+
+## Windows
 
 ```powershell
-cd tauri-oceanway-config
 powershell -ExecutionPolicy Bypass -File .\build.ps1
+```
+
+Output:
+
+```text
+src-tauri\target\release\bundle\
+```
+
+## GitHub Actions
+
+The workflow builds macOS and Windows artifacts from the repository root:
+
+```text
+.github/workflows/build.yml
 ```
