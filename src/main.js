@@ -13,6 +13,11 @@ const exitButton = document.querySelector("#exit-button");
 const testButton = document.querySelector("#test-button");
 const openDirButton = document.querySelector("#open-dir-button");
 const toggleKeyButton = document.querySelector("#toggle-key-button");
+const keyProfileSelect = document.querySelector("#key-profile-select");
+const keyProfileNameInput = document.querySelector("#key-profile-name");
+const saveKeyProfileButton = document.querySelector("#save-key-profile-button");
+const useKeyProfileButton = document.querySelector("#use-key-profile-button");
+const deleteKeyProfileButton = document.querySelector("#delete-key-profile-button");
 
 const invoke = window.__TAURI__?.core?.invoke;
 
@@ -23,6 +28,11 @@ function setBusy(isBusy) {
   testButton.disabled = isBusy;
   openDirButton.disabled = isBusy;
   toggleKeyButton.disabled = isBusy;
+  keyProfileSelect.disabled = isBusy;
+  keyProfileNameInput.disabled = isBusy;
+  saveKeyProfileButton.disabled = isBusy;
+  useKeyProfileButton.disabled = isBusy;
+  deleteKeyProfileButton.disabled = isBusy;
 }
 
 function setStatus(message, kind = "") {
@@ -65,6 +75,123 @@ async function refreshStatus() {
     currentBaseUrl.textContent = "-";
     currentApiKey.textContent = "-";
     setStatus(`读取当前配置失败：${error}`, "error");
+  }
+}
+
+async function refreshKeyProfiles(selectedId = "") {
+  if (!invoke) {
+    return;
+  }
+
+  try {
+    const profiles = await invoke("list_key_profiles");
+    keyProfileSelect.replaceChildren();
+    keyProfileSelect.append(new Option("选择已保存密钥", ""));
+    for (const profile of profiles) {
+      const option = new Option(`${profile.name} (${profile.maskedKey})`, profile.id);
+      option.dataset.name = profile.name;
+      keyProfileSelect.append(option);
+    }
+    keyProfileSelect.value = selectedId;
+    if (!keyProfileSelect.value && selectedId) {
+      keyProfileSelect.value = "";
+    }
+  } catch (error) {
+    setStatus(`读取密钥档案失败：${error}`, "error");
+  }
+}
+
+function selectedKeyProfileId() {
+  return keyProfileSelect.value;
+}
+
+async function saveKeyProfile() {
+  const name = keyProfileNameInput.value.trim();
+  const apiKey = apiKeyInput.value.trim();
+
+  if (!name) {
+    setStatus("请先填写密钥名称。", "error");
+    keyProfileNameInput.focus();
+    return;
+  }
+
+  if (!apiKey) {
+    setStatus("请先输入要保存的 API Key。", "error");
+    apiKeyInput.focus();
+    return;
+  }
+
+  if (!invoke) {
+    setStatus("当前环境没有加载 Tauri API，请通过 Tauri 应用打开。", "error");
+    return;
+  }
+
+  setBusy(true);
+  try {
+    const profile = await invoke("save_key_profile", { name, apiKey });
+    await refreshKeyProfiles(profile.id);
+    setStatus(`已保存密钥档案：${profile.name}`, "success");
+  } catch (error) {
+    setStatus(`保存密钥失败：${error}`, "error");
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function useKeyProfile() {
+  const profileId = selectedKeyProfileId();
+  const baseUrl = normalizeBaseUrl(baseUrlInput.value);
+
+  if (!profileId) {
+    setStatus("请先选择一个密钥档案。", "error");
+    keyProfileSelect.focus();
+    return;
+  }
+
+  if (!invoke) {
+    setStatus("当前环境没有加载 Tauri API，请通过 Tauri 应用打开。", "error");
+    return;
+  }
+
+  setBusy(true);
+  setStatus("正在使用选中密钥配置 Codex...");
+
+  try {
+    const result = await invoke("configure_with_key_profile", { profileId, baseUrl });
+    setStatus(`配置完成，请重启 Codex。已写入：${result.configPath}。${sessionSyncText(result.sessionSync)}`, "success");
+    await refreshStatus();
+  } catch (error) {
+    setStatus(`配置失败：${error}`, "error");
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function deleteKeyProfile() {
+  const profileId = selectedKeyProfileId();
+  const selectedName = keyProfileSelect.selectedOptions[0]?.dataset.name || "选中的密钥";
+
+  if (!profileId) {
+    setStatus("请先选择要删除的密钥档案。", "error");
+    keyProfileSelect.focus();
+    return;
+  }
+
+  const confirmed = window.confirm(`将删除密钥档案“${selectedName}”，是否继续？`);
+  if (!confirmed) {
+    return;
+  }
+
+  setBusy(true);
+  try {
+    await invoke("delete_key_profile", { profileId });
+    keyProfileNameInput.value = "";
+    await refreshKeyProfiles();
+    setStatus(`已删除密钥档案：${selectedName}`, "success");
+  } catch (error) {
+    setStatus(`删除密钥失败：${error}`, "error");
+  } finally {
+    setBusy(false);
   }
 }
 
@@ -190,5 +317,13 @@ exitButton.addEventListener("click", exitApp);
 testButton.addEventListener("click", testCurrentConnection);
 openDirButton.addEventListener("click", openConfigDirectory);
 toggleKeyButton.addEventListener("click", toggleApiKeyVisibility);
+saveKeyProfileButton.addEventListener("click", saveKeyProfile);
+useKeyProfileButton.addEventListener("click", useKeyProfile);
+deleteKeyProfileButton.addEventListener("click", deleteKeyProfile);
+keyProfileSelect.addEventListener("change", () => {
+  const selectedName = keyProfileSelect.selectedOptions[0]?.dataset.name || "";
+  keyProfileNameInput.value = selectedName;
+});
 statusText.hidden = true;
 refreshStatus();
+refreshKeyProfiles();

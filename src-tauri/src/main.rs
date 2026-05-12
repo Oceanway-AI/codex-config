@@ -15,6 +15,7 @@ const CODEX_AUTH_KEY: &str = "OPENAI_API_KEY";
 const BACKUP_DIR_NAME: &str = "oceanway-ai-backup";
 const SESSION_SYNC_DIR_NAME: &str = "session-provider-sync";
 const CODEX_STATE_DB_NAME: &str = "state_5.sqlite";
+const KEY_PROFILES_FILE_NAME: &str = "oceanway-ai-keys.json";
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -54,6 +55,32 @@ struct ConnectionTestResult {
     ok: bool,
     message: String,
     endpoint: String,
+}
+
+#[derive(Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct KeyProfile {
+    id: String,
+    name: String,
+    api_key: String,
+    created_at: String,
+    updated_at: String,
+}
+
+#[derive(Deserialize, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct KeyProfileStore {
+    profiles: Vec<KeyProfile>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct KeyProfileSummary {
+    id: String,
+    name: String,
+    masked_key: String,
+    created_at: String,
+    updated_at: String,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -158,6 +185,42 @@ fn open_config_dir() -> Result<(), String> {
 
 #[tauri::command]
 fn configure_provider(api_key: String, base_url: String) -> Result<OperationResult, String> {
+    configure_provider_internal(api_key, base_url)
+}
+
+#[tauri::command]
+fn configure_with_key_profile(
+    profile_id: String,
+    base_url: String,
+) -> Result<OperationResult, String> {
+    let codex_home = codex_home()?;
+    let profile = find_key_profile(&codex_home, &profile_id)?
+        .ok_or_else(|| "未找到选中的密钥档案".to_string())?;
+    configure_provider_internal(profile.api_key, base_url)
+}
+
+#[tauri::command]
+fn list_key_profiles() -> Result<Vec<KeyProfileSummary>, String> {
+    let codex_home = codex_home()?;
+    list_key_profiles_in_home(&codex_home)
+}
+
+#[tauri::command]
+fn save_key_profile(name: String, api_key: String) -> Result<KeyProfileSummary, String> {
+    let codex_home = codex_home()?;
+    save_key_profile_in_home(&codex_home, name, api_key)
+}
+
+#[tauri::command]
+fn delete_key_profile(profile_id: String) -> Result<(), String> {
+    let codex_home = codex_home()?;
+    delete_key_profile_in_home(&codex_home, &profile_id)
+}
+
+fn configure_provider_internal(
+    api_key: String,
+    base_url: String,
+) -> Result<OperationResult, String> {
     let api_key = api_key.trim().to_string();
     let base_url = base_url.trim();
 
@@ -296,6 +359,124 @@ fn remove_api_key_from_auth(auth_path: &Path) -> Result<(), String> {
         .map_err(|err| format!("无法生成 auth.json：{err}"))?
         + "\n";
     fs::write(auth_path, rendered).map_err(|err| format!("无法写入 auth.json：{err}"))
+}
+
+fn list_key_profiles_in_home(codex_home: &Path) -> Result<Vec<KeyProfileSummary>, String> {
+    let mut store = read_key_profile_store(codex_home)?;
+    store.profiles.sort_by(|left, right| {
+        right
+            .updated_at
+            .cmp(&left.updated_at)
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    Ok(store.profiles.iter().map(key_profile_summary).collect())
+}
+
+fn save_key_profile_in_home(
+    codex_home: &Path,
+    name: String,
+    api_key: String,
+) -> Result<KeyProfileSummary, String> {
+    let name = name.trim();
+    let api_key = api_key.trim();
+    if name.is_empty() {
+        return Err("密钥名称不能为空".to_string());
+    }
+    if api_key.is_empty() {
+        return Err("API Key 不能为空".to_string());
+    }
+
+    let mut store = read_key_profile_store(codex_home)?;
+    let now = Local::now().to_rfc3339();
+    let profile = if let Some(profile) = store
+        .profiles
+        .iter_mut()
+        .find(|profile| profile.name.eq_ignore_ascii_case(name))
+    {
+        profile.name = name.to_string();
+        profile.api_key = api_key.to_string();
+        profile.updated_at = now;
+        profile.clone()
+    } else {
+        let profile = KeyProfile {
+            id: new_key_profile_id(),
+            name: name.to_string(),
+            api_key: api_key.to_string(),
+            created_at: now.clone(),
+            updated_at: now,
+        };
+        store.profiles.push(profile.clone());
+        profile
+    };
+
+    write_key_profile_store(codex_home, &store)?;
+    Ok(key_profile_summary(&profile))
+}
+
+fn delete_key_profile_in_home(codex_home: &Path, profile_id: &str) -> Result<(), String> {
+    let mut store = read_key_profile_store(codex_home)?;
+    let original_len = store.profiles.len();
+    store.profiles.retain(|profile| profile.id != profile_id);
+    if store.profiles.len() == original_len {
+        return Err("未找到选中的密钥档案".to_string());
+    }
+    write_key_profile_store(codex_home, &store)
+}
+
+fn find_key_profile(codex_home: &Path, profile_id: &str) -> Result<Option<KeyProfile>, String> {
+    let store = read_key_profile_store(codex_home)?;
+    Ok(store
+        .profiles
+        .into_iter()
+        .find(|profile| profile.id == profile_id))
+}
+
+fn read_key_profile_store(codex_home: &Path) -> Result<KeyProfileStore, String> {
+    let path = codex_home.join(KEY_PROFILES_FILE_NAME);
+    if !path.exists() {
+        return Ok(KeyProfileStore::default());
+    }
+
+    let content = fs::read_to_string(&path)
+        .map_err(|err| format!("无法读取密钥档案 {}：{err}", path.display()))?;
+    serde_json::from_str::<KeyProfileStore>(&content)
+        .map_err(|err| format!("密钥档案格式无效：{err}"))
+}
+
+fn write_key_profile_store(codex_home: &Path, store: &KeyProfileStore) -> Result<(), String> {
+    fs::create_dir_all(codex_home).map_err(|err| format!("无法创建 Codex 目录：{err}"))?;
+    let path = codex_home.join(KEY_PROFILES_FILE_NAME);
+    let rendered = serde_json::to_string_pretty(store)
+        .map_err(|err| format!("无法生成密钥档案：{err}"))?
+        + "\n";
+    fs::write(&path, rendered).map_err(|err| format!("无法写入密钥档案：{err}"))?;
+    set_private_permissions(&path)
+}
+
+fn key_profile_summary(profile: &KeyProfile) -> KeyProfileSummary {
+    KeyProfileSummary {
+        id: profile.id.clone(),
+        name: profile.name.clone(),
+        masked_key: mask_api_key(&profile.api_key),
+        created_at: profile.created_at.clone(),
+        updated_at: profile.updated_at.clone(),
+    }
+}
+
+fn mask_api_key(api_key: &str) -> String {
+    let trimmed = api_key.trim();
+    if trimmed.len() <= 10 {
+        return "已保存".to_string();
+    }
+
+    let prefix = &trimmed[..6.min(trimmed.len())];
+    let suffix_start = trimmed.len().saturating_sub(4);
+    format!("{prefix}...{}", &trimmed[suffix_start..])
+}
+
+fn new_key_profile_id() -> String {
+    let stamp = Local::now().timestamp_nanos_opt().unwrap_or_default();
+    format!("key-{stamp}")
 }
 
 fn ensure_restore_snapshot(
@@ -1068,9 +1249,13 @@ fn run_gui() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             configure_provider,
+            configure_with_key_profile,
             get_config_status,
+            list_key_profiles,
             open_config_dir,
             restore_defaults,
+            save_key_profile,
+            delete_key_profile,
             test_connection,
             exit_app
         ])
@@ -1528,6 +1713,51 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM threads", [], |row| row.get(0))
             .unwrap();
         assert_eq!(total_rows, 2);
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn key_profiles_can_be_saved_updated_listed_and_deleted() {
+        let dir = unique_test_dir("key-profiles");
+        fs::create_dir_all(&dir).unwrap();
+
+        let first = save_key_profile_in_home(
+            &dir,
+            "订阅密钥".to_string(),
+            "sk-subscription-123456".to_string(),
+        )
+        .unwrap();
+        assert_eq!(first.name, "订阅密钥");
+        assert_eq!(first.masked_key, "sk-sub...3456");
+
+        let updated = save_key_profile_in_home(
+            &dir,
+            "订阅密钥".to_string(),
+            "sk-subscription-abcdef".to_string(),
+        )
+        .unwrap();
+        assert_eq!(updated.id, first.id);
+        assert_eq!(updated.masked_key, "sk-sub...cdef");
+
+        let second = save_key_profile_in_home(
+            &dir,
+            "余额密钥".to_string(),
+            "sk-balance-654321".to_string(),
+        )
+        .unwrap();
+        let profiles = list_key_profiles_in_home(&dir).unwrap();
+        assert_eq!(profiles.len(), 2);
+        assert!(profiles.iter().any(|profile| profile.name == "订阅密钥"));
+        assert!(profiles.iter().any(|profile| profile.name == "余额密钥"));
+
+        let profile = find_key_profile(&dir, &updated.id).unwrap().unwrap();
+        assert_eq!(profile.api_key, "sk-subscription-abcdef");
+
+        delete_key_profile_in_home(&dir, &second.id).unwrap();
+        let profiles = list_key_profiles_in_home(&dir).unwrap();
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(profiles[0].id, updated.id);
 
         fs::remove_dir_all(dir).unwrap();
     }

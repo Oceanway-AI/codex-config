@@ -28,7 +28,8 @@ body {
 }
 
 button,
-input {
+input,
+select {
   font: inherit;
 }
 
@@ -119,7 +120,8 @@ input {
   font-weight: 600;
 }
 
-.field input {
+.field input,
+.field select {
   width: 100%;
   min-height: 42px;
   padding: 9px 12px;
@@ -175,9 +177,26 @@ input {
   border: 0;
 }
 
-.field input:focus {
+.field input:focus,
+.field select:focus {
   border-color: var(--blue);
   box-shadow: 0 0 0 3px rgba(18, 201, 244, 0.22);
+}
+
+.key-profiles {
+  display: grid;
+  grid-template-columns: 1.15fr 1fr;
+  gap: 10px;
+  align-items: end;
+  padding: 10px 0 2px;
+  border-top: 1px solid rgba(200, 212, 226, 0.72);
+}
+
+.key-profile-actions {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
 }
 
 .status {
@@ -284,6 +303,11 @@ button.primary:hover {
   }
 
   .input-row {
+    grid-template-columns: 1fr;
+  }
+
+  .key-profiles,
+  .key-profile-actions {
     grid-template-columns: 1fr;
   }
 }

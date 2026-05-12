@@ -8,6 +8,7 @@ This repository only contains the Rust/Tauri version. The old Python/PyQt packag
 
 - Writes the OceanWay provider to Codex config.
 - Saves the API key as `OPENAI_API_KEY`.
+- Lets users save multiple named local API key profiles, such as subscription keys and balance keys.
 - Uses `https://ocean-way.top` as the default Base URL.
 - Preserves existing non-OceanWay Codex settings and providers.
 - Syncs existing local Codex session metadata to OceanWay so history remains visible after switching providers.
@@ -28,6 +29,7 @@ The app reads and writes:
 ```text
 ~/.codex/config.toml
 ~/.codex/auth.json
+~/.codex/oceanway-ai-keys.json
 ~/.codex/sessions/**/*.jsonl
 ~/.codex/archived_sessions/**/*.jsonl
 ~/.codex/state_5.sqlite
