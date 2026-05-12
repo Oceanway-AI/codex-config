@@ -10,6 +10,7 @@ This repository only contains the Rust/Tauri version. The old Python/PyQt packag
 - Saves the API key as `OPENAI_API_KEY`.
 - Uses `https://ocean-way.top` as the default Base URL.
 - Preserves existing non-OceanWay Codex settings and providers.
+- Syncs existing local Codex session metadata to OceanWay so history remains visible after switching providers.
 - Creates a first-use backup before changing user config.
 - Restores the user's original files when they click restore.
 - Supports macOS and Windows builds.
@@ -27,6 +28,9 @@ The app reads and writes:
 ```text
 ~/.codex/config.toml
 ~/.codex/auth.json
+~/.codex/sessions/**/*.jsonl
+~/.codex/archived_sessions/**/*.jsonl
+~/.codex/state_5.sqlite
 ```
 
 The OceanWay provider written to `config.toml` looks like this:
@@ -61,6 +65,8 @@ On first configuration, the app stores a snapshot in:
 ```
 
 When the user clicks restore, the app restores that original snapshot. This lets users who already had a custom Codex setup return to their previous state, while users who had no config return to an empty/default state.
+
+The first-use backup also includes any Codex session provider metadata changed by the history sync. Restore does not roll the session database back in time; after restoring `config.toml`, it syncs all current local sessions to the restored provider so sessions created while using OceanWay remain visible after switching back.
 
 If no snapshot exists, restore falls back to removing only the OceanWay provider and `OPENAI_API_KEY`.
 

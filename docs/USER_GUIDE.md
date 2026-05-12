@@ -82,6 +82,8 @@ https://ocean-way.top
 
 重启 Codex 后，即可使用 OceanWay AI provider。
 
+配置过程中，软件还会同步本机已有 Codex 历史会话的 provider 元数据。这样切换到 OceanWay AI 后，之前的本地历史记录仍然可以在 Codex 里看到。
+
 ## 五、如何测试连接
 
 如果您不确定 API Key 是否可用，可以点击“测试连接”。
@@ -100,6 +102,8 @@ https://ocean-way.top
 如果您不想继续使用 OceanWay AI 配置，可以点击“恢复默认”。
 
 恢复后，软件会尽量把 Codex 配置恢复到您第一次使用本工具之前的状态。
+
+如果配置时同步过历史会话，恢复默认会把当前所有本地历史会话同步到恢复后的 provider。这样即使您在使用 OceanWay AI 期间创建了新会话，切回自己的账号后也能继续看到。
 
 适用情况：
 

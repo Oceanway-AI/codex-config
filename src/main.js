@@ -43,6 +43,12 @@ function setCurrentStatus(status) {
   currentApiKey.textContent = status.hasApiKey ? "已保存" : "未保存";
 }
 
+function sessionSyncText(sync = {}) {
+  const synced = (sync.rolloutFilesUpdated || 0) + (sync.sqliteRowsUpdated || 0);
+  const warningText = sync.warnings?.length ? `，有 ${sync.warnings.length} 个同步提示` : "";
+  return synced > 0 ? `已同步历史记录${warningText}。` : `历史记录无需同步${warningText}。`;
+}
+
 async function refreshStatus() {
   if (!invoke) {
     currentProvider.textContent = "请通过 Tauri 应用打开";
@@ -84,7 +90,7 @@ async function configure(event) {
 
   try {
     const result = await invoke("configure_provider", { apiKey, baseUrl });
-    setStatus(`配置完成，请重启 Codex。已写入：${result.configPath}`, "success");
+    setStatus(`配置完成，请重启 Codex。已写入：${result.configPath}。${sessionSyncText(result.sessionSync)}`, "success");
     await refreshStatus();
   } catch (error) {
     setStatus(`配置失败：${error}`, "error");
@@ -111,7 +117,7 @@ async function restoreDefaults() {
     const result = await invoke("restore_defaults");
     apiKeyInput.value = "";
     baseUrlInput.value = DEFAULT_BASE_URL;
-    setStatus(`已恢复默认值，请重启 Codex。已写入：${result.configPath}`, "success");
+    setStatus(`已恢复默认值，请重启 Codex。已写入：${result.configPath}。${sessionSyncText(result.sessionSync)}`, "success");
     await refreshStatus();
   } catch (error) {
     setStatus(`恢复失败：${error}`, "error");
