@@ -1,4 +1,5 @@
 use chrono::Local;
+use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::env;
@@ -12,6 +13,8 @@ const DEFAULT_BASE_URL: &str = "https://ocean-way.top";
 const MODEL_FALLBACK: &str = "gpt-5.4";
 const CODEX_AUTH_KEY: &str = "OPENAI_API_KEY";
 const BACKUP_DIR_NAME: &str = "oceanway-ai-backup";
+const SESSION_SYNC_DIR_NAME: &str = "session-provider-sync";
+const CODEX_STATE_DB_NAME: &str = "state_5.sqlite";
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -20,6 +23,17 @@ struct OperationResult {
     auth_path: String,
     config_backup_path: Option<String>,
     auth_backup_path: Option<String>,
+    session_sync: SessionSyncResult,
+}
+
+#[derive(Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionSyncResult {
+    rollout_files_updated: usize,
+    sqlite_rows_updated: usize,
+    skipped_files: usize,
+    backup_path: Option<String>,
+    warnings: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -179,12 +193,14 @@ fn configure_provider(api_key: String, base_url: String) -> Result<OperationResu
             return Err(err);
         }
     };
+    let session_sync = sync_codex_session_provider_lossy(&codex_home, PROVIDER_ID);
 
     Ok(OperationResult {
         config_path: display_path(&config_path),
         auth_path: display_path(&auth_path),
         config_backup_path: config_backup_path.as_ref().map(|path| display_path(path)),
         auth_backup_path: auth_backup_path.as_ref().map(|path| display_path(path)),
+        session_sync,
     })
 }
 
@@ -211,12 +227,14 @@ fn restore_defaults() -> Result<OperationResult, String> {
         set_private_permissions(&config_path)?;
         set_private_permissions(&auth_path)?;
     }
+    let session_sync = sync_restored_session_provider_lossy(&codex_home, &config_path);
 
     Ok(OperationResult {
         config_path: display_path(&config_path),
         auth_path: display_path(&auth_path),
         config_backup_path: config_backup_path.as_ref().map(|path| display_path(path)),
         auth_backup_path: auth_backup_path.as_ref().map(|path| display_path(path)),
+        session_sync,
     })
 }
 
@@ -265,7 +283,8 @@ fn remove_provider_from_config(config_path: &Path, provider_id: &str) -> Result<
 
 fn remove_api_key_from_auth(auth_path: &Path) -> Result<(), String> {
     let content = fs::read_to_string(auth_path).unwrap_or_else(|_| "{}".to_string());
-    let mut value = serde_json::from_str::<serde_json::Value>(&content).unwrap_or_else(|_| json!({}));
+    let mut value =
+        serde_json::from_str::<serde_json::Value>(&content).unwrap_or_else(|_| json!({}));
 
     if let Some(object) = value.as_object_mut() {
         object.remove(CODEX_AUTH_KEY);
@@ -290,7 +309,8 @@ fn ensure_restore_snapshot(
         return Ok(());
     }
 
-    fs::create_dir_all(&snapshot_dir).map_err(|err| format!("无法创建 OceanWay 备份目录：{err}"))?;
+    fs::create_dir_all(&snapshot_dir)
+        .map_err(|err| format!("无法创建 OceanWay 备份目录：{err}"))?;
 
     let meta = RestoreSnapshotMeta {
         config_existed: config_path.exists(),
@@ -324,8 +344,8 @@ fn restore_from_snapshot(
         return Ok(false);
     }
 
-    let meta_content =
-        fs::read_to_string(&meta_path).map_err(|err| format!("无法读取 OceanWay 备份元数据：{err}"))?;
+    let meta_content = fs::read_to_string(&meta_path)
+        .map_err(|err| format!("无法读取 OceanWay 备份元数据：{err}"))?;
     let meta = serde_json::from_str::<RestoreSnapshotMeta>(&meta_content)
         .map_err(|err| format!("OceanWay 备份元数据无效：{err}"))?;
 
@@ -345,6 +365,277 @@ fn restore_from_snapshot(
 
     fs::remove_dir_all(snapshot_dir).map_err(|err| format!("无法删除 OceanWay 备份目录：{err}"))?;
     Ok(true)
+}
+
+fn sync_codex_session_provider(
+    codex_home: &Path,
+    provider_id: &str,
+) -> Result<SessionSyncResult, String> {
+    let snapshot_dir = codex_home.join(BACKUP_DIR_NAME);
+    fs::create_dir_all(&snapshot_dir)
+        .map_err(|err| format!("无法创建 OceanWay 备份目录：{err}"))?;
+
+    let sync_backup_dir = snapshot_dir.join(SESSION_SYNC_DIR_NAME);
+    fs::create_dir_all(&sync_backup_dir).map_err(|err| format!("无法创建会话备份目录：{err}"))?;
+
+    let mut result = SessionSyncResult {
+        backup_path: Some(display_path(&sync_backup_dir)),
+        ..SessionSyncResult::default()
+    };
+
+    sync_codex_session_provider_inner(codex_home, Some(&sync_backup_dir), provider_id, &mut result);
+    Ok(result)
+}
+
+fn sync_codex_session_provider_without_backup(
+    codex_home: &Path,
+    provider_id: &str,
+) -> SessionSyncResult {
+    let mut result = SessionSyncResult::default();
+    sync_codex_session_provider_inner(codex_home, None, provider_id, &mut result);
+    result
+}
+
+fn sync_codex_session_provider_inner(
+    codex_home: &Path,
+    sync_backup_dir: Option<&Path>,
+    provider_id: &str,
+    result: &mut SessionSyncResult,
+) {
+    let rollout_dirs = [
+        codex_home.join("sessions"),
+        codex_home.join("archived_sessions"),
+    ];
+    for dir in rollout_dirs {
+        if let Err(err) =
+            sync_rollout_dir_provider(codex_home, sync_backup_dir, &dir, provider_id, result)
+        {
+            result
+                .warnings
+                .push(format!("同步 {} 失败：{err}", display_path(&dir)));
+        }
+    }
+
+    if let Err(err) = sync_state_db_provider(codex_home, sync_backup_dir, provider_id, result) {
+        result.warnings.push(format!("同步状态数据库失败：{err}"));
+    }
+}
+
+fn sync_codex_session_provider_lossy(codex_home: &Path, provider_id: &str) -> SessionSyncResult {
+    match sync_codex_session_provider(codex_home, provider_id) {
+        Ok(result) => result,
+        Err(err) => SessionSyncResult {
+            warnings: vec![format!("历史记录同步未完成：{err}")],
+            ..SessionSyncResult::default()
+        },
+    }
+}
+
+fn sync_restored_session_provider_lossy(
+    codex_home: &Path,
+    config_path: &Path,
+) -> SessionSyncResult {
+    let provider_id = read_session_provider_from_config(config_path);
+    sync_codex_session_provider_without_backup(codex_home, &provider_id)
+}
+
+fn read_session_provider_from_config(config_path: &Path) -> String {
+    let content = fs::read_to_string(config_path).unwrap_or_default();
+    read_root_string(&content, "model_provider").unwrap_or_else(|| "openai".to_string())
+}
+
+fn sync_rollout_dir_provider(
+    codex_home: &Path,
+    sync_backup_dir: Option<&Path>,
+    dir: &Path,
+    provider_id: &str,
+    result: &mut SessionSyncResult,
+) -> Result<(), String> {
+    if !dir.exists() {
+        return Ok(());
+    }
+
+    for path in jsonl_files(dir)? {
+        match sync_rollout_file_provider(codex_home, sync_backup_dir, &path, provider_id) {
+            Ok(true) => result.rollout_files_updated += 1,
+            Ok(false) => {}
+            Err(err) => {
+                result.skipped_files += 1;
+                result
+                    .warnings
+                    .push(format!("跳过 {}：{err}", display_path(&path)));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn jsonl_files(dir: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut output = Vec::new();
+    collect_jsonl_files(dir, &mut output)?;
+    Ok(output)
+}
+
+fn collect_jsonl_files(dir: &Path, output: &mut Vec<PathBuf>) -> Result<(), String> {
+    let entries =
+        fs::read_dir(dir).map_err(|err| format!("无法读取目录 {}：{err}", dir.display()))?;
+    for entry in entries {
+        let entry = entry.map_err(|err| format!("无法读取目录项 {}：{err}", dir.display()))?;
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .map_err(|err| format!("无法读取文件类型 {}：{err}", path.display()))?;
+        if file_type.is_dir() {
+            collect_jsonl_files(&path, output)?;
+        } else if file_type.is_file()
+            && path.extension().and_then(|value| value.to_str()) == Some("jsonl")
+        {
+            output.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn sync_rollout_file_provider(
+    codex_home: &Path,
+    sync_backup_dir: Option<&Path>,
+    path: &Path,
+    provider_id: &str,
+) -> Result<bool, String> {
+    let original = fs::read_to_string(path).map_err(|err| format!("无法读取会话文件：{err}"))?;
+    let mut changed = false;
+    let mut output = Vec::new();
+
+    for line in original.lines() {
+        if line.trim().is_empty() {
+            output.push(String::new());
+            continue;
+        }
+
+        let mut value = serde_json::from_str::<serde_json::Value>(line)
+            .map_err(|err| format!("会话 JSON 无效：{err}"))?;
+        if value.get("type").and_then(|value| value.as_str()) == Some("session_meta") {
+            if let Some(payload) = value
+                .get_mut("payload")
+                .and_then(|value| value.as_object_mut())
+            {
+                let needs_update = payload
+                    .get("model_provider")
+                    .and_then(|value| value.as_str())
+                    .is_some_and(|current| current != provider_id);
+                if needs_update {
+                    payload.insert("model_provider".to_string(), json!(provider_id));
+                    changed = true;
+                }
+            }
+        }
+
+        output.push(
+            serde_json::to_string(&value).map_err(|err| format!("无法生成会话 JSON：{err}"))?,
+        );
+    }
+
+    if !changed {
+        return Ok(false);
+    }
+
+    if let Some(sync_backup_dir) = sync_backup_dir {
+        backup_session_file(codex_home, sync_backup_dir, path)?;
+    }
+    let mut rendered = output.join("\n");
+    rendered.push('\n');
+    fs::write(path, rendered).map_err(|err| format!("无法写入会话文件：{err}"))?;
+    Ok(true)
+}
+
+fn backup_session_file(
+    codex_home: &Path,
+    sync_backup_dir: &Path,
+    path: &Path,
+) -> Result<(), String> {
+    let relative = path.strip_prefix(codex_home).unwrap_or(path);
+    let backup_path = sync_backup_dir.join("files").join(relative);
+    if backup_path.exists() {
+        return Ok(());
+    }
+    if let Some(parent) = backup_path.parent() {
+        fs::create_dir_all(parent).map_err(|err| format!("无法创建会话文件备份目录：{err}"))?;
+    }
+    fs::copy(path, &backup_path).map_err(|err| format!("无法备份会话文件：{err}"))?;
+    Ok(())
+}
+
+fn sync_state_db_provider(
+    codex_home: &Path,
+    sync_backup_dir: Option<&Path>,
+    provider_id: &str,
+    result: &mut SessionSyncResult,
+) -> Result<(), String> {
+    let db_path = codex_home.join(CODEX_STATE_DB_NAME);
+    if !db_path.exists() {
+        return Ok(());
+    }
+
+    let connection = Connection::open(&db_path)
+        .map_err(|err| format!("无法打开 Codex 状态数据库 {}：{err}", db_path.display()))?;
+    connection
+        .busy_timeout(Duration::from_secs(3))
+        .map_err(|err| format!("无法设置数据库等待时间：{err}"))?;
+
+    let table_exists: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'threads'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|err| format!("无法检查 threads 表：{err}"))?;
+    if table_exists == 0 {
+        return Ok(());
+    }
+
+    let rows_to_update: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM threads WHERE model_provider <> ?1",
+            params![provider_id],
+            |row| row.get(0),
+        )
+        .map_err(|err| format!("无法统计会话数据库 provider：{err}"))?;
+    if rows_to_update == 0 {
+        return Ok(());
+    }
+
+    if let Some(sync_backup_dir) = sync_backup_dir {
+        backup_state_db(&connection, &db_path, sync_backup_dir)?;
+    }
+    result.sqlite_rows_updated = connection
+        .execute(
+            "UPDATE threads SET model_provider = ?1 WHERE model_provider <> ?1",
+            params![provider_id],
+        )
+        .map_err(|err| format!("无法同步会话数据库 provider：{err}"))?;
+    Ok(())
+}
+
+fn backup_state_db(
+    connection: &Connection,
+    db_path: &Path,
+    sync_backup_dir: &Path,
+) -> Result<(), String> {
+    let backup_path = sync_backup_dir.join(CODEX_STATE_DB_NAME);
+    if backup_path.exists() {
+        return Ok(());
+    }
+
+    let backup_path_string = display_path(&backup_path);
+    match connection.execute("VACUUM INTO ?1", params![backup_path_string]) {
+        Ok(_) => Ok(()),
+        Err(_) => {
+            fs::copy(db_path, &backup_path)
+                .map_err(|err| format!("无法备份 Codex 状态数据库：{err}"))?;
+            Ok(())
+        }
+    }
 }
 
 fn merge_config(original: &str, provider_id: &str, base_url: &str, model: &str) -> String {
@@ -443,7 +734,9 @@ fn set_root_key(lines: Vec<String>, key: &str, rendered_value: &str) -> Vec<Stri
 
     for line in lines {
         let trimmed = line.trim_start();
-        let current_key = line.split_once('=').map(|(current_key, _)| current_key.trim());
+        let current_key = line
+            .split_once('=')
+            .map(|(current_key, _)| current_key.trim());
         if !trimmed.starts_with('#') && current_key == Some(key) {
             if !replaced {
                 output.push(rendered.clone());
@@ -802,7 +1095,12 @@ fn run_cli(args: &[String]) -> Result<(), String> {
         .or_else(|| read_current_model(&config_path))
         .unwrap_or_else(|| MODEL_FALLBACK.to_string());
     let original_config = fs::read_to_string(&config_path).unwrap_or_default();
-    let rendered_config = merge_config(&original_config, &options.provider_id, &options.base_url, &model);
+    let rendered_config = merge_config(
+        &original_config,
+        &options.provider_id,
+        &options.base_url,
+        &model,
+    );
 
     if options.dry_run {
         println!("--- {} ---", display_path(&config_path));
@@ -829,18 +1127,34 @@ fn run_cli(args: &[String]) -> Result<(), String> {
     };
 
     let auth_backup_path = write_auth_json(&auth_path, &api_key)?;
-    let config_result = write_config_toml(&config_path, &options.provider_id, &options.base_url, &model);
+    let config_result = write_config_toml(
+        &config_path,
+        &options.provider_id,
+        &options.base_url,
+        &model,
+    );
 
     match config_result {
         Ok(config_backup_path) => {
+            let session_sync = sync_codex_session_provider_lossy(&codex_home, &options.provider_id);
             println!("Configured provider: {}", options.provider_id);
             println!("Config: {}", display_path(&config_path));
             println!("Auth: {}", display_path(&auth_path));
+            println!(
+                "Session sync: {} rollout files, {} database rows",
+                session_sync.rollout_files_updated, session_sync.sqlite_rows_updated
+            );
             if let Some(path) = config_backup_path {
                 println!("Config backup: {}", display_path(&path));
             }
             if let Some(path) = auth_backup_path {
                 println!("Auth backup: {}", display_path(&path));
+            }
+            if let Some(path) = session_sync.backup_path {
+                println!("Session backup: {path}");
+            }
+            for warning in session_sync.warnings {
+                println!("Session warning: {warning}");
             }
             Ok(())
         }
@@ -1070,6 +1384,150 @@ mod tests {
         assert!(!config_path.exists());
         assert!(!auth_path.exists());
         assert!(!dir.join(BACKUP_DIR_NAME).exists());
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn sync_codex_session_provider_updates_rollouts_and_database() {
+        let dir = unique_test_dir("session-sync");
+        let sessions_dir = dir.join("sessions").join("2026").join("05").join("12");
+        fs::create_dir_all(&sessions_dir).unwrap();
+        fs::create_dir_all(dir.join("archived_sessions")).unwrap();
+        let rollout_path = sessions_dir.join("rollout-test.jsonl");
+        fs::write(
+            &rollout_path,
+            concat!(
+                "{\"type\":\"session_meta\",\"payload\":{\"id\":\"one\",\"model_provider\":\"openai\"}}\n",
+                "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\"}}\n"
+            ),
+        )
+        .unwrap();
+
+        let db_path = dir.join(CODEX_STATE_DB_NAME);
+        let connection = Connection::open(&db_path).unwrap();
+        connection
+            .execute(
+                "CREATE TABLE threads (id TEXT PRIMARY KEY, model_provider TEXT NOT NULL)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO threads (id, model_provider) VALUES ('one', 'openai'), ('two', 'custom')",
+                [],
+            )
+            .unwrap();
+        drop(connection);
+
+        let result = sync_codex_session_provider(&dir, PROVIDER_ID).unwrap();
+
+        assert_eq!(result.rollout_files_updated, 1);
+        assert_eq!(result.sqlite_rows_updated, 2);
+        assert!(result.warnings.is_empty());
+        let rendered = fs::read_to_string(&rollout_path).unwrap();
+        assert!(rendered.contains("\"model_provider\":\"OceanWay\""));
+        assert!(dir
+            .join(BACKUP_DIR_NAME)
+            .join(SESSION_SYNC_DIR_NAME)
+            .join("files")
+            .join("sessions")
+            .join("2026")
+            .join("05")
+            .join("12")
+            .join("rollout-test.jsonl")
+            .exists());
+
+        let connection = Connection::open(&db_path).unwrap();
+        let oceanway_rows: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM threads WHERE model_provider = 'OceanWay'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(oceanway_rows, 2);
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn restore_flow_resyncs_all_sessions_to_restored_provider() {
+        let dir = unique_test_dir("session-restore");
+        fs::create_dir_all(dir.join("sessions")).unwrap();
+        let config_path = dir.join("config.toml");
+        let auth_path = dir.join("auth.json");
+        fs::write(&config_path, "model_provider = \"openai\"\n").unwrap();
+        fs::write(&auth_path, "{}\n").unwrap();
+        let rollout_path = dir.join("sessions").join("rollout-test.jsonl");
+        let new_rollout_path = dir.join("sessions").join("rollout-new.jsonl");
+        fs::write(
+            &rollout_path,
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"one\",\"model_provider\":\"openai\"}}\n",
+        )
+        .unwrap();
+
+        let db_path = dir.join(CODEX_STATE_DB_NAME);
+        let connection = Connection::open(&db_path).unwrap();
+        connection
+            .execute(
+                "CREATE TABLE threads (id TEXT PRIMARY KEY, model_provider TEXT NOT NULL)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO threads (id, model_provider) VALUES ('one', 'openai')",
+                [],
+            )
+            .unwrap();
+        drop(connection);
+
+        ensure_restore_snapshot(&dir, &config_path, &auth_path).unwrap();
+        sync_codex_session_provider(&dir, PROVIDER_ID).unwrap();
+        fs::write(&config_path, "model_provider = \"OceanWay\"\n").unwrap();
+        fs::write(
+            &new_rollout_path,
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"two\",\"model_provider\":\"OceanWay\"}}\n",
+        )
+        .unwrap();
+        let connection = Connection::open(&db_path).unwrap();
+        connection
+            .execute(
+                "INSERT INTO threads (id, model_provider) VALUES ('two', 'OceanWay')",
+                [],
+            )
+            .unwrap();
+        drop(connection);
+
+        assert!(fs::read_to_string(&rollout_path)
+            .unwrap()
+            .contains("\"model_provider\":\"OceanWay\""));
+
+        assert!(restore_from_snapshot(&dir, &config_path, &auth_path).unwrap());
+        let result = sync_restored_session_provider_lossy(&dir, &config_path);
+
+        assert_eq!(result.rollout_files_updated, 2);
+        assert_eq!(result.sqlite_rows_updated, 2);
+        assert!(fs::read_to_string(&rollout_path)
+            .unwrap()
+            .contains("\"model_provider\":\"openai\""));
+        assert!(fs::read_to_string(&new_rollout_path)
+            .unwrap()
+            .contains("\"model_provider\":\"openai\""));
+        let connection = Connection::open(&db_path).unwrap();
+        let openai_rows: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM threads WHERE model_provider = 'openai'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(openai_rows, 2);
+        let total_rows: i64 = connection
+            .query_row("SELECT COUNT(*) FROM threads", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(total_rows, 2);
 
         fs::remove_dir_all(dir).unwrap();
     }
