@@ -7,6 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{self, Command};
 use std::time::Duration;
+use tauri::{LogicalSize, Manager, Size};
 
 const PROVIDER_ID: &str = "OceanWay";
 const DEFAULT_BASE_URL: &str = "https://ocean-way.top";
@@ -63,6 +64,8 @@ struct KeyProfile {
     id: String,
     name: String,
     api_key: String,
+    #[serde(default = "default_base_url_string")]
+    base_url: String,
     created_at: String,
     updated_at: String,
 }
@@ -79,6 +82,8 @@ struct KeyProfileSummary {
     id: String,
     name: String,
     masked_key: String,
+    base_url: String,
+    active: bool,
     created_at: String,
     updated_at: String,
 }
@@ -189,14 +194,19 @@ fn configure_provider(api_key: String, base_url: String) -> Result<OperationResu
 }
 
 #[tauri::command]
-fn configure_with_key_profile(
-    profile_id: String,
-    base_url: String,
-) -> Result<OperationResult, String> {
+fn configure_with_key_profile(profile_id: String) -> Result<OperationResult, String> {
     let codex_home = codex_home()?;
     let profile = find_key_profile(&codex_home, &profile_id)?
         .ok_or_else(|| "未找到选中的密钥档案".to_string())?;
-    configure_provider_internal(profile.api_key, base_url)
+    configure_provider_internal(profile.api_key, profile.base_url)
+}
+
+#[tauri::command]
+fn test_key_profile(profile_id: String) -> Result<ConnectionTestResult, String> {
+    let codex_home = codex_home()?;
+    let profile = find_key_profile(&codex_home, &profile_id)?
+        .ok_or_else(|| "未找到选中的密钥档案".to_string())?;
+    test_connection(profile.api_key, profile.base_url)
 }
 
 #[tauri::command]
@@ -206,9 +216,14 @@ fn list_key_profiles() -> Result<Vec<KeyProfileSummary>, String> {
 }
 
 #[tauri::command]
-fn save_key_profile(name: String, api_key: String) -> Result<KeyProfileSummary, String> {
+fn save_key_profile(
+    profile_id: Option<String>,
+    name: String,
+    api_key: String,
+    base_url: String,
+) -> Result<KeyProfileSummary, String> {
     let codex_home = codex_home()?;
-    save_key_profile_in_home(&codex_home, name, api_key)
+    save_key_profile_in_home(&codex_home, profile_id, name, api_key, base_url)
 }
 
 #[tauri::command]
@@ -306,6 +321,24 @@ fn exit_app(app_handle: tauri::AppHandle) {
     app_handle.exit(0);
 }
 
+#[tauri::command]
+fn resize_window_to_content(app_handle: tauri::AppHandle, height: f64) -> Result<(), String> {
+    let window = app_handle
+        .get_webview_window("main")
+        .ok_or_else(|| "无法找到主窗口".to_string())?;
+    let scale_factor = window
+        .scale_factor()
+        .map_err(|err| format!("无法读取窗口缩放比例：{err}"))?;
+    let size = window
+        .inner_size()
+        .map_err(|err| format!("无法读取窗口尺寸：{err}"))?;
+    let width = (size.width as f64 / scale_factor).clamp(760.0, 1100.0);
+    let height = height.clamp(440.0, 760.0);
+    window
+        .set_size(Size::Logical(LogicalSize { width, height }))
+        .map_err(|err| format!("无法调整窗口尺寸：{err}"))
+}
+
 fn write_config_toml(
     config_path: &Path,
     provider_id: &str,
@@ -363,38 +396,60 @@ fn remove_api_key_from_auth(auth_path: &Path) -> Result<(), String> {
 
 fn list_key_profiles_in_home(codex_home: &Path) -> Result<Vec<KeyProfileSummary>, String> {
     let mut store = read_key_profile_store(codex_home)?;
+    let active_state = read_active_oceanway_state(codex_home);
     store.profiles.sort_by(|left, right| {
         right
             .updated_at
             .cmp(&left.updated_at)
             .then_with(|| left.name.cmp(&right.name))
     });
-    Ok(store.profiles.iter().map(key_profile_summary).collect())
+    Ok(store
+        .profiles
+        .iter()
+        .map(|profile| key_profile_summary(profile, active_state.as_ref()))
+        .collect())
 }
 
 fn save_key_profile_in_home(
     codex_home: &Path,
+    profile_id: Option<String>,
     name: String,
     api_key: String,
+    base_url: String,
 ) -> Result<KeyProfileSummary, String> {
     let name = name.trim();
     let api_key = api_key.trim();
+    let base_url = normalize_profile_base_url(&base_url);
     if name.is_empty() {
         return Err("密钥名称不能为空".to_string());
     }
-    if api_key.is_empty() {
+    if api_key.is_empty() && profile_id.as_deref().unwrap_or_default().is_empty() {
         return Err("API Key 不能为空".to_string());
     }
 
     let mut store = read_key_profile_store(codex_home)?;
     let now = Local::now().to_rfc3339();
-    let profile = if let Some(profile) = store
-        .profiles
-        .iter_mut()
-        .find(|profile| profile.name.eq_ignore_ascii_case(name))
-    {
+    let existing_index = profile_id
+        .as_deref()
+        .and_then(|id| store.profiles.iter().position(|profile| profile.id == id))
+        .or_else(|| {
+            store
+                .profiles
+                .iter()
+                .position(|profile| profile.name.eq_ignore_ascii_case(name))
+        });
+
+    let profile = if let Some(index) = existing_index {
+        let profile = &mut store.profiles[index];
+        if api_key.is_empty() {
+            if profile.api_key.trim().is_empty() {
+                return Err("API Key 不能为空".to_string());
+            }
+        } else {
+            profile.api_key = api_key.to_string();
+        }
         profile.name = name.to_string();
-        profile.api_key = api_key.to_string();
+        profile.base_url = base_url;
         profile.updated_at = now;
         profile.clone()
     } else {
@@ -402,6 +457,7 @@ fn save_key_profile_in_home(
             id: new_key_profile_id(),
             name: name.to_string(),
             api_key: api_key.to_string(),
+            base_url,
             created_at: now.clone(),
             updated_at: now,
         };
@@ -410,7 +466,8 @@ fn save_key_profile_in_home(
     };
 
     write_key_profile_store(codex_home, &store)?;
-    Ok(key_profile_summary(&profile))
+    let active_state = read_active_oceanway_state(codex_home);
+    Ok(key_profile_summary(&profile, active_state.as_ref()))
 }
 
 fn delete_key_profile_in_home(codex_home: &Path, profile_id: &str) -> Result<(), String> {
@@ -453,14 +510,51 @@ fn write_key_profile_store(codex_home: &Path, store: &KeyProfileStore) -> Result
     set_private_permissions(&path)
 }
 
-fn key_profile_summary(profile: &KeyProfile) -> KeyProfileSummary {
+fn key_profile_summary(
+    profile: &KeyProfile,
+    active_state: Option<&ActiveProviderState>,
+) -> KeyProfileSummary {
     KeyProfileSummary {
         id: profile.id.clone(),
         name: profile.name.clone(),
         masked_key: mask_api_key(&profile.api_key),
+        base_url: profile.base_url.clone(),
+        active: active_state.is_some_and(|state| {
+            state.api_key == profile.api_key
+                && normalize_base_url_for_compare(&state.base_url)
+                    == normalize_base_url_for_compare(&profile.base_url)
+        }),
         created_at: profile.created_at.clone(),
         updated_at: profile.updated_at.clone(),
     }
+}
+
+struct ActiveProviderState {
+    api_key: String,
+    base_url: String,
+}
+
+fn read_active_oceanway_state(codex_home: &Path) -> Option<ActiveProviderState> {
+    let config_path = codex_home.join("config.toml");
+    let config = fs::read_to_string(config_path).ok()?;
+    if read_root_string(&config, "model_provider").as_deref() != Some(PROVIDER_ID) {
+        return None;
+    }
+
+    Some(ActiveProviderState {
+        api_key: read_auth_api_key(&codex_home.join("auth.json"))?,
+        base_url: read_provider_base_url(&config, PROVIDER_ID)?,
+    })
+}
+
+fn read_auth_api_key(auth_path: &Path) -> Option<String> {
+    let content = fs::read_to_string(auth_path).ok()?;
+    let value = serde_json::from_str::<serde_json::Value>(&content).ok()?;
+    value
+        .get(CODEX_AUTH_KEY)
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
 }
 
 fn mask_api_key(api_key: &str) -> String {
@@ -477,6 +571,23 @@ fn mask_api_key(api_key: &str) -> String {
 fn new_key_profile_id() -> String {
     let stamp = Local::now().timestamp_nanos_opt().unwrap_or_default();
     format!("key-{stamp}")
+}
+
+fn normalize_profile_base_url(base_url: &str) -> String {
+    let trimmed = base_url.trim();
+    if trimmed.is_empty() {
+        DEFAULT_BASE_URL.to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn normalize_base_url_for_compare(base_url: &str) -> String {
+    base_url.trim().trim_end_matches('/').to_string()
+}
+
+fn default_base_url_string() -> String {
+    DEFAULT_BASE_URL.to_string()
 }
 
 fn ensure_restore_snapshot(
@@ -1256,7 +1367,9 @@ fn run_gui() {
             restore_defaults,
             save_key_profile,
             delete_key_profile,
+            test_key_profile,
             test_connection,
+            resize_window_to_content,
             exit_app
         ])
         .run(tauri::generate_context!())
@@ -1724,35 +1837,61 @@ mod tests {
 
         let first = save_key_profile_in_home(
             &dir,
+            None,
             "订阅密钥".to_string(),
             "sk-subscription-123456".to_string(),
+            DEFAULT_BASE_URL.to_string(),
         )
         .unwrap();
         assert_eq!(first.name, "订阅密钥");
         assert_eq!(first.masked_key, "sk-sub...3456");
+        assert_eq!(first.base_url, DEFAULT_BASE_URL);
 
         let updated = save_key_profile_in_home(
             &dir,
+            Some(first.id.clone()),
             "订阅密钥".to_string(),
             "sk-subscription-abcdef".to_string(),
+            "https://balance.example/v1".to_string(),
         )
         .unwrap();
         assert_eq!(updated.id, first.id);
         assert_eq!(updated.masked_key, "sk-sub...cdef");
+        assert_eq!(updated.base_url, "https://balance.example/v1");
 
         let second = save_key_profile_in_home(
             &dir,
+            None,
             "余额密钥".to_string(),
             "sk-balance-654321".to_string(),
+            "".to_string(),
         )
         .unwrap();
+        fs::write(
+            dir.join("config.toml"),
+            "model_provider = \"OceanWay\"\n\n[model_providers.OceanWay]\nbase_url = \"https://balance.example/v1/\"\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("auth.json"),
+            "{\n  \"OPENAI_API_KEY\": \"sk-subscription-abcdef\"\n}\n",
+        )
+        .unwrap();
+
         let profiles = list_key_profiles_in_home(&dir).unwrap();
         assert_eq!(profiles.len(), 2);
         assert!(profiles.iter().any(|profile| profile.name == "订阅密钥"));
         assert!(profiles.iter().any(|profile| profile.name == "余额密钥"));
+        assert!(profiles
+            .iter()
+            .any(|profile| profile.name == "订阅密钥" && profile.active));
+        assert!(!profiles
+            .iter()
+            .any(|profile| profile.name == "余额密钥" && profile.active));
 
         let profile = find_key_profile(&dir, &updated.id).unwrap().unwrap();
         assert_eq!(profile.api_key, "sk-subscription-abcdef");
+        assert_eq!(profile.base_url, "https://balance.example/v1");
 
         delete_key_profile_in_home(&dir, &second.id).unwrap();
         let profiles = list_key_profiles_in_home(&dir).unwrap();

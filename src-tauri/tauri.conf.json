@@ -11,11 +11,11 @@
     "windows": [
       {
         "title": "codex-config",
-        "width": 720,
-        "height": 500,
-        "minWidth": 700,
-        "minHeight": 490,
-        "resizable": false,
+        "width": 820,
+        "height": 560,
+        "minWidth": 760,
+        "minHeight": 440,
+        "resizable": true,
         "center": true
       }
     ],
