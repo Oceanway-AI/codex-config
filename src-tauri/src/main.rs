@@ -1745,6 +1745,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(oceanway_rows, 2);
+        drop(connection);
 
         fs::remove_dir_all(dir).unwrap();
     }
@@ -1826,6 +1827,7 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM threads", [], |row| row.get(0))
             .unwrap();
         assert_eq!(total_rows, 2);
+        drop(connection);
 
         fs::remove_dir_all(dir).unwrap();
     }
