@@ -118,7 +118,7 @@ input {
 
 .toolbar {
   display: grid;
-  grid-template-columns: 1.25fr repeat(3, minmax(0, 1fr));
+  grid-template-columns: 1.25fr repeat(4, minmax(0, 1fr));
   gap: 10px;
   margin-bottom: 14px;
 }

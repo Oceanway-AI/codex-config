@@ -11,6 +11,7 @@ const emptyAddKeyButton = document.querySelector("#empty-add-key-button");
 const statusText = document.querySelector("#status");
 const addKeyButton = document.querySelector("#add-key-button");
 const restoreButton = document.querySelector("#restore-button");
+const migrateHistoryButton = document.querySelector("#migrate-history-button");
 const exitButton = document.querySelector("#exit-button");
 const openDirButton = document.querySelector("#open-dir-button");
 const keyDialog = document.querySelector("#key-dialog");
@@ -67,17 +68,15 @@ function normalizeBaseUrl(value) {
   return trimmed || DEFAULT_BASE_URL;
 }
 
-function sessionSyncText(sync = {}) {
-  const synced = (sync.rolloutFilesUpdated || 0) + (sync.sqliteRowsUpdated || 0);
-  const warningText = sync.warnings?.length ? `，有 ${sync.warnings.length} 个同步提示` : "";
-  return synced > 0 ? `已同步历史记录${warningText}。` : `历史记录无需同步${warningText}。`;
-}
-
 function setCurrentStatus(status) {
   currentProvider.textContent = status.configured ? "已配置 OceanWay AI" : "未配置 OceanWay AI";
   currentBaseUrl.textContent = status.baseUrl || "-";
   currentBaseUrl.title = status.baseUrl || "";
-  currentApiKey.textContent = status.hasApiKey ? "已保存" : "未保存";
+  if (status.authStrategy === "chatgptBearerToken") {
+    currentApiKey.textContent = "登录态 + Provider Token";
+  } else {
+    currentApiKey.textContent = status.hasApiKey ? "API Key 已保存" : "未保存";
+  }
   updateActiveProfile();
 }
 
@@ -292,7 +291,10 @@ async function activateProfile(profileId) {
     const result = await invoke("configure_with_key_profile", { profileId });
     await refreshKeyProfiles();
     await refreshStatus();
-    setStatus(`已启用 ${profile.name}，请重启 Codex。${sessionSyncText(result.sessionSync)}`, "success");
+    const authText = result.authStrategy === "chatgptBearerToken"
+      ? "已保留 ChatGPT 登录态，并使用 provider token。"
+      : "已写入 API Key。";
+    setStatus(`已启用 ${profile.name}，${authText}请重启 Codex。`, "success");
   } catch (error) {
     setStatus(`启用失败：${error}`, "error");
   } finally {
@@ -332,7 +334,7 @@ async function deleteProfile(profileId) {
   }
 
   const deleteMessage = profile.active
-    ? `“${profile.name}”当前正在使用。删除只会移除保存的档案，不会清除 Codex 当前配置。是否继续？`
+    ? `“${profile.name}”当前正在使用。删除后会同时清除 Codex 当前 OceanWay 密钥配置。是否继续？`
     : `将删除密钥档案“${profile.name}”，是否继续？`;
   const confirmed = window.confirm(deleteMessage);
   if (!confirmed) {
@@ -350,6 +352,7 @@ async function deleteProfile(profileId) {
   try {
     await invoke("delete_key_profile", { profileId });
     await refreshKeyProfiles();
+    await refreshStatus();
     setStatus(`已删除密钥档案：${profile.name}`, "success");
   } catch (error) {
     setStatus(`删除密钥失败：${error}`, "error");
@@ -377,7 +380,7 @@ function handleProfileAction(event, profile) {
 }
 
 async function restoreDefaults() {
-  const confirmed = window.confirm("将恢复到首次使用本工具前的 Codex 配置，并备份当前文件。是否继续？");
+  const confirmed = window.confirm("将恢复到首次使用本工具前的 Codex 配置，并撤销本工具记录过的历史迁移。是否继续？");
   if (!confirmed) {
     return;
   }
@@ -396,9 +399,72 @@ async function restoreDefaults() {
     const result = await invoke("restore_defaults");
     await refreshKeyProfiles();
     await refreshStatus();
-    setStatus(`已恢复默认值，请重启 Codex。已写入：${result.configPath}。${sessionSyncText(result.sessionSync)}`, "success");
+    const restored = result.historyMigrationRestore;
+    const historyText = restored?.restoredBackups
+      ? `已撤销历史迁移：${restored.restoredSessionFiles} 个会话文件，${restored.sqliteRowsRestored} 行索引。`
+      : "没有需要撤销的历史迁移。";
+    const warningText = restored?.warnings?.length ? `有 ${restored.warnings.length} 个历史迁移撤销提示。` : "";
+    setStatus(`已恢复默认值，请重启 Codex。已写入：${result.configPath}。${historyText}${warningText}`, "success");
   } catch (error) {
     setStatus(`恢复失败：${error}`, "error");
+  } finally {
+    setBusy(false);
+  }
+}
+
+function historyProviderCountText(providerCounts = []) {
+  return providerCounts
+    .map((item) => `${item.provider}: ${item.files}`)
+    .join("，") || "无";
+}
+
+async function migrateHistoryVisibility() {
+  if (!invoke) {
+    setStatus("浏览器预览无法迁移本机历史。", "error");
+    return;
+  }
+
+  setBusy(true);
+  setStatus("正在扫描历史会话...");
+
+  try {
+    const status = await invoke("get_history_migration_status");
+    if (!status.migrationSupported) {
+      setStatus(
+        `历史迁移仅在当前 provider 为 OceanWay 时可用。当前 provider：${status.targetProvider}。恢复默认会撤销已记录的历史迁移。`,
+        "error"
+      );
+      return;
+    }
+    if (!status.needsMigration) {
+      setStatus(`历史会话已与当前 provider（${status.targetProvider}）一致，无需迁移。`, "success");
+      return;
+    }
+
+    const warningText = status.encryptedContentFiles
+      ? `\n\n检测到 ${status.encryptedContentFiles} 个会话包含 encrypted_content。迁移只修复列表可见性，继续对话或 compact 仍可能失败。`
+      : "";
+    const confirmed = window.confirm(
+      `将把旧历史会话的 provider metadata 迁移到当前 provider：${status.targetProvider}。\n\n` +
+      `待迁移会话文件：${status.rolloutFilesToUpdate} 个\n` +
+      `待更新索引行：${status.sqliteRowsToUpdate} 行\n` +
+      `当前分布：${historyProviderCountText(status.providerCounts)}\n\n` +
+      `执行前会自动备份，可在“恢复默认”时撤销本工具记录过的迁移。不会修改对话内容。${warningText}\n\n是否继续？`
+    );
+    if (!confirmed) {
+      setStatus("已取消历史迁移。");
+      return;
+    }
+
+    setStatus("正在迁移历史可见性...");
+    const result = await invoke("migrate_history_visibility");
+    const warningSuffix = result.warnings?.length ? `有 ${result.warnings.length} 个提示。` : "";
+    setStatus(
+      `历史迁移完成：${result.changedSessionFiles} 个会话文件，${result.sqliteRowsUpdated} 行索引。备份：${result.backupPath || "无需备份"}。${warningSuffix}`,
+      "success"
+    );
+  } catch (error) {
+    setStatus(`历史迁移失败：${error}`, "error");
   } finally {
     setBusy(false);
   }
@@ -440,6 +506,7 @@ closeDialogButton.addEventListener("click", closeKeyDialog);
 keyForm.addEventListener("submit", handleSave);
 saveAndUseButton.addEventListener("click", handleSaveAndUse);
 restoreButton.addEventListener("click", restoreDefaults);
+migrateHistoryButton.addEventListener("click", migrateHistoryVisibility);
 exitButton.addEventListener("click", exitApp);
 openDirButton.addEventListener("click", openConfigDirectory);
 toggleKeyButton.addEventListener("click", toggleApiKeyVisibility);

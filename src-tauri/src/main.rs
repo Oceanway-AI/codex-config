@@ -3,7 +3,8 @@
 use chrono::Local;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -16,7 +17,7 @@ const DEFAULT_BASE_URL: &str = "https://ocean-way.top";
 const MODEL_FALLBACK: &str = "gpt-5.4";
 const CODEX_AUTH_KEY: &str = "OPENAI_API_KEY";
 const BACKUP_DIR_NAME: &str = "oceanway-ai-backup";
-const SESSION_SYNC_DIR_NAME: &str = "session-provider-sync";
+const HISTORY_MIGRATION_BACKUP_DIR_NAME: &str = "oceanway-history-migration-backup";
 const CODEX_STATE_DB_NAME: &str = "state_5.sqlite";
 const KEY_PROFILES_FILE_NAME: &str = "oceanway-ai-keys.json";
 
@@ -27,16 +28,84 @@ struct OperationResult {
     auth_path: String,
     config_backup_path: Option<String>,
     auth_backup_path: Option<String>,
-    session_sync: SessionSyncResult,
+    auth_strategy: String,
+    history_migration_restore: Option<HistoryMigrationRestoreResult>,
 }
 
 #[derive(Default, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct SessionSyncResult {
-    rollout_files_updated: usize,
+struct HistoryMigrationRestoreResult {
+    restored_backups: usize,
+    restored_session_files: usize,
+    sqlite_rows_restored: usize,
+    warnings: Vec<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HistoryMigrationStatus {
+    target_provider: String,
+    migration_supported: bool,
+    needs_migration: bool,
+    rollout_files_to_update: usize,
+    sqlite_rows_to_update: usize,
+    encrypted_content_files: usize,
+    provider_counts: Vec<ProviderCount>,
+    warnings: Vec<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HistoryMigrationResult {
+    target_provider: String,
+    changed_session_files: usize,
     sqlite_rows_updated: usize,
     skipped_files: usize,
+    encrypted_content_files: usize,
     backup_path: Option<String>,
+    warnings: Vec<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderCount {
+    provider: String,
+    files: usize,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HistoryMigrationManifest {
+    version: u8,
+    target_provider: String,
+    created_at: String,
+    files: Vec<HistoryMigrationManifestFile>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HistoryMigrationManifestFile {
+    path: String,
+    thread_id: Option<String>,
+    original_provider: Option<String>,
+    migrated_provider: String,
+    original_first_line: String,
+}
+
+#[derive(Clone)]
+struct HistoryMigrationChange {
+    path: PathBuf,
+    thread_id: Option<String>,
+    original_provider: Option<String>,
+    original_first_line: String,
+    next_first_line: String,
+    encrypted_content: bool,
+}
+
+#[derive(Default)]
+struct CollectedHistoryMigration {
+    changes: Vec<HistoryMigrationChange>,
+    provider_counts: HashMap<String, usize>,
     warnings: Vec<String>,
 }
 
@@ -48,6 +117,8 @@ struct ConfigStatus {
     base_url: Option<String>,
     model: Option<String>,
     has_api_key: bool,
+    auth_strategy: String,
+    chatgpt_login_detected: bool,
     config_path: String,
     auth_path: String,
 }
@@ -115,7 +186,18 @@ fn get_config_status() -> Result<ConfigStatus, String> {
     let provider_id = read_root_string(&config, "model_provider");
     let base_url = read_provider_base_url(&config, PROVIDER_ID);
     let model = read_current_model_from_content(&config);
-    let has_api_key = read_auth_has_api_key(&auth_path);
+    let provider_token = read_provider_bearer_token(&config, PROVIDER_ID);
+    let auth_api_key = read_auth_api_key(&auth_path);
+    let has_api_key = provider_token
+        .as_ref()
+        .or(auth_api_key.as_ref())
+        .is_some_and(|value| !value.trim().is_empty());
+    let chatgpt_login_detected = read_auth_has_chatgpt_login(&auth_path);
+    let auth_strategy = if provider_token.is_some() {
+        ProviderAuthStrategy::ChatGptBearerToken
+    } else {
+        ProviderAuthStrategy::ApiKey
+    };
     let configured = base_url.as_deref() == Some(DEFAULT_BASE_URL);
 
     Ok(ConfigStatus {
@@ -124,6 +206,8 @@ fn get_config_status() -> Result<ConfigStatus, String> {
         base_url,
         model,
         has_api_key,
+        auth_strategy: auth_strategy.as_str().to_string(),
+        chatgpt_login_detected,
         config_path: display_path(&config_path),
         auth_path: display_path(&auth_path),
     })
@@ -191,6 +275,18 @@ fn open_config_dir() -> Result<(), String> {
 }
 
 #[tauri::command]
+fn get_history_migration_status() -> Result<HistoryMigrationStatus, String> {
+    let codex_home = codex_home()?;
+    history_migration_status_in_home(&codex_home)
+}
+
+#[tauri::command]
+fn migrate_history_visibility() -> Result<HistoryMigrationResult, String> {
+    let codex_home = codex_home()?;
+    migrate_history_visibility_in_home(&codex_home)
+}
+
+#[tauri::command]
 fn configure_provider(api_key: String, base_url: String) -> Result<OperationResult, String> {
     configure_provider_internal(api_key, base_url)
 }
@@ -255,6 +351,8 @@ fn configure_provider_internal(
     let config_path = codex_home.join("config.toml");
     let auth_path = codex_home.join("auth.json");
     fs::create_dir_all(&codex_home).map_err(|err| format!("无法创建 Codex 目录：{err}"))?;
+    ensure_restore_snapshot(&codex_home, &config_path, &auth_path)?;
+    let auth_strategy = choose_provider_auth_strategy(&auth_path);
 
     let old_auth = if auth_path.exists() {
         Some(fs::read(&auth_path).map_err(|err| format!("无法读取旧 auth.json：{err}"))?)
@@ -262,9 +360,15 @@ fn configure_provider_internal(
         None
     };
 
-    let auth_backup_path = write_auth_json(&auth_path, &api_key)?;
+    let auth_backup_path = write_auth_json(&auth_path, &api_key, auth_strategy)?;
     let model = read_current_model(&config_path).unwrap_or_else(|| MODEL_FALLBACK.to_string());
-    let config_result = write_config_toml(&config_path, PROVIDER_ID, base_url, &model);
+    let provider_token = if auth_strategy == ProviderAuthStrategy::ChatGptBearerToken {
+        Some(api_key.as_str())
+    } else {
+        None
+    };
+    let config_result =
+        write_config_toml(&config_path, PROVIDER_ID, base_url, &model, provider_token);
 
     let config_backup_path = match config_result {
         Ok(path) => path,
@@ -273,14 +377,14 @@ fn configure_provider_internal(
             return Err(err);
         }
     };
-    let session_sync = sync_codex_session_provider_lossy(&codex_home, PROVIDER_ID);
 
     Ok(OperationResult {
         config_path: display_path(&config_path),
         auth_path: display_path(&auth_path),
         config_backup_path: config_backup_path.as_ref().map(|path| display_path(path)),
         auth_backup_path: auth_backup_path.as_ref().map(|path| display_path(path)),
-        session_sync,
+        auth_strategy: auth_strategy.as_str().to_string(),
+        history_migration_restore: None,
     })
 }
 
@@ -307,14 +411,15 @@ fn restore_defaults() -> Result<OperationResult, String> {
         set_private_permissions(&config_path)?;
         set_private_permissions(&auth_path)?;
     }
-    let session_sync = sync_restored_session_provider_lossy(&codex_home, &config_path);
+    let history_migration_restore = restore_history_migrations_lossy(&codex_home);
 
     Ok(OperationResult {
         config_path: display_path(&config_path),
         auth_path: display_path(&auth_path),
         config_backup_path: config_backup_path.as_ref().map(|path| display_path(path)),
         auth_backup_path: auth_backup_path.as_ref().map(|path| display_path(path)),
-        session_sync,
+        auth_strategy: "restore".to_string(),
+        history_migration_restore: Some(history_migration_restore),
     })
 }
 
@@ -346,6 +451,7 @@ fn write_config_toml(
     provider_id: &str,
     base_url: &str,
     model: &str,
+    bearer_token: Option<&str>,
 ) -> Result<Option<PathBuf>, String> {
     let codex_home = config_path
         .parent()
@@ -355,22 +461,63 @@ fn write_config_toml(
 
     let backup_path = backup_file(config_path)?;
     let original = fs::read_to_string(config_path).unwrap_or_default();
-    let rendered = merge_config(&original, provider_id, base_url, model);
+    let rendered = merge_config(&original, provider_id, base_url, model, bearer_token);
 
     fs::write(config_path, rendered).map_err(|err| format!("无法写入 config.toml：{err}"))?;
     set_private_permissions(config_path)?;
     Ok(backup_path)
 }
 
-fn write_auth_json(auth_path: &Path, api_key: &str) -> Result<Option<PathBuf>, String> {
+fn write_auth_json(
+    auth_path: &Path,
+    api_key: &str,
+    strategy: ProviderAuthStrategy,
+) -> Result<Option<PathBuf>, String> {
     let backup_path = backup_file(auth_path)?;
-    let rendered = serde_json::to_string_pretty(&json!({ CODEX_AUTH_KEY: api_key }))
-        .map_err(|err| format!("无法生成 auth.json：{err}"))?
-        + "\n";
+    let content = fs::read_to_string(auth_path).unwrap_or_else(|_| "{}".to_string());
+    let rendered = render_auth_json_content(&content, api_key, strategy)?;
 
     fs::write(auth_path, rendered).map_err(|err| format!("无法写入 auth.json：{err}"))?;
     set_private_permissions(auth_path)?;
     Ok(backup_path)
+}
+
+fn render_auth_json_content(
+    content: &str,
+    api_key: &str,
+    strategy: ProviderAuthStrategy,
+) -> Result<String, String> {
+    let mut value =
+        serde_json::from_str::<serde_json::Value>(&content).unwrap_or_else(|_| json!({}));
+
+    if let Some(object) = value.as_object_mut() {
+        match strategy {
+            ProviderAuthStrategy::ApiKey => {
+                object.insert(CODEX_AUTH_KEY.to_string(), json!(api_key));
+            }
+            ProviderAuthStrategy::ChatGptBearerToken => {
+                object.insert("auth_mode".to_string(), json!("chatgpt"));
+                object.insert(CODEX_AUTH_KEY.to_string(), Value::Null);
+            }
+        }
+    } else {
+        let mut object = serde_json::Map::new();
+        match strategy {
+            ProviderAuthStrategy::ApiKey => {
+                object.insert(CODEX_AUTH_KEY.to_string(), json!(api_key));
+            }
+            ProviderAuthStrategy::ChatGptBearerToken => {
+                object.insert("auth_mode".to_string(), json!("chatgpt"));
+                object.insert(CODEX_AUTH_KEY.to_string(), Value::Null);
+            }
+        }
+        value = Value::Object(object);
+    }
+
+    let rendered = serde_json::to_string_pretty(&value)
+        .map_err(|err| format!("无法生成 auth.json：{err}"))?
+        + "\n";
+    Ok(rendered)
 }
 
 fn remove_provider_from_config(config_path: &Path, provider_id: &str) -> Result<(), String> {
@@ -474,12 +621,35 @@ fn save_key_profile_in_home(
 
 fn delete_key_profile_in_home(codex_home: &Path, profile_id: &str) -> Result<(), String> {
     let mut store = read_key_profile_store(codex_home)?;
+    let active_state = read_active_oceanway_state(codex_home);
+    let removed_profile = store
+        .profiles
+        .iter()
+        .find(|profile| profile.id == profile_id)
+        .cloned();
     let original_len = store.profiles.len();
     store.profiles.retain(|profile| profile.id != profile_id);
     if store.profiles.len() == original_len {
         return Err("未找到选中的密钥档案".to_string());
     }
-    write_key_profile_store(codex_home, &store)
+    write_key_profile_store(codex_home, &store)?;
+
+    if removed_profile
+        .is_some_and(|profile| key_profile_matches_active(&profile, active_state.as_ref()))
+    {
+        let config_path = codex_home.join("config.toml");
+        let auth_path = codex_home.join("auth.json");
+        remove_provider_from_config(&config_path, PROVIDER_ID)?;
+        remove_api_key_from_auth(&auth_path)?;
+        if config_path.exists() {
+            set_private_permissions(&config_path)?;
+        }
+        if auth_path.exists() {
+            set_private_permissions(&auth_path)?;
+        }
+    }
+
+    Ok(())
 }
 
 fn find_key_profile(codex_home: &Path, profile_id: &str) -> Result<Option<KeyProfile>, String> {
@@ -505,6 +675,13 @@ fn read_key_profile_store(codex_home: &Path) -> Result<KeyProfileStore, String> 
 fn write_key_profile_store(codex_home: &Path, store: &KeyProfileStore) -> Result<(), String> {
     fs::create_dir_all(codex_home).map_err(|err| format!("无法创建 Codex 目录：{err}"))?;
     let path = codex_home.join(KEY_PROFILES_FILE_NAME);
+    if store.profiles.is_empty() {
+        if path.exists() {
+            fs::remove_file(&path).map_err(|err| format!("无法删除密钥档案：{err}"))?;
+        }
+        return Ok(());
+    }
+
     let rendered = serde_json::to_string_pretty(store)
         .map_err(|err| format!("无法生成密钥档案：{err}"))?
         + "\n";
@@ -521,19 +698,41 @@ fn key_profile_summary(
         name: profile.name.clone(),
         masked_key: mask_api_key(&profile.api_key),
         base_url: profile.base_url.clone(),
-        active: active_state.is_some_and(|state| {
-            state.api_key == profile.api_key
-                && normalize_base_url_for_compare(&state.base_url)
-                    == normalize_base_url_for_compare(&profile.base_url)
-        }),
+        active: key_profile_matches_active(profile, active_state),
         created_at: profile.created_at.clone(),
         updated_at: profile.updated_at.clone(),
     }
 }
 
+fn key_profile_matches_active(
+    profile: &KeyProfile,
+    active_state: Option<&ActiveProviderState>,
+) -> bool {
+    active_state.is_some_and(|state| {
+        state.api_key == profile.api_key
+            && normalize_base_url_for_compare(&state.base_url)
+                == normalize_base_url_for_compare(&profile.base_url)
+    })
+}
+
 struct ActiveProviderState {
     api_key: String,
     base_url: String,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ProviderAuthStrategy {
+    ApiKey,
+    ChatGptBearerToken,
+}
+
+impl ProviderAuthStrategy {
+    fn as_str(self) -> &'static str {
+        match self {
+            ProviderAuthStrategy::ApiKey => "apiKey",
+            ProviderAuthStrategy::ChatGptBearerToken => "chatgptBearerToken",
+        }
+    }
 }
 
 fn read_active_oceanway_state(codex_home: &Path) -> Option<ActiveProviderState> {
@@ -544,7 +743,8 @@ fn read_active_oceanway_state(codex_home: &Path) -> Option<ActiveProviderState> 
     }
 
     Some(ActiveProviderState {
-        api_key: read_auth_api_key(&codex_home.join("auth.json"))?,
+        api_key: read_provider_bearer_token(&config, PROVIDER_ID)
+            .or_else(|| read_auth_api_key(&codex_home.join("auth.json")))?,
         base_url: read_provider_base_url(&config, PROVIDER_ID)?,
     })
 }
@@ -661,76 +861,529 @@ fn restore_from_snapshot(
     Ok(true)
 }
 
-fn sync_codex_session_provider(
-    codex_home: &Path,
-    provider_id: &str,
-) -> Result<SessionSyncResult, String> {
-    let snapshot_dir = codex_home.join(BACKUP_DIR_NAME);
-    fs::create_dir_all(&snapshot_dir)
-        .map_err(|err| format!("无法创建 OceanWay 备份目录：{err}"))?;
+fn history_migration_status_in_home(codex_home: &Path) -> Result<HistoryMigrationStatus, String> {
+    let target_provider = read_session_provider_from_config(&codex_home.join("config.toml"));
+    let collected = collect_history_migration(codex_home, &target_provider)?;
+    let migration_supported = target_provider == PROVIDER_ID;
+    let sqlite_rows_to_update =
+        count_history_migration_sqlite_rows(codex_home, &target_provider, &collected.changes)?;
+    let mut provider_counts = collected
+        .provider_counts
+        .into_iter()
+        .map(|(provider, files)| ProviderCount { provider, files })
+        .collect::<Vec<_>>();
+    provider_counts.sort_by(|left, right| left.provider.cmp(&right.provider));
+    let encrypted_content_files = collected
+        .changes
+        .iter()
+        .filter(|change| change.encrypted_content)
+        .count();
+    let rollout_files_to_update = collected.changes.len();
 
-    let sync_backup_dir = snapshot_dir.join(SESSION_SYNC_DIR_NAME);
-    fs::create_dir_all(&sync_backup_dir).map_err(|err| format!("无法创建会话备份目录：{err}"))?;
-
-    let mut result = SessionSyncResult {
-        backup_path: Some(display_path(&sync_backup_dir)),
-        ..SessionSyncResult::default()
-    };
-
-    sync_codex_session_provider_inner(codex_home, Some(&sync_backup_dir), provider_id, &mut result);
-    Ok(result)
+    Ok(HistoryMigrationStatus {
+        target_provider,
+        migration_supported,
+        needs_migration: migration_supported
+            && (rollout_files_to_update > 0 || sqlite_rows_to_update > 0),
+        rollout_files_to_update: if migration_supported {
+            rollout_files_to_update
+        } else {
+            0
+        },
+        sqlite_rows_to_update: if migration_supported {
+            sqlite_rows_to_update
+        } else {
+            0
+        },
+        encrypted_content_files,
+        provider_counts,
+        warnings: collected.warnings,
+    })
 }
 
-fn sync_codex_session_provider_without_backup(
-    codex_home: &Path,
-    provider_id: &str,
-) -> SessionSyncResult {
-    let mut result = SessionSyncResult::default();
-    sync_codex_session_provider_inner(codex_home, None, provider_id, &mut result);
-    result
-}
+fn migrate_history_visibility_in_home(codex_home: &Path) -> Result<HistoryMigrationResult, String> {
+    let target_provider = read_session_provider_from_config(&codex_home.join("config.toml"));
+    if target_provider != PROVIDER_ID {
+        return Err(format!(
+            "历史迁移仅支持配置到 {PROVIDER_ID} 后使用。恢复默认时会自动撤销已记录的历史迁移。"
+        ));
+    }
+    let mut collected = collect_history_migration(codex_home, &target_provider)?;
+    let encrypted_content_files = collected
+        .changes
+        .iter()
+        .filter(|change| change.encrypted_content)
+        .count();
+    if collected.changes.is_empty() {
+        let sqlite_rows_updated =
+            update_history_migration_sqlite(codex_home, &target_provider, &[])?;
+        return Ok(HistoryMigrationResult {
+            target_provider,
+            changed_session_files: 0,
+            sqlite_rows_updated,
+            skipped_files: 0,
+            encrypted_content_files,
+            backup_path: None,
+            warnings: collected.warnings,
+        });
+    }
 
-fn sync_codex_session_provider_inner(
-    codex_home: &Path,
-    sync_backup_dir: Option<&Path>,
-    provider_id: &str,
-    result: &mut SessionSyncResult,
-) {
-    let rollout_dirs = [
-        codex_home.join("sessions"),
-        codex_home.join("archived_sessions"),
-    ];
-    for dir in rollout_dirs {
-        if let Err(err) =
-            sync_rollout_dir_provider(codex_home, sync_backup_dir, &dir, provider_id, result)
-        {
-            result
-                .warnings
-                .push(format!("同步 {} 失败：{err}", display_path(&dir)));
+    let backup_dir = create_history_migration_backup(codex_home, &target_provider)?;
+    let mut applied = Vec::new();
+    let mut skipped_files = 0;
+    for change in &collected.changes {
+        match apply_history_migration_change(change) {
+            Ok(true) => applied.push(change.clone()),
+            Ok(false) => skipped_files += 1,
+            Err(err) => {
+                let _ = restore_applied_history_migration_changes(&applied);
+                return Err(err);
+            }
         }
     }
 
-    if let Err(err) = sync_state_db_provider(codex_home, sync_backup_dir, provider_id, result) {
-        result.warnings.push(format!("同步状态数据库失败：{err}"));
+    let sqlite_rows_updated =
+        match update_history_migration_sqlite(codex_home, &target_provider, &applied) {
+            Ok(updated) => updated,
+            Err(err) => {
+                let _ = restore_applied_history_migration_changes(&applied);
+                return Err(err);
+            }
+        };
+
+    write_history_migration_manifest(&backup_dir, &target_provider, &applied)?;
+    collected.warnings.extend(history_migration_warning_text(
+        encrypted_content_files,
+        &target_provider,
+    ));
+
+    Ok(HistoryMigrationResult {
+        target_provider,
+        changed_session_files: applied.len(),
+        sqlite_rows_updated,
+        skipped_files,
+        encrypted_content_files,
+        backup_path: Some(display_path(&backup_dir)),
+        warnings: collected.warnings,
+    })
+}
+
+fn collect_history_migration(
+    codex_home: &Path,
+    target_provider: &str,
+) -> Result<CollectedHistoryMigration, String> {
+    let mut collected = CollectedHistoryMigration::default();
+    for path in history_rollout_files(codex_home)? {
+        let text = match fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(err) => {
+                collected.warnings.push(format!(
+                    "跳过 {}：无法读取会话文件：{err}",
+                    display_path(&path)
+                ));
+                continue;
+            }
+        };
+        let (first_line, _) = split_first_line(&text);
+        if first_line.trim().is_empty() {
+            continue;
+        }
+        let mut value = match serde_json::from_str::<Value>(&first_line) {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        if value.get("type").and_then(Value::as_str) != Some("session_meta") {
+            continue;
+        }
+        let Some(payload) = value.get_mut("payload").and_then(Value::as_object_mut) else {
+            continue;
+        };
+        let original_provider = payload
+            .get("model_provider")
+            .and_then(Value::as_str)
+            .map(ToString::to_string);
+        let provider_key = original_provider
+            .clone()
+            .unwrap_or_else(|| "(missing)".to_string());
+        *collected.provider_counts.entry(provider_key).or_insert(0) += 1;
+
+        if original_provider.as_deref() == Some(target_provider) {
+            continue;
+        }
+
+        let thread_id = payload
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .map(ToString::to_string);
+        payload.insert("model_provider".to_string(), json!(target_provider));
+        let next_first_line =
+            serde_json::to_string(&value).map_err(|err| format!("无法生成会话 metadata：{err}"))?;
+        collected.changes.push(HistoryMigrationChange {
+            path,
+            thread_id,
+            original_provider,
+            original_first_line: first_line,
+            next_first_line,
+            encrypted_content: text.contains("encrypted_content"),
+        });
+    }
+    Ok(collected)
+}
+
+fn history_rollout_files(codex_home: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut files = Vec::new();
+    for dir in [
+        codex_home.join("sessions"),
+        codex_home.join("archived_sessions"),
+    ] {
+        if dir.exists() {
+            collect_history_rollout_files(&dir, &mut files)?;
+        }
+    }
+    files.sort();
+    Ok(files)
+}
+
+fn collect_history_rollout_files(dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
+    let entries =
+        fs::read_dir(dir).map_err(|err| format!("无法读取目录 {}：{err}", dir.display()))?;
+    for entry in entries {
+        let path = entry
+            .map_err(|err| format!("无法读取目录项 {}：{err}", dir.display()))?
+            .path();
+        if path.is_dir() {
+            collect_history_rollout_files(&path, files)?;
+        } else if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("rollout-") && name.ends_with(".jsonl"))
+        {
+            files.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn split_first_line(text: &str) -> (String, String) {
+    if let Some(index) = text.find('\n') {
+        (text[..index].to_string(), text[index..].to_string())
+    } else {
+        (text.to_string(), String::new())
     }
 }
 
-fn sync_codex_session_provider_lossy(codex_home: &Path, provider_id: &str) -> SessionSyncResult {
-    match sync_codex_session_provider(codex_home, provider_id) {
+fn apply_history_migration_change(change: &HistoryMigrationChange) -> Result<bool, String> {
+    let current = fs::read_to_string(&change.path)
+        .map_err(|err| format!("无法读取会话文件 {}：{err}", display_path(&change.path)))?;
+    let (current_first_line, current_rest) = split_first_line(&current);
+    if current_first_line != change.original_first_line {
+        return Ok(false);
+    }
+    fs::write(
+        &change.path,
+        format!("{}{}", change.next_first_line, current_rest),
+    )
+    .map_err(|err| format!("无法写入会话文件 {}：{err}", display_path(&change.path)))?;
+    Ok(true)
+}
+
+fn restore_applied_history_migration_changes(
+    changes: &[HistoryMigrationChange],
+) -> Result<(), String> {
+    for change in changes {
+        replace_history_first_line(&change.path, &change.original_first_line)?;
+    }
+    Ok(())
+}
+
+fn replace_history_first_line(path: &Path, first_line: &str) -> Result<(), String> {
+    let current = fs::read_to_string(path)
+        .map_err(|err| format!("无法读取会话文件 {}：{err}", display_path(path)))?;
+    let (_, rest) = split_first_line(&current);
+    fs::write(path, format!("{first_line}{rest}"))
+        .map_err(|err| format!("无法写入会话文件 {}：{err}", display_path(path)))
+}
+
+fn create_history_migration_backup(
+    codex_home: &Path,
+    target_provider: &str,
+) -> Result<PathBuf, String> {
+    let backup_root = codex_home.join(HISTORY_MIGRATION_BACKUP_DIR_NAME);
+    fs::create_dir_all(&backup_root).map_err(|err| format!("无法创建历史迁移备份目录：{err}"))?;
+    let mut backup_dir = backup_root.join(Local::now().format("%Y%m%d%H%M%S").to_string());
+    let mut suffix = 0;
+    while backup_dir.exists() {
+        suffix += 1;
+        backup_dir = backup_root.join(format!("{}-{suffix}", Local::now().format("%Y%m%d%H%M%S")));
+    }
+    fs::create_dir_all(&backup_dir).map_err(|err| format!("无法创建历史迁移备份：{err}"))?;
+
+    for name in [
+        "config.toml",
+        CODEX_STATE_DB_NAME,
+        "state_5.sqlite-wal",
+        "state_5.sqlite-shm",
+    ] {
+        let source = codex_home.join(name);
+        if source.exists() {
+            fs::copy(&source, backup_dir.join(name))
+                .map_err(|err| format!("无法备份 {name}：{err}"))?;
+        }
+    }
+    fs::write(
+        backup_dir.join("metadata.json"),
+        serde_json::to_string_pretty(&json!({
+            "managedBy": "OceanWay history migration",
+            "targetProvider": target_provider,
+            "createdAt": Local::now().to_rfc3339(),
+        }))
+        .map_err(|err| format!("无法生成历史迁移备份元数据：{err}"))?,
+    )
+    .map_err(|err| format!("无法写入历史迁移备份元数据：{err}"))?;
+    Ok(backup_dir)
+}
+
+fn write_history_migration_manifest(
+    backup_dir: &Path,
+    target_provider: &str,
+    applied: &[HistoryMigrationChange],
+) -> Result<(), String> {
+    let manifest = HistoryMigrationManifest {
+        version: 1,
+        target_provider: target_provider.to_string(),
+        created_at: Local::now().to_rfc3339(),
+        files: applied
+            .iter()
+            .map(|change| HistoryMigrationManifestFile {
+                path: display_path(&change.path),
+                thread_id: change.thread_id.clone(),
+                original_provider: change.original_provider.clone(),
+                migrated_provider: target_provider.to_string(),
+                original_first_line: change.original_first_line.clone(),
+            })
+            .collect(),
+    };
+    let rendered = serde_json::to_string_pretty(&manifest)
+        .map_err(|err| format!("无法生成历史迁移清单：{err}"))?
+        + "\n";
+    fs::write(backup_dir.join("history-migration.json"), rendered)
+        .map_err(|err| format!("无法写入历史迁移清单：{err}"))
+}
+
+fn table_columns(db: &Connection, table: &str) -> Result<HashSet<String>, String> {
+    let mut stmt = db
+        .prepare(&format!(
+            "PRAGMA table_info(\"{}\")",
+            table.replace('"', "\"\"")
+        ))
+        .map_err(|err| format!("无法读取 SQLite 表结构：{err}"))?;
+    let columns = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|err| format!("无法读取 SQLite 表结构：{err}"))?
+        .collect::<rusqlite::Result<HashSet<_>>>()
+        .map_err(|err| format!("无法读取 SQLite 表结构：{err}"))?;
+    Ok(columns)
+}
+
+fn count_history_migration_sqlite_rows(
+    codex_home: &Path,
+    target_provider: &str,
+    changes: &[HistoryMigrationChange],
+) -> Result<usize, String> {
+    let db_path = codex_home.join(CODEX_STATE_DB_NAME);
+    if !db_path.exists() {
+        return Ok(0);
+    }
+    let db = Connection::open(&db_path)
+        .map_err(|err| format!("无法打开 Codex 状态数据库 {}：{err}", db_path.display()))?;
+    let columns = table_columns(&db, "threads")?;
+    if !columns.contains("model_provider") {
+        return Ok(0);
+    }
+    let mut seen = HashSet::new();
+    let mut rows = 0;
+    for thread_id in changes
+        .iter()
+        .filter_map(|change| change.thread_id.as_ref())
+    {
+        if !seen.insert(thread_id.clone()) {
+            continue;
+        }
+        rows += db
+            .query_row(
+                "SELECT COUNT(*) FROM threads WHERE id = ?1 AND COALESCE(model_provider, '') <> ?2",
+                params![thread_id, target_provider],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|err| format!("无法统计历史迁移数据库行：{err}"))? as usize;
+    }
+    Ok(rows)
+}
+
+fn update_history_migration_sqlite(
+    codex_home: &Path,
+    target_provider: &str,
+    changes: &[HistoryMigrationChange],
+) -> Result<usize, String> {
+    let db_path = codex_home.join(CODEX_STATE_DB_NAME);
+    if !db_path.exists() {
+        return Ok(0);
+    }
+    let mut db = Connection::open(&db_path)
+        .map_err(|err| format!("无法打开 Codex 状态数据库 {}：{err}", db_path.display()))?;
+    let columns = table_columns(&db, "threads")?;
+    if !columns.contains("model_provider") {
+        return Ok(0);
+    }
+    let tx = db
+        .transaction()
+        .map_err(|err| format!("无法开始历史迁移数据库事务：{err}"))?;
+    let mut seen = HashSet::new();
+    let mut rows = 0;
+    for thread_id in changes
+        .iter()
+        .filter_map(|change| change.thread_id.as_ref())
+    {
+        if !seen.insert(thread_id.clone()) {
+            continue;
+        }
+        rows += tx
+            .execute(
+                "UPDATE threads SET model_provider = ?1 WHERE id = ?2 AND COALESCE(model_provider, '') <> ?1",
+                params![target_provider, thread_id],
+            )
+            .map_err(|err| format!("无法更新历史迁移数据库行：{err}"))?;
+    }
+    tx.commit()
+        .map_err(|err| format!("无法提交历史迁移数据库事务：{err}"))?;
+    Ok(rows)
+}
+
+fn history_migration_warning_text(
+    encrypted_content_files: usize,
+    target_provider: &str,
+) -> Vec<String> {
+    if encrypted_content_files == 0 {
+        return Vec::new();
+    }
+    vec![format!(
+        "检测到 {encrypted_content_files} 个会话包含 encrypted_content。迁移只修复列表可见性；切到 {target_provider} 后继续对话或 compact 仍可能失败。"
+    )]
+}
+
+fn restore_history_migrations_lossy(codex_home: &Path) -> HistoryMigrationRestoreResult {
+    match restore_history_migrations(codex_home) {
         Ok(result) => result,
-        Err(err) => SessionSyncResult {
-            warnings: vec![format!("历史记录同步未完成：{err}")],
-            ..SessionSyncResult::default()
+        Err(err) => HistoryMigrationRestoreResult {
+            warnings: vec![format!("历史迁移撤销未完成：{err}")],
+            ..HistoryMigrationRestoreResult::default()
         },
     }
 }
 
-fn sync_restored_session_provider_lossy(
+fn restore_history_migrations(codex_home: &Path) -> Result<HistoryMigrationRestoreResult, String> {
+    let backup_dirs = history_migration_backup_dirs(codex_home)?;
+    let mut result = HistoryMigrationRestoreResult::default();
+    for backup_dir in backup_dirs {
+        if backup_dir.join("restored.json").exists() {
+            continue;
+        }
+        let manifest_path = backup_dir.join("history-migration.json");
+        if !manifest_path.exists() {
+            continue;
+        }
+        let manifest_content = fs::read_to_string(&manifest_path)
+            .map_err(|err| format!("无法读取历史迁移清单：{err}"))?;
+        let manifest = serde_json::from_str::<HistoryMigrationManifest>(&manifest_content)
+            .map_err(|err| format!("历史迁移清单无效：{err}"))?;
+        for file in &manifest.files {
+            let path = PathBuf::from(&file.path);
+            if !path.exists() {
+                result
+                    .warnings
+                    .push(format!("历史迁移撤销跳过缺失文件：{}", file.path));
+                continue;
+            }
+            match replace_history_first_line(&path, &file.original_first_line) {
+                Ok(()) => result.restored_session_files += 1,
+                Err(err) => result.warnings.push(err),
+            }
+        }
+        result.sqlite_rows_restored +=
+            restore_history_migration_sqlite(codex_home, &manifest.files)?;
+        fs::write(
+            backup_dir.join("restored.json"),
+            serde_json::to_string_pretty(&json!({
+                "restoredAt": Local::now().to_rfc3339(),
+            }))
+            .map_err(|err| format!("无法生成历史迁移撤销元数据：{err}"))?,
+        )
+        .map_err(|err| format!("无法写入历史迁移撤销元数据：{err}"))?;
+        result.restored_backups += 1;
+    }
+    Ok(result)
+}
+
+fn history_migration_backup_dirs(codex_home: &Path) -> Result<Vec<PathBuf>, String> {
+    let root = codex_home.join(HISTORY_MIGRATION_BACKUP_DIR_NAME);
+    if !root.exists() {
+        return Ok(Vec::new());
+    }
+    let mut dirs = Vec::new();
+    for entry in fs::read_dir(&root).map_err(|err| format!("无法读取历史迁移备份目录：{err}"))?
+    {
+        let path = entry
+            .map_err(|err| format!("无法读取历史迁移备份目录项：{err}"))?
+            .path();
+        if path.is_dir() {
+            dirs.push(path);
+        }
+    }
+    dirs.sort_by(|left, right| right.file_name().cmp(&left.file_name()));
+    Ok(dirs)
+}
+
+fn restore_history_migration_sqlite(
     codex_home: &Path,
-    config_path: &Path,
-) -> SessionSyncResult {
-    let provider_id = read_session_provider_from_config(config_path);
-    sync_codex_session_provider_without_backup(codex_home, &provider_id)
+    files: &[HistoryMigrationManifestFile],
+) -> Result<usize, String> {
+    let db_path = codex_home.join(CODEX_STATE_DB_NAME);
+    if !db_path.exists() {
+        return Ok(0);
+    }
+    let mut db = Connection::open(&db_path)
+        .map_err(|err| format!("无法打开 Codex 状态数据库 {}：{err}", db_path.display()))?;
+    let columns = table_columns(&db, "threads")?;
+    if !columns.contains("model_provider") {
+        return Ok(0);
+    }
+    let tx = db
+        .transaction()
+        .map_err(|err| format!("无法开始历史迁移撤销数据库事务：{err}"))?;
+    let mut seen = HashSet::new();
+    let mut rows = 0;
+    for file in files {
+        let Some(thread_id) = file.thread_id.as_ref() else {
+            continue;
+        };
+        if !seen.insert(thread_id.clone()) {
+            continue;
+        }
+        let original_provider = file
+            .original_provider
+            .clone()
+            .unwrap_or_else(|| "openai".to_string());
+        rows += tx
+            .execute(
+                "UPDATE threads SET model_provider = ?1 WHERE id = ?2 AND model_provider = ?3",
+                params![original_provider, thread_id, file.migrated_provider],
+            )
+            .map_err(|err| format!("无法撤销历史迁移数据库行：{err}"))?;
+    }
+    tx.commit()
+        .map_err(|err| format!("无法提交历史迁移撤销数据库事务：{err}"))?;
+    Ok(rows)
 }
 
 fn read_session_provider_from_config(config_path: &Path) -> String {
@@ -738,201 +1391,13 @@ fn read_session_provider_from_config(config_path: &Path) -> String {
     read_root_string(&content, "model_provider").unwrap_or_else(|| "openai".to_string())
 }
 
-fn sync_rollout_dir_provider(
-    codex_home: &Path,
-    sync_backup_dir: Option<&Path>,
-    dir: &Path,
+fn merge_config(
+    original: &str,
     provider_id: &str,
-    result: &mut SessionSyncResult,
-) -> Result<(), String> {
-    if !dir.exists() {
-        return Ok(());
-    }
-
-    for path in jsonl_files(dir)? {
-        match sync_rollout_file_provider(codex_home, sync_backup_dir, &path, provider_id) {
-            Ok(true) => result.rollout_files_updated += 1,
-            Ok(false) => {}
-            Err(err) => {
-                result.skipped_files += 1;
-                result
-                    .warnings
-                    .push(format!("跳过 {}：{err}", display_path(&path)));
-            }
-        }
-    }
-
-    Ok(())
-}
-
-fn jsonl_files(dir: &Path) -> Result<Vec<PathBuf>, String> {
-    let mut output = Vec::new();
-    collect_jsonl_files(dir, &mut output)?;
-    Ok(output)
-}
-
-fn collect_jsonl_files(dir: &Path, output: &mut Vec<PathBuf>) -> Result<(), String> {
-    let entries =
-        fs::read_dir(dir).map_err(|err| format!("无法读取目录 {}：{err}", dir.display()))?;
-    for entry in entries {
-        let entry = entry.map_err(|err| format!("无法读取目录项 {}：{err}", dir.display()))?;
-        let path = entry.path();
-        let file_type = entry
-            .file_type()
-            .map_err(|err| format!("无法读取文件类型 {}：{err}", path.display()))?;
-        if file_type.is_dir() {
-            collect_jsonl_files(&path, output)?;
-        } else if file_type.is_file()
-            && path.extension().and_then(|value| value.to_str()) == Some("jsonl")
-        {
-            output.push(path);
-        }
-    }
-    Ok(())
-}
-
-fn sync_rollout_file_provider(
-    codex_home: &Path,
-    sync_backup_dir: Option<&Path>,
-    path: &Path,
-    provider_id: &str,
-) -> Result<bool, String> {
-    let original = fs::read_to_string(path).map_err(|err| format!("无法读取会话文件：{err}"))?;
-    let mut changed = false;
-    let mut output = Vec::new();
-
-    for line in original.lines() {
-        if line.trim().is_empty() {
-            output.push(String::new());
-            continue;
-        }
-
-        let mut value = serde_json::from_str::<serde_json::Value>(line)
-            .map_err(|err| format!("会话 JSON 无效：{err}"))?;
-        if value.get("type").and_then(|value| value.as_str()) == Some("session_meta") {
-            if let Some(payload) = value
-                .get_mut("payload")
-                .and_then(|value| value.as_object_mut())
-            {
-                let needs_update = payload
-                    .get("model_provider")
-                    .and_then(|value| value.as_str())
-                    .is_some_and(|current| current != provider_id);
-                if needs_update {
-                    payload.insert("model_provider".to_string(), json!(provider_id));
-                    changed = true;
-                }
-            }
-        }
-
-        output.push(
-            serde_json::to_string(&value).map_err(|err| format!("无法生成会话 JSON：{err}"))?,
-        );
-    }
-
-    if !changed {
-        return Ok(false);
-    }
-
-    if let Some(sync_backup_dir) = sync_backup_dir {
-        backup_session_file(codex_home, sync_backup_dir, path)?;
-    }
-    let mut rendered = output.join("\n");
-    rendered.push('\n');
-    fs::write(path, rendered).map_err(|err| format!("无法写入会话文件：{err}"))?;
-    Ok(true)
-}
-
-fn backup_session_file(
-    codex_home: &Path,
-    sync_backup_dir: &Path,
-    path: &Path,
-) -> Result<(), String> {
-    let relative = path.strip_prefix(codex_home).unwrap_or(path);
-    let backup_path = sync_backup_dir.join("files").join(relative);
-    if backup_path.exists() {
-        return Ok(());
-    }
-    if let Some(parent) = backup_path.parent() {
-        fs::create_dir_all(parent).map_err(|err| format!("无法创建会话文件备份目录：{err}"))?;
-    }
-    fs::copy(path, &backup_path).map_err(|err| format!("无法备份会话文件：{err}"))?;
-    Ok(())
-}
-
-fn sync_state_db_provider(
-    codex_home: &Path,
-    sync_backup_dir: Option<&Path>,
-    provider_id: &str,
-    result: &mut SessionSyncResult,
-) -> Result<(), String> {
-    let db_path = codex_home.join(CODEX_STATE_DB_NAME);
-    if !db_path.exists() {
-        return Ok(());
-    }
-
-    let connection = Connection::open(&db_path)
-        .map_err(|err| format!("无法打开 Codex 状态数据库 {}：{err}", db_path.display()))?;
-    connection
-        .busy_timeout(Duration::from_secs(3))
-        .map_err(|err| format!("无法设置数据库等待时间：{err}"))?;
-
-    let table_exists: i64 = connection
-        .query_row(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'threads'",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|err| format!("无法检查 threads 表：{err}"))?;
-    if table_exists == 0 {
-        return Ok(());
-    }
-
-    let rows_to_update: i64 = connection
-        .query_row(
-            "SELECT COUNT(*) FROM threads WHERE model_provider <> ?1",
-            params![provider_id],
-            |row| row.get(0),
-        )
-        .map_err(|err| format!("无法统计会话数据库 provider：{err}"))?;
-    if rows_to_update == 0 {
-        return Ok(());
-    }
-
-    if let Some(sync_backup_dir) = sync_backup_dir {
-        backup_state_db(&connection, &db_path, sync_backup_dir)?;
-    }
-    result.sqlite_rows_updated = connection
-        .execute(
-            "UPDATE threads SET model_provider = ?1 WHERE model_provider <> ?1",
-            params![provider_id],
-        )
-        .map_err(|err| format!("无法同步会话数据库 provider：{err}"))?;
-    Ok(())
-}
-
-fn backup_state_db(
-    connection: &Connection,
-    db_path: &Path,
-    sync_backup_dir: &Path,
-) -> Result<(), String> {
-    let backup_path = sync_backup_dir.join(CODEX_STATE_DB_NAME);
-    if backup_path.exists() {
-        return Ok(());
-    }
-
-    let backup_path_string = display_path(&backup_path);
-    match connection.execute("VACUUM INTO ?1", params![backup_path_string]) {
-        Ok(_) => Ok(()),
-        Err(_) => {
-            fs::copy(db_path, &backup_path)
-                .map_err(|err| format!("无法备份 Codex 状态数据库：{err}"))?;
-            Ok(())
-        }
-    }
-}
-
-fn merge_config(original: &str, provider_id: &str, base_url: &str, model: &str) -> String {
+    base_url: &str,
+    model: &str,
+    bearer_token: Option<&str>,
+) -> String {
     let lines = original.split_inclusive('\n').collect::<Vec<_>>();
     let (root_line_refs, table_lines) = split_root_and_tables(&lines);
     let mut root_lines = root_line_refs
@@ -960,7 +1425,7 @@ fn merge_config(original: &str, provider_id: &str, base_url: &str, model: &str) 
         rendered.push_str("\n\n");
     }
 
-    rendered.push_str(&render_provider_block(provider_id, base_url));
+    rendered.push_str(&render_provider_block(provider_id, base_url, bearer_token));
     rendered
 }
 
@@ -995,19 +1460,26 @@ fn remove_provider_config(original: &str, provider_id: &str) -> String {
     rendered
 }
 
-fn render_provider_block(provider_id: &str, base_url: &str) -> String {
-    format!(
+fn render_provider_block(provider_id: &str, base_url: &str, bearer_token: Option<&str>) -> String {
+    let mut rendered = format!(
         concat!(
             "[model_providers.{table_provider}]\n",
             "name = {provider}\n",
             "base_url = {base_url}\n",
             "wire_api = \"responses\"\n",
-            "requires_openai_auth = true\n",
         ),
         table_provider = provider_id,
         provider = toml_string(provider_id),
         base_url = toml_string(base_url),
-    )
+    );
+    if let Some(token) = bearer_token.filter(|token| !token.trim().is_empty()) {
+        rendered.push_str(&format!(
+            "experimental_bearer_token = {}\n",
+            toml_string(token.trim())
+        ));
+    }
+    rendered.push_str("requires_openai_auth = true\n");
+    rendered
 }
 
 fn split_root_and_tables<'a>(lines: &[&'a str]) -> (Vec<&'a str>, Vec<&'a str>) {
@@ -1166,8 +1638,17 @@ fn read_root_string(content: &str, target_key: &str) -> Option<String> {
 }
 
 fn read_provider_base_url(content: &str, provider_id: &str) -> Option<String> {
+    read_provider_string(content, provider_id, "base_url")
+}
+
+fn read_provider_bearer_token(content: &str, provider_id: &str) -> Option<String> {
+    read_provider_string(content, provider_id, "experimental_bearer_token")
+}
+
+fn read_provider_string(content: &str, provider_id: &str, target_key: &str) -> Option<String> {
     let mut in_provider = false;
     let provider_header = format!("[model_providers.{provider_id}]");
+    let quoted_provider_header = format!("[model_providers.\"{provider_id}\"]");
 
     for line in content.lines() {
         let trimmed = line.trim();
@@ -1176,7 +1657,7 @@ fn read_provider_base_url(content: &str, provider_id: &str) -> Option<String> {
         }
 
         if trimmed.starts_with('[') {
-            in_provider = trimmed == provider_header;
+            in_provider = trimmed == provider_header || trimmed == quoted_provider_header;
             continue;
         }
 
@@ -1188,7 +1669,7 @@ fn read_provider_base_url(content: &str, provider_id: &str) -> Option<String> {
             continue;
         };
 
-        if key.trim() == "base_url" {
+        if key.trim() == target_key {
             return parse_quoted_toml_string(value.trim());
         }
     }
@@ -1196,6 +1677,49 @@ fn read_provider_base_url(content: &str, provider_id: &str) -> Option<String> {
     None
 }
 
+fn choose_provider_auth_strategy(auth_path: &Path) -> ProviderAuthStrategy {
+    if read_auth_has_chatgpt_login(auth_path) {
+        ProviderAuthStrategy::ChatGptBearerToken
+    } else {
+        ProviderAuthStrategy::ApiKey
+    }
+}
+
+fn read_auth_has_chatgpt_login(auth_path: &Path) -> bool {
+    let Ok(content) = fs::read_to_string(auth_path) else {
+        return false;
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return false;
+    };
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+
+    if object
+        .get("auth_mode")
+        .and_then(|value| value.as_str())
+        .is_some_and(|value| value.eq_ignore_ascii_case("chatgpt"))
+    {
+        return true;
+    }
+
+    ["tokens", "access_token", "refresh_token", "id_token"]
+        .iter()
+        .any(|key| object.get(*key).is_some_and(auth_value_looks_present))
+}
+
+fn auth_value_looks_present(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::String(value) => !value.trim().is_empty(),
+        Value::Array(values) => values.iter().any(auth_value_looks_present),
+        Value::Object(values) => values.values().any(auth_value_looks_present),
+        Value::Bool(_) | Value::Number(_) => true,
+    }
+}
+
+#[cfg(test)]
 fn read_auth_has_api_key(auth_path: &Path) -> bool {
     let Ok(content) = fs::read_to_string(auth_path) else {
         return false;
@@ -1364,6 +1888,8 @@ fn run_gui() {
             configure_provider,
             configure_with_key_profile,
             get_config_status,
+            get_history_migration_status,
+            migrate_history_visibility,
             list_key_profiles,
             open_config_dir,
             restore_defaults,
@@ -1390,25 +1916,31 @@ fn run_cli(args: &[String]) -> Result<(), String> {
     let codex_home = codex_home()?;
     let config_path = codex_home.join("config.toml");
     let auth_path = codex_home.join("auth.json");
+    let auth_strategy = choose_provider_auth_strategy(&auth_path);
     let model = options
         .model
         .or_else(|| read_current_model(&config_path))
         .unwrap_or_else(|| MODEL_FALLBACK.to_string());
     let original_config = fs::read_to_string(&config_path).unwrap_or_default();
+    let dry_run_provider_token = if auth_strategy == ProviderAuthStrategy::ChatGptBearerToken {
+        options.api_key.as_deref()
+    } else {
+        None
+    };
     let rendered_config = merge_config(
         &original_config,
         &options.provider_id,
         &options.base_url,
         &model,
+        dry_run_provider_token,
     );
 
     if options.dry_run {
         println!("--- {} ---", display_path(&config_path));
         print!("{rendered_config}");
         if let Some(api_key) = options.api_key {
-            let rendered_auth = serde_json::to_string_pretty(&json!({ CODEX_AUTH_KEY: api_key }))
-                .map_err(|err| format!("无法生成 auth.json：{err}"))?
-                + "\n";
+            let original_auth = fs::read_to_string(&auth_path).unwrap_or_else(|_| "{}".to_string());
+            let rendered_auth = render_auth_json_content(&original_auth, &api_key, auth_strategy)?;
             println!("--- {} ---", display_path(&auth_path));
             print!("{rendered_auth}");
         }
@@ -1426,35 +1958,31 @@ fn run_cli(args: &[String]) -> Result<(), String> {
         None
     };
 
-    let auth_backup_path = write_auth_json(&auth_path, &api_key)?;
+    ensure_restore_snapshot(&codex_home, &config_path, &auth_path)?;
+    let auth_backup_path = write_auth_json(&auth_path, &api_key, auth_strategy)?;
+    let provider_token = if auth_strategy == ProviderAuthStrategy::ChatGptBearerToken {
+        Some(api_key.as_str())
+    } else {
+        None
+    };
     let config_result = write_config_toml(
         &config_path,
         &options.provider_id,
         &options.base_url,
         &model,
+        provider_token,
     );
 
     match config_result {
         Ok(config_backup_path) => {
-            let session_sync = sync_codex_session_provider_lossy(&codex_home, &options.provider_id);
             println!("Configured provider: {}", options.provider_id);
             println!("Config: {}", display_path(&config_path));
             println!("Auth: {}", display_path(&auth_path));
-            println!(
-                "Session sync: {} rollout files, {} database rows",
-                session_sync.rollout_files_updated, session_sync.sqlite_rows_updated
-            );
             if let Some(path) = config_backup_path {
                 println!("Config backup: {}", display_path(&path));
             }
             if let Some(path) = auth_backup_path {
                 println!("Auth backup: {}", display_path(&path));
-            }
-            if let Some(path) = session_sync.backup_path {
-                println!("Session backup: {path}");
-            }
-            for warning in session_sync.warnings {
-                println!("Session warning: {warning}");
             }
             Ok(())
         }
@@ -1588,7 +2116,13 @@ mod tests {
             "requires_openai_auth = true\n",
         );
 
-        let rendered = merge_config(original, PROVIDER_ID, DEFAULT_BASE_URL, MODEL_FALLBACK);
+        let rendered = merge_config(
+            original,
+            PROVIDER_ID,
+            DEFAULT_BASE_URL,
+            MODEL_FALLBACK,
+            None,
+        );
 
         assert!(rendered.contains("[model_providers.openrouter]"));
         assert!(rendered.contains("[model_providers.deepseek]"));
@@ -1596,6 +2130,21 @@ mod tests {
         assert!(!rendered.contains("http://64.188.30.215:8080/v1"));
         assert!(rendered.contains("model_provider = \"OceanWay\""));
         assert!(rendered.contains("model_reasoning_effort = \"high\""));
+    }
+
+    #[test]
+    fn merge_config_can_store_provider_bearer_token_for_chatgpt_auth() {
+        let rendered = merge_config(
+            "",
+            PROVIDER_ID,
+            DEFAULT_BASE_URL,
+            MODEL_FALLBACK,
+            Some("ow-secret-key"),
+        );
+
+        assert!(rendered.contains("model_provider = \"OceanWay\""));
+        assert!(rendered.contains("experimental_bearer_token = \"ow-secret-key\""));
+        assert!(rendered.contains("requires_openai_auth = true"));
     }
 
     #[test]
@@ -1689,147 +2238,285 @@ mod tests {
     }
 
     #[test]
-    fn sync_codex_session_provider_updates_rollouts_and_database() {
-        let dir = unique_test_dir("session-sync");
-        let sessions_dir = dir.join("sessions").join("2026").join("05").join("12");
-        fs::create_dir_all(&sessions_dir).unwrap();
-        fs::create_dir_all(dir.join("archived_sessions")).unwrap();
-        let rollout_path = sessions_dir.join("rollout-test.jsonl");
+    fn write_auth_json_preserves_existing_login_fields() {
+        let dir = unique_test_dir("auth-preserve-login");
+        fs::create_dir_all(&dir).unwrap();
+        let auth_path = dir.join("auth.json");
         fs::write(
-            &rollout_path,
-            concat!(
-                "{\"type\":\"session_meta\",\"payload\":{\"id\":\"one\",\"model_provider\":\"openai\"}}\n",
-                "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\"}}\n"
-            ),
+            &auth_path,
+            r#"{
+  "OPENAI_API_KEY": "old-key",
+  "tokens": {
+    "id_token": "logged-in-user"
+  },
+  "account_id": "acct-123"
+}
+"#,
         )
         .unwrap();
 
-        let db_path = dir.join(CODEX_STATE_DB_NAME);
-        let connection = Connection::open(&db_path).unwrap();
-        connection
-            .execute(
-                "CREATE TABLE threads (id TEXT PRIMARY KEY, model_provider TEXT NOT NULL)",
-                [],
-            )
-            .unwrap();
-        connection
-            .execute(
-                "INSERT INTO threads (id, model_provider) VALUES ('one', 'openai'), ('two', 'custom')",
-                [],
-            )
-            .unwrap();
-        drop(connection);
+        write_auth_json(&auth_path, "new-oceanway-key", ProviderAuthStrategy::ApiKey).unwrap();
 
-        let result = sync_codex_session_provider(&dir, PROVIDER_ID).unwrap();
-
-        assert_eq!(result.rollout_files_updated, 1);
-        assert_eq!(result.sqlite_rows_updated, 2);
-        assert!(result.warnings.is_empty());
-        let rendered = fs::read_to_string(&rollout_path).unwrap();
-        assert!(rendered.contains("\"model_provider\":\"OceanWay\""));
-        assert!(dir
-            .join(BACKUP_DIR_NAME)
-            .join(SESSION_SYNC_DIR_NAME)
-            .join("files")
-            .join("sessions")
-            .join("2026")
-            .join("05")
-            .join("12")
-            .join("rollout-test.jsonl")
-            .exists());
-
-        let connection = Connection::open(&db_path).unwrap();
-        let oceanway_rows: i64 = connection
-            .query_row(
-                "SELECT COUNT(*) FROM threads WHERE model_provider = 'OceanWay'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(oceanway_rows, 2);
-        drop(connection);
+        let value =
+            serde_json::from_str::<serde_json::Value>(&fs::read_to_string(&auth_path).unwrap())
+                .unwrap();
+        assert_eq!(value["OPENAI_API_KEY"], "new-oceanway-key");
+        assert_eq!(value["tokens"]["id_token"], "logged-in-user");
+        assert_eq!(value["account_id"], "acct-123");
 
         fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
-    fn restore_flow_resyncs_all_sessions_to_restored_provider() {
-        let dir = unique_test_dir("session-restore");
-        fs::create_dir_all(dir.join("sessions")).unwrap();
-        let config_path = dir.join("config.toml");
+    fn chatgpt_auth_strategy_preserves_login_and_nulls_openai_api_key() {
+        let dir = unique_test_dir("auth-chatgpt-token");
+        fs::create_dir_all(&dir).unwrap();
         let auth_path = dir.join("auth.json");
-        fs::write(&config_path, "model_provider = \"openai\"\n").unwrap();
-        fs::write(&auth_path, "{}\n").unwrap();
-        let rollout_path = dir.join("sessions").join("rollout-test.jsonl");
-        let new_rollout_path = dir.join("sessions").join("rollout-new.jsonl");
         fs::write(
-            &rollout_path,
-            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"one\",\"model_provider\":\"openai\"}}\n",
+            &auth_path,
+            r#"{
+  "auth_mode": "chatgpt",
+  "tokens": {
+    "id_token": "logged-in-user"
+  },
+  "OPENAI_API_KEY": "old-key"
+}
+"#,
         )
         .unwrap();
 
-        let db_path = dir.join(CODEX_STATE_DB_NAME);
-        let connection = Connection::open(&db_path).unwrap();
-        connection
-            .execute(
-                "CREATE TABLE threads (id TEXT PRIMARY KEY, model_provider TEXT NOT NULL)",
-                [],
-            )
-            .unwrap();
-        connection
-            .execute(
-                "INSERT INTO threads (id, model_provider) VALUES ('one', 'openai')",
-                [],
-            )
-            .unwrap();
-        drop(connection);
-
-        ensure_restore_snapshot(&dir, &config_path, &auth_path).unwrap();
-        sync_codex_session_provider(&dir, PROVIDER_ID).unwrap();
-        fs::write(&config_path, "model_provider = \"OceanWay\"\n").unwrap();
-        fs::write(
-            &new_rollout_path,
-            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"two\",\"model_provider\":\"OceanWay\"}}\n",
+        assert_eq!(
+            choose_provider_auth_strategy(&auth_path).as_str(),
+            "chatgptBearerToken"
+        );
+        write_auth_json(
+            &auth_path,
+            "new-oceanway-key",
+            ProviderAuthStrategy::ChatGptBearerToken,
         )
         .unwrap();
-        let connection = Connection::open(&db_path).unwrap();
-        connection
-            .execute(
-                "INSERT INTO threads (id, model_provider) VALUES ('two', 'OceanWay')",
-                [],
+
+        let value =
+            serde_json::from_str::<serde_json::Value>(&fs::read_to_string(&auth_path).unwrap())
+                .unwrap();
+        assert_eq!(value["auth_mode"], "chatgpt");
+        assert_eq!(value["tokens"]["id_token"], "logged-in-user");
+        assert!(value["OPENAI_API_KEY"].is_null());
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn api_key_strategy_is_used_when_chatgpt_login_is_absent() {
+        let dir = unique_test_dir("auth-no-chatgpt");
+        fs::create_dir_all(&dir).unwrap();
+        let auth_path = dir.join("auth.json");
+        fs::write(&auth_path, "{\n  \"OTHER_KEY\": \"keep\"\n}\n").unwrap();
+
+        assert_eq!(choose_provider_auth_strategy(&auth_path).as_str(), "apiKey");
+        write_auth_json(&auth_path, "new-oceanway-key", ProviderAuthStrategy::ApiKey).unwrap();
+
+        let value =
+            serde_json::from_str::<serde_json::Value>(&fs::read_to_string(&auth_path).unwrap())
+                .unwrap();
+        assert_eq!(value["OPENAI_API_KEY"], "new-oceanway-key");
+        assert_eq!(value["OTHER_KEY"], "keep");
+        assert!(value.get("auth_mode").is_none());
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn write_history_rollout(path: &Path, provider: &str, thread_id: &str) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            path,
+            format!(
+                "{}\n{}\n",
+                json!({
+                    "type": "session_meta",
+                    "payload": {
+                        "id": thread_id,
+                        "model_provider": provider,
+                        "cwd": "/tmp/project"
+                    }
+                }),
+                json!({"type": "event_msg", "payload": {"type": "user_message"}})
+            ),
+        )
+        .unwrap();
+    }
+
+    fn read_rollout_provider(path: &Path) -> String {
+        let first_line = fs::read_to_string(path)
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap()
+            .to_string();
+        let value = serde_json::from_str::<Value>(&first_line).unwrap();
+        value["payload"]["model_provider"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    fn create_history_state_db(path: &Path, rows: &[(&str, &str)]) {
+        let db = Connection::open(path).unwrap();
+        db.execute(
+            "CREATE TABLE threads (id TEXT PRIMARY KEY, model_provider TEXT NOT NULL)",
+            [],
+        )
+        .unwrap();
+        for (thread_id, provider) in rows {
+            db.execute(
+                "INSERT INTO threads (id, model_provider) VALUES (?1, ?2)",
+                params![thread_id, provider],
             )
             .unwrap();
-        drop(connection);
+        }
+    }
 
-        assert!(fs::read_to_string(&rollout_path)
-            .unwrap()
-            .contains("\"model_provider\":\"OceanWay\""));
+    fn read_thread_provider(path: &Path, thread_id: &str) -> String {
+        let db = Connection::open(path).unwrap();
+        db.query_row(
+            "SELECT model_provider FROM threads WHERE id = ?1",
+            [thread_id],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap()
+    }
 
-        assert!(restore_from_snapshot(&dir, &config_path, &auth_path).unwrap());
-        let result = sync_restored_session_provider_lossy(&dir, &config_path);
+    #[test]
+    fn history_migration_updates_rollout_sqlite_and_creates_backup() {
+        let dir = unique_test_dir("history-migrate");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("config.toml"), "model_provider = \"OceanWay\"\n").unwrap();
+        let rollout = dir.join("sessions/2026/05/14/rollout-old.jsonl");
+        write_history_rollout(&rollout, "openai", "thread-1");
+        create_history_state_db(
+            &dir.join(CODEX_STATE_DB_NAME),
+            &[("thread-1", "openai"), ("thread-2", "OceanWay")],
+        );
 
-        assert_eq!(result.rollout_files_updated, 2);
-        assert_eq!(result.sqlite_rows_updated, 2);
-        assert!(fs::read_to_string(&rollout_path)
-            .unwrap()
-            .contains("\"model_provider\":\"openai\""));
-        assert!(fs::read_to_string(&new_rollout_path)
-            .unwrap()
-            .contains("\"model_provider\":\"openai\""));
-        let connection = Connection::open(&db_path).unwrap();
-        let openai_rows: i64 = connection
-            .query_row(
-                "SELECT COUNT(*) FROM threads WHERE model_provider = 'openai'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(openai_rows, 2);
-        let total_rows: i64 = connection
-            .query_row("SELECT COUNT(*) FROM threads", [], |row| row.get(0))
-            .unwrap();
-        assert_eq!(total_rows, 2);
-        drop(connection);
+        let status = history_migration_status_in_home(&dir).unwrap();
+        assert!(status.needs_migration);
+        assert_eq!(status.rollout_files_to_update, 1);
+        assert_eq!(status.sqlite_rows_to_update, 1);
+
+        let result = migrate_history_visibility_in_home(&dir).unwrap();
+
+        assert_eq!(result.changed_session_files, 1);
+        assert_eq!(result.sqlite_rows_updated, 1);
+        assert_eq!(read_rollout_provider(&rollout), "OceanWay");
+        assert_eq!(
+            read_thread_provider(&dir.join(CODEX_STATE_DB_NAME), "thread-1"),
+            "OceanWay"
+        );
+        assert!(PathBuf::from(result.backup_path.unwrap())
+            .join("history-migration.json")
+            .exists());
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn history_migration_restore_only_reverts_manifest_entries() {
+        let dir = unique_test_dir("history-restore");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("config.toml"), "model_provider = \"OceanWay\"\n").unwrap();
+        let old_rollout = dir.join("sessions/rollout-old.jsonl");
+        let new_rollout = dir.join("sessions/rollout-new.jsonl");
+        write_history_rollout(&old_rollout, "openai", "thread-1");
+        create_history_state_db(
+            &dir.join(CODEX_STATE_DB_NAME),
+            &[("thread-1", "openai"), ("thread-2", "OceanWay")],
+        );
+
+        migrate_history_visibility_in_home(&dir).unwrap();
+        write_history_rollout(&new_rollout, "OceanWay", "thread-2");
+        let restored = restore_history_migrations(&dir).unwrap();
+
+        assert_eq!(restored.restored_backups, 1);
+        assert_eq!(read_rollout_provider(&old_rollout), "openai");
+        assert_eq!(read_rollout_provider(&new_rollout), "OceanWay");
+        assert_eq!(
+            read_thread_provider(&dir.join(CODEX_STATE_DB_NAME), "thread-1"),
+            "openai"
+        );
+        assert_eq!(
+            read_thread_provider(&dir.join(CODEX_STATE_DB_NAME), "thread-2"),
+            "OceanWay"
+        );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn history_migration_can_run_again_after_restore() {
+        let dir = unique_test_dir("history-remigrate");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("config.toml"), "model_provider = \"OceanWay\"\n").unwrap();
+        let rollout = dir.join("sessions/rollout-old.jsonl");
+        write_history_rollout(&rollout, "openai", "thread-1");
+        create_history_state_db(&dir.join(CODEX_STATE_DB_NAME), &[("thread-1", "openai")]);
+
+        let first_migration = migrate_history_visibility_in_home(&dir).unwrap();
+        assert_eq!(first_migration.changed_session_files, 1);
+        assert_eq!(read_rollout_provider(&rollout), "OceanWay");
+
+        let first_restore = restore_history_migrations(&dir).unwrap();
+        assert_eq!(first_restore.restored_backups, 1);
+        assert_eq!(read_rollout_provider(&rollout), "openai");
+        assert_eq!(
+            read_thread_provider(&dir.join(CODEX_STATE_DB_NAME), "thread-1"),
+            "openai"
+        );
+
+        fs::write(dir.join("config.toml"), "model_provider = \"OceanWay\"\n").unwrap();
+        let second_migration = migrate_history_visibility_in_home(&dir).unwrap();
+        assert_eq!(second_migration.changed_session_files, 1);
+        assert_eq!(read_rollout_provider(&rollout), "OceanWay");
+        assert_eq!(
+            read_thread_provider(&dir.join(CODEX_STATE_DB_NAME), "thread-1"),
+            "OceanWay"
+        );
+
+        let second_restore = restore_history_migrations(&dir).unwrap();
+        assert_eq!(second_restore.restored_backups, 1);
+        assert_eq!(read_rollout_provider(&rollout), "openai");
+        assert_eq!(
+            read_thread_provider(&dir.join(CODEX_STATE_DB_NAME), "thread-1"),
+            "openai"
+        );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn history_migration_is_only_supported_for_oceanway_target() {
+        let dir = unique_test_dir("history-openai-target");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("config.toml"), "model_provider = \"openai\"\n").unwrap();
+        let rollout = dir.join("sessions/rollout-oceanway.jsonl");
+        write_history_rollout(&rollout, "OceanWay", "thread-1");
+        create_history_state_db(&dir.join(CODEX_STATE_DB_NAME), &[("thread-1", "OceanWay")]);
+
+        let status = history_migration_status_in_home(&dir).unwrap();
+        assert!(!status.migration_supported);
+        assert!(!status.needs_migration);
+        assert_eq!(status.rollout_files_to_update, 0);
+        assert_eq!(status.sqlite_rows_to_update, 0);
+
+        let err = match migrate_history_visibility_in_home(&dir) {
+            Ok(_) => panic!("migration should not be supported for openai target"),
+            Err(err) => err,
+        };
+        assert!(err.contains("仅支持配置到 OceanWay 后使用"));
+        assert_eq!(read_rollout_provider(&rollout), "OceanWay");
+        assert_eq!(
+            read_thread_provider(&dir.join(CODEX_STATE_DB_NAME), "thread-1"),
+            "OceanWay"
+        );
 
         fs::remove_dir_all(dir).unwrap();
     }
@@ -1901,6 +2588,15 @@ mod tests {
         let profiles = list_key_profiles_in_home(&dir).unwrap();
         assert_eq!(profiles.len(), 1);
         assert_eq!(profiles[0].id, updated.id);
+
+        delete_key_profile_in_home(&dir, &updated.id).unwrap();
+        let profiles = list_key_profiles_in_home(&dir).unwrap();
+        assert!(profiles.is_empty());
+        assert!(!dir.join(KEY_PROFILES_FILE_NAME).exists());
+        assert!(!fs::read_to_string(dir.join("config.toml"))
+            .unwrap()
+            .contains("model_provider = \"OceanWay\""));
+        assert!(!read_auth_has_api_key(&dir.join("auth.json")));
 
         fs::remove_dir_all(dir).unwrap();
     }

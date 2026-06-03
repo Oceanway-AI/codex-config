@@ -7,12 +7,13 @@ This repository only contains the Rust/Tauri version. The old Python/PyQt packag
 ## What It Does
 
 - Writes the OceanWay provider to Codex config.
-- Saves the API key as `OPENAI_API_KEY`.
+- Uses a ChatGPT-login-preserving provider token when the user is already signed in, and falls back to `OPENAI_API_KEY` when no ChatGPT login is detected.
 - Lets users save multiple named local API key profiles, such as subscription keys and balance keys.
+- Lets users delete saved profiles.
 - Uses `https://ocean-way.top` as the default Base URL.
 - Preserves existing non-OceanWay Codex settings and providers.
-- Syncs existing local Codex session metadata to OceanWay so history remains visible after switching providers.
 - Creates a first-use backup before changing user config.
+- Offers an explicit, backed-up history visibility migration for users who need old local sessions to appear under the current provider.
 - Restores the user's original files when they click restore.
 - Supports macOS and Windows builds.
 
@@ -30,12 +31,18 @@ The app reads and writes:
 ~/.codex/config.toml
 ~/.codex/auth.json
 ~/.codex/oceanway-ai-keys.json
+```
+
+When the user explicitly clicks history migration, the app can also update:
+
+```text
 ~/.codex/sessions/**/*.jsonl
 ~/.codex/archived_sessions/**/*.jsonl
 ~/.codex/state_5.sqlite
+~/.codex/oceanway-history-migration-backup/
 ```
 
-The OceanWay provider written to `config.toml` looks like this:
+For users who are already signed in to ChatGPT, the OceanWay provider written to `config.toml` looks like this:
 
 ```toml
 model_provider = "OceanWay"
@@ -47,16 +54,42 @@ disable_response_storage = true
 name = "OceanWay"
 base_url = "https://ocean-way.top"
 wire_api = "responses"
+experimental_bearer_token = "user-api-key"
 requires_openai_auth = true
 ```
 
-The API key is written to `auth.json`:
+In that mode, `auth.json` keeps the ChatGPT login state and does not store the third-party key:
+
+```json
+{
+  "auth_mode": "chatgpt",
+  "OPENAI_API_KEY": null
+}
+```
+
+If no ChatGPT login is detected before configuration, the app uses the fallback API key mode. The API key is written to `auth.json` without removing other existing auth fields:
 
 ```json
 {
   "OPENAI_API_KEY": "user-api-key"
 }
 ```
+
+When the last saved key profile is deleted, `oceanway-ai-keys.json` is removed instead of leaving an empty key store behind.
+
+## History Visibility Migration
+
+History migration is optional and is not run during one-click configuration. It is only available when the current provider is OceanWay.
+
+When the user clicks `迁移历史`, the app first scans local Codex history and asks for confirmation. If confirmed, it changes only provider metadata for existing local session records so sessions created under a previous provider can appear under OceanWay. It does not rewrite conversation content.
+
+Before changing anything, the app creates a backup in:
+
+```text
+~/.codex/oceanway-history-migration-backup/
+```
+
+The migration updates the first `session_meta` line in matching JSONL files and matching rows in `state_5.sqlite` by thread id. If a session contains encrypted content, the app warns the user because the session may become visible in the list but may not be resumable or compactable under a different provider.
 
 ## Restore Behavior
 
@@ -68,7 +101,7 @@ On first configuration, the app stores a snapshot in:
 
 When the user clicks restore, the app restores that original snapshot. This lets users who already had a custom Codex setup return to their previous state, while users who had no config return to an empty/default state.
 
-The first-use backup also includes any Codex session provider metadata changed by the history sync. Restore does not roll the session database back in time; after restoring `config.toml`, it syncs all current local sessions to the restored provider so sessions created while using OceanWay remain visible after switching back.
+Restore also undoes recorded history visibility migrations by using the migration manifest. It only restores files and database rows that were changed by this tool, so sessions created after the migration are left alone. The app does not provide a default flow for migrating OceanWay-created sessions into OpenAI Official.
 
 If no snapshot exists, restore falls back to removing only the OceanWay provider and `OPENAI_API_KEY`.
 
