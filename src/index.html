@@ -13,7 +13,7 @@
         <img class="app-icon" src="./assets/oceanway-ai-icon.png" alt="" />
         <div>
           <h1>OceanWay AI Codex 配置</h1>
-          <p>管理多个密钥档案，一键切换 Codex 使用的 OceanWay AI 服务。</p>
+          <p>填写 OceanWay API Key，一键配置 Codex 使用 OceanWay AI 服务。</p>
         </div>
       </header>
 
@@ -21,10 +21,6 @@
         <div>
           <span class="meta-label">当前状态</span>
           <strong id="current-provider">正在读取...</strong>
-        </div>
-        <div>
-          <span class="meta-label">当前密钥</span>
-          <strong id="current-key-profile">-</strong>
         </div>
         <div>
           <span class="meta-label">Base URL</span>
@@ -36,14 +32,40 @@
         </div>
       </section>
 
+      <form id="config-form" class="config-form">
+        <label class="field">
+          <span>API Key</span>
+          <span class="input-shell">
+            <input id="api-key" type="password" autocomplete="off" placeholder="请输入 OceanWay API Key" required />
+            <button id="toggle-key-button" type="button" class="icon-button" aria-label="显示 API Key" title="显示 API Key">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" />
+                <circle cx="12" cy="12" r="3" />
+              </svg>
+            </button>
+          </span>
+        </label>
+        <label class="field">
+          <span>Base URL</span>
+          <input id="base-url" type="url" value="https://ocean-way.top" required />
+        </label>
+        <div class="form-actions">
+          <button id="test-button" type="button">
+            <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M13 2 4 14h7l-1 8 10-13h-7l1-7Z" />
+            </svg>
+            测试连接
+          </button>
+          <button id="configure-button" type="submit" class="primary">
+            <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M20 6 9 17l-5-5" />
+            </svg>
+            一键配置
+          </button>
+        </div>
+      </form>
+
       <section class="toolbar" aria-label="常用操作">
-        <button id="add-key-button" type="button" class="primary">
-          <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M12 5v14" />
-            <path d="M5 12h14" />
-          </svg>
-          添加密钥
-        </button>
         <button id="open-dir-button" type="button">
           <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true">
             <path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H10l2 2h6.5A2.5 2.5 0 0 1 21 9.5v7A2.5 2.5 0 0 1 18.5 19h-13A2.5 2.5 0 0 1 3 16.5v-9Z" />
@@ -76,66 +98,8 @@
         </button>
       </section>
 
-      <section class="profiles-section" aria-label="密钥档案">
-        <div class="section-heading">
-          <div>
-            <span class="meta-label">密钥档案</span>
-            <h2>选择一个密钥启用</h2>
-          </div>
-          <span id="profile-count" class="count-pill">0 个密钥</span>
-        </div>
-        <div id="empty-state" class="empty-state" hidden>
-          <strong>还没有保存密钥</strong>
-          <span>添加订阅密钥或余额密钥后，就可以在这里一键切换。</span>
-          <button id="empty-add-key-button" type="button" class="primary">添加第一个密钥</button>
-        </div>
-        <div id="profile-list" class="profile-list"></div>
-      </section>
-
       <p id="status" class="status" role="status" aria-live="polite"></p>
       <footer class="footer">codex-config v1.0.0</footer>
     </main>
-
-    <dialog id="key-dialog" class="key-dialog">
-      <form id="key-form" method="dialog">
-        <input id="key-profile-id" type="hidden" />
-        <header class="dialog-header">
-          <div>
-            <span class="meta-label">密钥档案</span>
-            <h2 id="dialog-title">添加密钥</h2>
-          </div>
-          <button id="close-dialog-button" type="button" class="icon-button static-icon" aria-label="关闭" title="关闭">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M6 6l12 12" />
-              <path d="M18 6 6 18" />
-            </svg>
-          </button>
-        </header>
-        <label class="field">
-          <span>密钥名称</span>
-          <input id="key-profile-name" type="text" autocomplete="off" placeholder="例如：订阅密钥、余额密钥" required />
-        </label>
-        <label class="field">
-          <span>API Key</span>
-          <span class="input-shell">
-            <input id="api-key" type="password" autocomplete="off" placeholder="请输入 API Key" />
-            <button id="toggle-key-button" type="button" class="icon-button" aria-label="显示 API Key" title="显示 API Key">
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" />
-                <circle cx="12" cy="12" r="3" />
-              </svg>
-            </button>
-          </span>
-        </label>
-        <label class="field">
-          <span>Base URL</span>
-          <input id="base-url" type="url" value="https://ocean-way.top" required />
-        </label>
-        <div class="dialog-actions">
-          <button id="save-key-profile-button" type="submit">保存</button>
-          <button id="save-and-use-button" type="button" class="primary">保存并启用</button>
-        </div>
-      </form>
-    </dialog>
   </body>
 </html>

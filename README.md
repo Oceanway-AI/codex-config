@@ -8,8 +8,6 @@ This repository only contains the Rust/Tauri version. The old Python/PyQt packag
 
 - Writes the OceanWay provider to Codex config.
 - Uses a ChatGPT-login-preserving provider token when the user is already signed in, and falls back to `OPENAI_API_KEY` when no ChatGPT login is detected.
-- Lets users save multiple named local API key profiles, such as subscription keys and balance keys.
-- Lets users delete saved profiles.
 - Uses `https://ocean-way.top` as the default Base URL.
 - Preserves existing non-OceanWay Codex settings and providers.
 - Creates a first-use backup before changing user config.
@@ -30,7 +28,6 @@ The app reads and writes:
 ```text
 ~/.codex/config.toml
 ~/.codex/auth.json
-~/.codex/oceanway-ai-keys.json
 ```
 
 When the user explicitly clicks history migration, the app can also update:
@@ -74,8 +71,6 @@ If no ChatGPT login is detected before configuration, the app uses the fallback 
   "OPENAI_API_KEY": "user-api-key"
 }
 ```
-
-When the last saved key profile is deleted, `oceanway-ai-keys.json` is removed instead of leaving an empty key store behind.
 
 ## History Visibility Migration
 
