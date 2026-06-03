@@ -6,6 +6,7 @@ on:
     branches:
       - main
       - master
+      - codex/**
   pull_request:
 
 jobs:
