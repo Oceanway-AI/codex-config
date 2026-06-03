@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use chrono::Local;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
@@ -118,6 +119,7 @@ struct ConfigStatus {
     has_api_key: bool,
     auth_strategy: String,
     chatgpt_login_detected: bool,
+    chatgpt_account_label: Option<String>,
     config_path: String,
     auth_path: String,
 }
@@ -162,6 +164,7 @@ fn get_config_status() -> Result<ConfigStatus, String> {
         .or(auth_api_key.as_ref())
         .is_some_and(|value| !value.trim().is_empty());
     let chatgpt_login_detected = read_auth_has_chatgpt_login(&auth_path);
+    let chatgpt_account_label = read_auth_chatgpt_account_label(&auth_path);
     let auth_strategy = if provider_token.is_some() {
         ProviderAuthStrategy::ChatGptBearerToken
     } else {
@@ -177,6 +180,7 @@ fn get_config_status() -> Result<ConfigStatus, String> {
         has_api_key,
         auth_strategy: auth_strategy.as_str().to_string(),
         chatgpt_login_detected,
+        chatgpt_account_label,
         config_path: display_path(&config_path),
         auth_path: display_path(&auth_path),
     })
@@ -1415,6 +1419,71 @@ fn read_auth_has_chatgpt_login(auth_path: &Path) -> bool {
         .any(|key| object.get(*key).is_some_and(auth_value_looks_present))
 }
 
+fn read_auth_chatgpt_account_label(auth_path: &Path) -> Option<String> {
+    let content = fs::read_to_string(auth_path).ok()?;
+    let value = serde_json::from_str::<Value>(&content).ok()?;
+    find_account_label_in_value(&value).or_else(|| find_account_label_in_jwts(&value))
+}
+
+fn find_account_label_in_value(value: &Value) -> Option<String> {
+    match value {
+        Value::Object(object) => {
+            for key in [
+                "email",
+                "user_email",
+                "account_email",
+                "preferred_username",
+                "name",
+                "display_name",
+            ] {
+                if let Some(label) = object.get(key).and_then(clean_account_label) {
+                    return Some(label);
+                }
+            }
+
+            for child in object.values() {
+                if let Some(label) = find_account_label_in_value(child) {
+                    return Some(label);
+                }
+            }
+            None
+        }
+        Value::Array(values) => values.iter().find_map(find_account_label_in_value),
+        _ => None,
+    }
+}
+
+fn find_account_label_in_jwts(value: &Value) -> Option<String> {
+    match value {
+        Value::String(token) => account_label_from_jwt(token),
+        Value::Array(values) => values.iter().find_map(find_account_label_in_jwts),
+        Value::Object(object) => object.values().find_map(find_account_label_in_jwts),
+        _ => None,
+    }
+}
+
+fn account_label_from_jwt(token: &str) -> Option<String> {
+    let mut parts = token.split('.');
+    let _header = parts.next()?;
+    let payload = parts.next()?;
+    let _signature = parts.next()?;
+    if parts.next().is_some() {
+        return None;
+    }
+
+    let decoded = URL_SAFE_NO_PAD.decode(payload.as_bytes()).ok()?;
+    let value = serde_json::from_slice::<Value>(&decoded).ok()?;
+    find_account_label_in_value(&value)
+}
+
+fn clean_account_label(value: &Value) -> Option<String> {
+    value
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
 fn auth_value_looks_present(value: &Value) -> bool {
     match value {
         Value::Null => false,
@@ -1949,6 +2018,59 @@ mod tests {
         assert_eq!(value["OPENAI_API_KEY"], "new-oceanway-key");
         assert_eq!(value["tokens"]["id_token"], "logged-in-user");
         assert_eq!(value["account_id"], "acct-123");
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn chatgpt_account_label_can_be_read_from_auth_json_fields() {
+        let dir = unique_test_dir("auth-account-field");
+        fs::create_dir_all(&dir).unwrap();
+        let auth_path = dir.join("auth.json");
+        fs::write(
+            &auth_path,
+            r#"{
+  "auth_mode": "chatgpt",
+  "account": {
+    "email": "user@example.com"
+  }
+}
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            read_auth_chatgpt_account_label(&auth_path).as_deref(),
+            Some("user@example.com")
+        );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn chatgpt_account_label_can_be_read_from_jwt_payload() {
+        let dir = unique_test_dir("auth-account-jwt");
+        fs::create_dir_all(&dir).unwrap();
+        let auth_path = dir.join("auth.json");
+        let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"none"}"#);
+        let payload = URL_SAFE_NO_PAD.encode(r#"{"email":"jwt-user@example.com"}"#);
+        let token = format!("{header}.{payload}.signature");
+        fs::write(
+            &auth_path,
+            serde_json::to_string_pretty(&json!({
+                "auth_mode": "chatgpt",
+                "tokens": {
+                    "id_token": token
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            read_auth_chatgpt_account_label(&auth_path).as_deref(),
+            Some("jwt-user@example.com")
+        );
 
         fs::remove_dir_all(dir).unwrap();
     }

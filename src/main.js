@@ -1,6 +1,7 @@
 const DEFAULT_BASE_URL = "https://ocean-way.top";
 
 const currentProvider = document.querySelector("#current-provider");
+const currentLoginState = document.querySelector("#current-login-state");
 const currentBaseUrl = document.querySelector("#current-base-url");
 const currentApiKey = document.querySelector("#current-api-key");
 const statusText = document.querySelector("#status");
@@ -63,6 +64,11 @@ function authStrategyText(authStrategy) {
 
 function setCurrentStatus(status) {
   currentProvider.textContent = status.configured ? "已配置 OceanWay AI" : "未配置 OceanWay AI";
+  currentLoginState.textContent = status.chatgptLoginDetected
+    ? `已登录：${status.chatgptAccountLabel || "账号未知"}`
+    : "未检测到";
+  currentLoginState.title = currentLoginState.textContent;
+  currentLoginState.dataset.kind = status.chatgptLoginDetected ? "success" : "muted";
   currentBaseUrl.textContent = status.baseUrl || "-";
   currentBaseUrl.title = status.baseUrl || "";
   if (status.authStrategy === "chatgptBearerToken") {
@@ -75,6 +81,7 @@ function setCurrentStatus(status) {
 async function refreshStatus() {
   if (!invoke) {
     currentProvider.textContent = "预览模式";
+    currentLoginState.textContent = "-";
     currentBaseUrl.textContent = DEFAULT_BASE_URL;
     currentApiKey.textContent = "-";
     return;
@@ -85,6 +92,7 @@ async function refreshStatus() {
     setCurrentStatus(status);
   } catch (error) {
     currentProvider.textContent = "读取失败";
+    currentLoginState.textContent = "-";
     currentBaseUrl.textContent = "-";
     currentApiKey.textContent = "-";
     setStatus(`读取当前配置失败：${error}`, "error");

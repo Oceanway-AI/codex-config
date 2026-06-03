@@ -75,7 +75,7 @@ input {
 
 .current-panel {
   display: grid;
-  grid-template-columns: 1.05fr 1.55fr 1fr;
+  grid-template-columns: 1fr 1.45fr 1.35fr 0.95fr;
   gap: 12px;
   margin-bottom: 12px;
   padding: 12px;
@@ -106,6 +106,14 @@ input {
   line-height: 1.35;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.current-panel strong[data-kind="success"] {
+  color: var(--success);
+}
+
+.current-panel strong[data-kind="muted"] {
+  color: var(--muted);
 }
 
 .config-form {
