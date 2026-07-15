@@ -7,7 +7,7 @@ This repository only contains the Rust/Tauri version. The old Python/PyQt packag
 ## What It Does
 
 - Writes the OceanWay provider to Codex config.
-- Uses a ChatGPT-login-preserving provider token when the user is already signed in, and falls back to `OPENAI_API_KEY` when no ChatGPT login is detected.
+- Uses a ChatGPT-login-preserving provider token when the user is already signed in, and falls back to an API Key mode compatible with the Codex Desktop local image tool when no ChatGPT login is detected.
 - Uses `https://ocean-way.top` as the default Base URL.
 - Preserves existing non-OceanWay Codex settings and providers.
 - Creates a first-use backup before changing user config.
@@ -66,11 +66,29 @@ In that mode, `auth.json` keeps the ChatGPT login state and does not store the t
 
 If no ChatGPT login is detected before configuration, the app uses the fallback API key mode. The API key is written to `auth.json` without removing other existing auth fields:
 
+```toml
+model_provider = "OceanWay"
+model = "gpt-5.4"
+model_reasoning_effort = "high"
+disable_response_storage = true
+
+[model_providers.OceanWay]
+name = "OceanWay"
+base_url = "https://ocean-way.top"
+wire_api = "responses"
+requires_openai_auth = false
+http_headers = { "x-openai-actor-authorization" = "local-image-extension" }
+```
+
+The non-empty actor authorization header lets Codex Desktop `0.143.0` and later register its local `image_gen` extension for a custom API Key provider. The API key remains the Bearer credential and is written to `auth.json` without removing other existing auth fields:
+
 ```json
 {
   "OPENAI_API_KEY": "user-api-key"
 }
 ```
+
+After configuration, fully quit and reopen Codex Desktop, then create a new task so the tool registry is rebuilt. The conversational model remains the configured GPT model; the local image extension calls the provider's image endpoint separately.
 
 ## History Visibility Migration
 

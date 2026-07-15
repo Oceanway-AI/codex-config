@@ -2,7 +2,7 @@
 
 本文档适用于 OceanWay AI 用户，用来完成 Codex 的一键配置。
 
-`codex-config` 是一个小工具。您只需要打开软件，填写 API Key，然后点击“一键配置”即可。配置完成后，请重启 Codex。
+`codex-config` 是一个小工具。您只需要打开软件，填写 API Key，然后点击“一键配置”即可。配置完成后，请完全退出并重新打开 Codex，然后新建任务。
 
 ## 一、下载软件
 
@@ -78,13 +78,13 @@ https://ocean-way.top
 
 3. 点击“一键配置”。
 4. 看到成功提示后，关闭软件。
-5. 重启 Codex。
+5. 完全退出并重新打开 Codex，然后新建任务。
 
-重启 Codex 后，即可使用 OceanWay AI provider。
+重新打开 Codex 并新建任务后，即可使用 OceanWay AI provider。
 
 如果您已经在 Codex 里登录过 ChatGPT，本工具会尽量保留这个登录状态，并把 OceanWay API Key 写到 provider 配置中。这样更有机会继续使用 Codex Mobile、插件、自动化、额度查询等依赖登录态的功能。
 
-如果您一开始没有登录 ChatGPT，本工具不会伪造登录状态，会使用普通 API Key 方式配置 OceanWay AI。这种方式也可以使用 OceanWay AI，但部分依赖 ChatGPT 登录态的功能可能不可用。
+如果您一开始没有登录 ChatGPT，本工具不会伪造登录状态，会使用 API Key 方式配置 OceanWay AI，并为 Codex Desktop 0.143.0 及以上版本启用本地图片工具兼容配置。这种方式也可以使用 OceanWay AI，但部分依赖 ChatGPT 登录态的功能可能不可用。
 
 ## 五、可选：迁移历史可见性
 
@@ -147,9 +147,9 @@ https://ocean-way.top
 
 除非 OceanWay AI 工作人员明确要求您修改，否则请保持默认。
 
-### 2. 配置完成后为什么还要重启 Codex？
+### 2. 配置完成后为什么还要完全退出并重新打开 Codex？
 
-Codex 启动时会读取配置文件。配置完成后，重启 Codex 可以让新配置生效。
+Codex 启动时会读取 provider 配置并注册可用工具。配置完成后，需要完全退出并重新打开 Codex，再创建新任务，才能让新的 provider 和图片工具配置生效。只关闭窗口或继续使用旧任务可能不会重新注册工具。
 
 ### 3. API Key 输入后为什么看不到明文？
 
@@ -188,4 +188,4 @@ Codex 启动时会读取配置文件。配置完成后，重启 Codex 可以让�
 2. 粘贴 API Key。
 3. 确认 Base URL 是 `https://ocean-way.top`。
 4. 点击“一键配置”。
-5. 重启 Codex。
+5. 完全退出并重新打开 Codex，然后新建任务。

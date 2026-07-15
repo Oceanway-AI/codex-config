@@ -59,7 +59,7 @@ function normalizeBaseUrl(value) {
 function authStrategyText(authStrategy) {
   return authStrategy === "chatgptBearerToken"
     ? "已保留 ChatGPT 登录态，并使用 provider token。"
-    : "已写入 API Key。";
+    : "已写入 API Key，并启用 Codex Desktop 本地图片工具兼容模式。";
 }
 
 function setCurrentStatus(status) {
@@ -127,7 +127,7 @@ async function configureProvider(event) {
   try {
     const result = await invoke("configure_provider", values);
     await refreshStatus();
-    setStatus(`${authStrategyText(result.authStrategy)}请重启 Codex。`, "success");
+    setStatus(`${authStrategyText(result.authStrategy)}请完全退出并重新打开 Codex，然后新建任务。`, "success");
   } catch (error) {
     setStatus(`配置失败：${error}`, "error");
   } finally {

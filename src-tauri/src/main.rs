@@ -17,6 +17,7 @@ const PROVIDER_ID: &str = "OceanWay";
 const DEFAULT_BASE_URL: &str = "https://ocean-way.top";
 const MODEL_FALLBACK: &str = "gpt-5.4";
 const CODEX_AUTH_KEY: &str = "OPENAI_API_KEY";
+const IMAGE_EXTENSION_ACTOR_AUTHORIZATION: &str = "local-image-extension";
 const BACKUP_DIR_NAME: &str = "oceanway-ai-backup";
 const HISTORY_MIGRATION_BACKUP_DIR_NAME: &str = "oceanway-history-migration-backup";
 const CODEX_STATE_DB_NAME: &str = "state_5.sqlite";
@@ -301,8 +302,14 @@ fn configure_provider_internal(
     } else {
         None
     };
-    let config_result =
-        write_config_toml(&config_path, PROVIDER_ID, base_url, &model, provider_token);
+    let config_result = write_config_toml(
+        &config_path,
+        PROVIDER_ID,
+        base_url,
+        &model,
+        provider_token,
+        auth_strategy,
+    );
 
     let config_backup_path = match config_result {
         Ok(path) => path,
@@ -386,6 +393,7 @@ fn write_config_toml(
     base_url: &str,
     model: &str,
     bearer_token: Option<&str>,
+    auth_strategy: ProviderAuthStrategy,
 ) -> Result<Option<PathBuf>, String> {
     let codex_home = config_path
         .parent()
@@ -395,7 +403,14 @@ fn write_config_toml(
 
     let backup_path = backup_file(config_path)?;
     let original = fs::read_to_string(config_path).unwrap_or_default();
-    let rendered = merge_config(&original, provider_id, base_url, model, bearer_token);
+    let rendered = merge_config(
+        &original,
+        provider_id,
+        base_url,
+        model,
+        bearer_token,
+        auth_strategy,
+    );
 
     fs::write(config_path, rendered).map_err(|err| format!("无法写入 config.toml：{err}"))?;
     set_private_permissions(config_path)?;
@@ -422,7 +437,7 @@ fn render_auth_json_content(
     strategy: ProviderAuthStrategy,
 ) -> Result<String, String> {
     let mut value =
-        serde_json::from_str::<serde_json::Value>(&content).unwrap_or_else(|_| json!({}));
+        serde_json::from_str::<serde_json::Value>(content).unwrap_or_else(|_| json!({}));
 
     if let Some(object) = value.as_object_mut() {
         match strategy {
@@ -1107,6 +1122,7 @@ fn merge_config(
     base_url: &str,
     model: &str,
     bearer_token: Option<&str>,
+    auth_strategy: ProviderAuthStrategy,
 ) -> String {
     let lines = original.split_inclusive('\n').collect::<Vec<_>>();
     let (root_line_refs, table_lines) = split_root_and_tables(&lines);
@@ -1135,7 +1151,12 @@ fn merge_config(
         rendered.push_str("\n\n");
     }
 
-    rendered.push_str(&render_provider_block(provider_id, base_url, bearer_token));
+    rendered.push_str(&render_provider_block(
+        provider_id,
+        base_url,
+        bearer_token,
+        auth_strategy,
+    ));
     rendered
 }
 
@@ -1153,13 +1174,11 @@ fn remove_provider_config(original: &str, provider_id: &str) -> String {
     let rest = remove_provider_table_family(&table_lines, provider_id).join("");
     let rest = rest.trim_start_matches('\n');
 
-    if !rendered.trim().is_empty() && !rest.trim().is_empty() {
-        if !rendered.ends_with("\n\n") {
-            if !rendered.ends_with('\n') {
-                rendered.push('\n');
-            }
+    if !rendered.trim().is_empty() && !rest.trim().is_empty() && !rendered.ends_with("\n\n") {
+        if !rendered.ends_with('\n') {
             rendered.push('\n');
         }
+        rendered.push('\n');
     }
 
     if !rest.trim().is_empty() {
@@ -1170,7 +1189,12 @@ fn remove_provider_config(original: &str, provider_id: &str) -> String {
     rendered
 }
 
-fn render_provider_block(provider_id: &str, base_url: &str, bearer_token: Option<&str>) -> String {
+fn render_provider_block(
+    provider_id: &str,
+    base_url: &str,
+    bearer_token: Option<&str>,
+    auth_strategy: ProviderAuthStrategy,
+) -> String {
     let mut rendered = format!(
         concat!(
             "[model_providers.{table_provider}]\n",
@@ -1182,13 +1206,24 @@ fn render_provider_block(provider_id: &str, base_url: &str, bearer_token: Option
         provider = toml_string(provider_id),
         base_url = toml_string(base_url),
     );
-    if let Some(token) = bearer_token.filter(|token| !token.trim().is_empty()) {
-        rendered.push_str(&format!(
-            "experimental_bearer_token = {}\n",
-            toml_string(token.trim())
-        ));
+    match auth_strategy {
+        ProviderAuthStrategy::ApiKey => {
+            rendered.push_str("requires_openai_auth = false\n");
+            rendered.push_str(&format!(
+                "http_headers = {{ \"x-openai-actor-authorization\" = {} }}\n",
+                toml_string(IMAGE_EXTENSION_ACTOR_AUTHORIZATION)
+            ));
+        }
+        ProviderAuthStrategy::ChatGptBearerToken => {
+            if let Some(token) = bearer_token.filter(|token| !token.trim().is_empty()) {
+                rendered.push_str(&format!(
+                    "experimental_bearer_token = {}\n",
+                    toml_string(token.trim())
+                ));
+            }
+            rendered.push_str("requires_openai_auth = true\n");
+        }
     }
-    rendered.push_str("requires_openai_auth = true\n");
     rendered
 }
 
@@ -1244,11 +1279,13 @@ fn remove_root_key_if_value(lines: Vec<String>, key: &str, expected_value: &str)
             continue;
         };
 
-        if !removed && !trimmed.starts_with('#') && current_key.trim() == key {
-            if parse_quoted_toml_string(value.trim()).as_deref() == Some(expected_value) {
-                removed = true;
-                continue;
-            }
+        if !removed
+            && !trimmed.starts_with('#')
+            && current_key.trim() == key
+            && parse_quoted_toml_string(value.trim()).as_deref() == Some(expected_value)
+        {
+            removed = true;
+            continue;
         }
 
         output.push(line);
@@ -1688,6 +1725,7 @@ fn run_cli(args: &[String]) -> Result<(), String> {
         &options.base_url,
         &model,
         dry_run_provider_token,
+        auth_strategy,
     );
 
     if options.dry_run {
@@ -1726,6 +1764,7 @@ fn run_cli(args: &[String]) -> Result<(), String> {
         &options.base_url,
         &model,
         provider_token,
+        auth_strategy,
     );
 
     match config_result {
@@ -1877,6 +1916,7 @@ mod tests {
             DEFAULT_BASE_URL,
             MODEL_FALLBACK,
             None,
+            ProviderAuthStrategy::ApiKey,
         );
 
         assert!(rendered.contains("[model_providers.openrouter]"));
@@ -1885,6 +1925,11 @@ mod tests {
         assert!(!rendered.contains("http://64.188.30.215:8080/v1"));
         assert!(rendered.contains("model_provider = \"OceanWay\""));
         assert!(rendered.contains("model_reasoning_effort = \"high\""));
+        assert!(rendered.contains("requires_openai_auth = false"));
+        assert!(rendered.contains(concat!(
+            "http_headers = { \"x-openai-actor-authorization\" = ",
+            "\"local-image-extension\" }"
+        )));
     }
 
     #[test]
@@ -1895,11 +1940,32 @@ mod tests {
             DEFAULT_BASE_URL,
             MODEL_FALLBACK,
             Some("ow-secret-key"),
+            ProviderAuthStrategy::ChatGptBearerToken,
         );
 
         assert!(rendered.contains("model_provider = \"OceanWay\""));
         assert!(rendered.contains("experimental_bearer_token = \"ow-secret-key\""));
         assert!(rendered.contains("requires_openai_auth = true"));
+        assert!(!rendered.contains("x-openai-actor-authorization"));
+    }
+
+    #[test]
+    fn merge_config_enables_local_image_extension_for_api_key_auth() {
+        let rendered = merge_config(
+            "",
+            PROVIDER_ID,
+            DEFAULT_BASE_URL,
+            MODEL_FALLBACK,
+            None,
+            ProviderAuthStrategy::ApiKey,
+        );
+
+        assert!(rendered.contains("requires_openai_auth = false"));
+        assert!(rendered.contains(concat!(
+            "http_headers = { \"x-openai-actor-authorization\" = ",
+            "\"local-image-extension\" }"
+        )));
+        assert!(!rendered.contains("experimental_bearer_token"));
     }
 
     #[test]
