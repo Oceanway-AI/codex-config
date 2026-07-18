@@ -75,7 +75,7 @@ input {
 
 .current-panel {
   display: grid;
-  grid-template-columns: 1fr 1.45fr 1.35fr 0.95fr;
+  grid-template-columns: 0.95fr 1.3fr 1.2fr 0.95fr 0.8fr;
   gap: 12px;
   margin-bottom: 12px;
   padding: 12px;
@@ -114,6 +114,38 @@ input {
 
 .current-panel strong[data-kind="muted"] {
   color: var(--muted);
+}
+
+.imagegen-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  background: rgba(18, 201, 244, 0.08);
+  border: 1px solid rgba(11, 111, 218, 0.2);
+  border-radius: 10px;
+}
+
+.imagegen-panel div {
+  min-width: 0;
+}
+
+.imagegen-panel strong {
+  color: var(--navy);
+  font-size: 13px;
+}
+
+.imagegen-panel p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.imagegen-panel button {
+  flex: 0 0 auto;
 }
 
 .config-form {
@@ -291,8 +323,14 @@ button.primary:hover {
   }
 
   .current-panel,
+  .imagegen-panel,
   .toolbar,
   .form-actions {
     grid-template-columns: 1fr;
+  }
+
+  .imagegen-panel {
+    align-items: stretch;
+    flex-direction: column;
   }
 }

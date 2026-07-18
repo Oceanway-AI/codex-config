@@ -4,12 +4,14 @@ const currentProvider = document.querySelector("#current-provider");
 const currentLoginState = document.querySelector("#current-login-state");
 const currentBaseUrl = document.querySelector("#current-base-url");
 const currentApiKey = document.querySelector("#current-api-key");
+const currentImagegen = document.querySelector("#current-imagegen");
 const statusText = document.querySelector("#status");
 const configForm = document.querySelector("#config-form");
 const apiKeyInput = document.querySelector("#api-key");
 const baseUrlInput = document.querySelector("#base-url");
 const toggleKeyButton = document.querySelector("#toggle-key-button");
 const testButton = document.querySelector("#test-button");
+const imagegenButton = document.querySelector("#imagegen-button");
 const restoreButton = document.querySelector("#restore-button");
 const migrateHistoryButton = document.querySelector("#migrate-history-button");
 const exitButton = document.querySelector("#exit-button");
@@ -42,7 +44,7 @@ async function resizeWindowToContent() {
   }
 
   const contentHeight = Math.ceil(document.documentElement.scrollHeight + 20);
-  const maxHeight = Math.max(520, Math.min(760, window.screen.availHeight - 80));
+  const maxHeight = Math.max(520, Math.min(820, window.screen.availHeight - 80));
   const height = Math.max(440, Math.min(contentHeight, maxHeight));
   try {
     await invoke("resize_window_to_content", { height });
@@ -76,6 +78,11 @@ function setCurrentStatus(status) {
   } else {
     currentApiKey.textContent = status.hasApiKey ? "API Key 已保存" : "未保存";
   }
+  currentImagegen.textContent = status.imagegenCliConfigured ? "已配置" : "待补全";
+  currentImagegen.dataset.kind = status.imagegenCliConfigured ? "success" : "muted";
+  imagegenButton.textContent = status.imagegenCliConfigured
+    ? "重新同步图片备用配置"
+    : "补全图片备用配置";
 }
 
 async function refreshStatus() {
@@ -84,6 +91,7 @@ async function refreshStatus() {
     currentLoginState.textContent = "-";
     currentBaseUrl.textContent = DEFAULT_BASE_URL;
     currentApiKey.textContent = "-";
+    currentImagegen.textContent = "-";
     return;
   }
 
@@ -95,6 +103,7 @@ async function refreshStatus() {
     currentLoginState.textContent = "-";
     currentBaseUrl.textContent = "-";
     currentApiKey.textContent = "-";
+    currentImagegen.textContent = "-";
     setStatus(`读取当前配置失败：${error}`, "error");
   }
 }
@@ -127,9 +136,37 @@ async function configureProvider(event) {
   try {
     const result = await invoke("configure_provider", values);
     await refreshStatus();
-    setStatus(`${authStrategyText(result.authStrategy)}请完全退出并重新打开 Codex，然后新建任务。`, "success");
+    const imagegenText = result.imagegenCliConfigured
+      ? "已同时配置 imagegen CLI 备用接口。"
+      : "";
+    setStatus(
+      `${authStrategyText(result.authStrategy)}${imagegenText}请完全退出并重新打开 Codex，然后新建任务。`,
+      "success"
+    );
   } catch (error) {
     setStatus(`配置失败：${error}`, "error");
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function configureImagegenCli() {
+  if (!invoke) {
+    setStatus("浏览器预览无法写入本机图片备用配置。", "error");
+    return;
+  }
+
+  setBusy(true);
+  setStatus("正在补全 imagegen CLI 备用配置...");
+  try {
+    const result = await invoke("configure_imagegen_cli");
+    await refreshStatus();
+    setStatus(
+      `图片备用配置已同步到 ${result.configPath}。请完全退出并重新打开 Codex，然后新建任务。`,
+      "success"
+    );
+  } catch (error) {
+    setStatus(`图片备用配置失败：${error}`, "error");
   } finally {
     setBusy(false);
   }
@@ -278,6 +315,7 @@ async function exitApp() {
 
 configForm.addEventListener("submit", configureProvider);
 testButton.addEventListener("click", testConnection);
+imagegenButton.addEventListener("click", configureImagegenCli);
 restoreButton.addEventListener("click", restoreDefaults);
 migrateHistoryButton.addEventListener("click", migrateHistoryVisibility);
 exitButton.addEventListener("click", exitApp);

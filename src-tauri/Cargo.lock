@@ -334,7 +334,7 @@ dependencies = [
 
 [[package]]
 name = "codex-config"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -344,6 +344,7 @@ dependencies = [
  "serde_json",
  "tauri",
  "tauri-build",
+ "toml_edit 0.25.11+spec-1.1.0",
 ]
 
 [[package]]
@@ -3738,6 +3739,7 @@ dependencies = [
  "indexmap 2.14.0",
  "toml_datetime 1.1.1+spec-1.1.0",
  "toml_parser",
+ "toml_writer",
  "winnow 1.0.2",
 ]
 

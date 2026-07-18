@@ -34,6 +34,10 @@
           <span class="meta-label">API Key</span>
           <span id="current-api-key">-</span>
         </div>
+        <div>
+          <span class="meta-label">图片备用</span>
+          <strong id="current-imagegen">正在检测...</strong>
+        </div>
       </section>
 
       <form id="config-form" class="config-form">
@@ -69,6 +73,14 @@
         </div>
       </form>
 
+      <section class="imagegen-panel" aria-label="Imagegen CLI 备用配置">
+        <div>
+          <strong>Imagegen CLI 备用接口</strong>
+          <p>一键配置会自动同步。旧版本用户可点击右侧按钮补全，无需再次复制已保存的 API Key。</p>
+        </div>
+        <button id="imagegen-button" type="button">补全图片备用配置</button>
+      </section>
+
       <section class="toolbar" aria-label="常用操作">
         <button id="open-dir-button" type="button">
           <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true">
@@ -103,7 +115,7 @@
       </section>
 
       <p id="status" class="status" role="status" aria-live="polite"></p>
-      <footer class="footer">codex-config v1.0.0</footer>
+      <footer class="footer">codex-config v1.1.0</footer>
     </main>
   </body>
 </html>

@@ -12,11 +12,13 @@ use std::path::{Path, PathBuf};
 use std::process::{self, Command};
 use std::time::Duration;
 use tauri::{LogicalSize, Manager, Size};
+use toml_edit::{value, DocumentMut, Item, Table, Value as TomlValue};
 
 const PROVIDER_ID: &str = "OceanWay";
 const DEFAULT_BASE_URL: &str = "https://ocean-way.top";
 const MODEL_FALLBACK: &str = "gpt-5.4";
 const CODEX_AUTH_KEY: &str = "OPENAI_API_KEY";
+const OPENAI_BASE_URL_ENV_KEY: &str = "OPENAI_BASE_URL";
 const IMAGE_EXTENSION_ACTOR_AUTHORIZATION: &str = "local-image-extension";
 const BACKUP_DIR_NAME: &str = "oceanway-ai-backup";
 const HISTORY_MIGRATION_BACKUP_DIR_NAME: &str = "oceanway-history-migration-backup";
@@ -30,7 +32,16 @@ struct OperationResult {
     config_backup_path: Option<String>,
     auth_backup_path: Option<String>,
     auth_strategy: String,
+    imagegen_cli_configured: bool,
     history_migration_restore: Option<HistoryMigrationRestoreResult>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ImagegenCliConfigResult {
+    config_path: String,
+    base_url: String,
+    configured: bool,
 }
 
 #[derive(Default, Serialize)]
@@ -121,6 +132,7 @@ struct ConfigStatus {
     auth_strategy: String,
     chatgpt_login_detected: bool,
     chatgpt_account_label: Option<String>,
+    imagegen_cli_configured: bool,
     config_path: String,
     auth_path: String,
 }
@@ -171,7 +183,14 @@ fn get_config_status() -> Result<ConfigStatus, String> {
     } else {
         ProviderAuthStrategy::ApiKey
     };
-    let configured = base_url.as_deref() == Some(DEFAULT_BASE_URL);
+    let oceanway_active = provider_id.as_deref() == Some(PROVIDER_ID);
+    let imagegen_cli_configured = oceanway_active
+        && has_matching_imagegen_cli_environment(
+            &config,
+            provider_token.as_deref().or(auth_api_key.as_deref()),
+            base_url.as_deref(),
+        );
+    let configured = oceanway_active && base_url.as_deref() == Some(DEFAULT_BASE_URL);
 
     Ok(ConfigStatus {
         configured,
@@ -182,6 +201,7 @@ fn get_config_status() -> Result<ConfigStatus, String> {
         auth_strategy: auth_strategy.as_str().to_string(),
         chatgpt_login_detected,
         chatgpt_account_label,
+        imagegen_cli_configured,
         config_path: display_path(&config_path),
         auth_path: display_path(&auth_path),
     })
@@ -265,6 +285,38 @@ fn configure_provider(api_key: String, base_url: String) -> Result<OperationResu
     configure_provider_internal(api_key, base_url)
 }
 
+#[tauri::command]
+fn configure_imagegen_cli() -> Result<ImagegenCliConfigResult, String> {
+    let codex_home = codex_home()?;
+    configure_imagegen_cli_in_home(&codex_home)
+}
+
+fn configure_imagegen_cli_in_home(codex_home: &Path) -> Result<ImagegenCliConfigResult, String> {
+    let config_path = codex_home.join("config.toml");
+    let auth_path = codex_home.join("auth.json");
+    let config = fs::read_to_string(&config_path).unwrap_or_default();
+    if read_root_string(&config, "model_provider").as_deref() != Some(PROVIDER_ID) {
+        return Err("请先使用“一键配置”将当前 provider 切换到 OceanWay。".to_string());
+    }
+    let base_url = read_provider_base_url(&config, PROVIDER_ID)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| "请先使用“一键配置”完成 OceanWay provider 配置。".to_string())?;
+    let api_key = read_provider_bearer_token(&config, PROVIDER_ID)
+        .or_else(|| read_auth_api_key(&auth_path))
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            "未找到已保存的 OceanWay API Key，请重新输入并执行“一键配置”。".to_string()
+        })?;
+
+    write_imagegen_cli_environment(&config_path, &api_key, &base_url)?;
+
+    Ok(ImagegenCliConfigResult {
+        config_path: display_path(&config_path),
+        base_url,
+        configured: true,
+    })
+}
+
 fn configure_provider_internal(
     api_key: String,
     base_url: String,
@@ -309,6 +361,7 @@ fn configure_provider_internal(
         &model,
         provider_token,
         auth_strategy,
+        Some(&api_key),
     );
 
     let config_backup_path = match config_result {
@@ -325,6 +378,7 @@ fn configure_provider_internal(
         config_backup_path: config_backup_path.as_ref().map(|path| display_path(path)),
         auth_backup_path: auth_backup_path.as_ref().map(|path| display_path(path)),
         auth_strategy: auth_strategy.as_str().to_string(),
+        imagegen_cli_configured: true,
         history_migration_restore: None,
     })
 }
@@ -348,6 +402,7 @@ fn restore_defaults() -> Result<OperationResult, String> {
         }
     } else {
         remove_provider_from_config(&config_path, PROVIDER_ID)?;
+        remove_imagegen_cli_environment_from_file(&config_path)?;
         remove_api_key_from_auth(&auth_path)?;
         set_private_permissions(&config_path)?;
         set_private_permissions(&auth_path)?;
@@ -360,6 +415,7 @@ fn restore_defaults() -> Result<OperationResult, String> {
         config_backup_path: config_backup_path.as_ref().map(|path| display_path(path)),
         auth_backup_path: auth_backup_path.as_ref().map(|path| display_path(path)),
         auth_strategy: "restore".to_string(),
+        imagegen_cli_configured: false,
         history_migration_restore: Some(history_migration_restore),
     })
 }
@@ -381,7 +437,7 @@ fn resize_window_to_content(app_handle: tauri::AppHandle, height: f64) -> Result
         .inner_size()
         .map_err(|err| format!("无法读取窗口尺寸：{err}"))?;
     let width = (size.width as f64 / scale_factor).clamp(760.0, 1100.0);
-    let height = height.clamp(440.0, 760.0);
+    let height = height.clamp(440.0, 820.0);
     window
         .set_size(Size::Logical(LogicalSize { width, height }))
         .map_err(|err| format!("无法调整窗口尺寸：{err}"))
@@ -394,6 +450,7 @@ fn write_config_toml(
     model: &str,
     bearer_token: Option<&str>,
     auth_strategy: ProviderAuthStrategy,
+    imagegen_api_key: Option<&str>,
 ) -> Result<Option<PathBuf>, String> {
     let codex_home = config_path
         .parent()
@@ -403,7 +460,7 @@ fn write_config_toml(
 
     let backup_path = backup_file(config_path)?;
     let original = fs::read_to_string(config_path).unwrap_or_default();
-    let rendered = merge_config(
+    let mut rendered = merge_config(
         &original,
         provider_id,
         base_url,
@@ -411,7 +468,29 @@ fn write_config_toml(
         bearer_token,
         auth_strategy,
     );
+    if let Some(api_key) = imagegen_api_key.filter(|value| !value.trim().is_empty()) {
+        rendered = merge_imagegen_cli_environment(&rendered, api_key, base_url)?;
+    }
 
+    fs::write(config_path, rendered).map_err(|err| format!("无法写入 config.toml：{err}"))?;
+    set_private_permissions(config_path)?;
+    Ok(backup_path)
+}
+
+fn write_imagegen_cli_environment(
+    config_path: &Path,
+    api_key: &str,
+    base_url: &str,
+) -> Result<Option<PathBuf>, String> {
+    let codex_home = config_path
+        .parent()
+        .ok_or_else(|| format!("无法定位 Codex 目录：{}", config_path.display()))?;
+    let auth_path = codex_home.join("auth.json");
+    ensure_restore_snapshot(codex_home, config_path, &auth_path)?;
+
+    let backup_path = backup_file(config_path)?;
+    let original = fs::read_to_string(config_path).unwrap_or_default();
+    let rendered = merge_imagegen_cli_environment(&original, api_key, base_url)?;
     fs::write(config_path, rendered).map_err(|err| format!("无法写入 config.toml：{err}"))?;
     set_private_permissions(config_path)?;
     Ok(backup_path)
@@ -1227,6 +1306,125 @@ fn render_provider_block(
     rendered
 }
 
+fn merge_imagegen_cli_environment(
+    content: &str,
+    api_key: &str,
+    base_url: &str,
+) -> Result<String, String> {
+    let mut document = content
+        .parse::<DocumentMut>()
+        .map_err(|err| format!("现有 config.toml 无法解析，未写入 imagegen CLI 配置：{err}"))?;
+    let policy_was_missing = !document.as_table().contains_key("shell_environment_policy");
+    let policy = ensure_table(document.as_table_mut(), "shell_environment_policy")?;
+    if policy_was_missing {
+        policy.set_implicit(true);
+    }
+    let environment = ensure_table(policy, "set")?;
+    environment[CODEX_AUTH_KEY] = value(api_key.trim());
+    environment[OPENAI_BASE_URL_ENV_KEY] = value(base_url.trim_end_matches('/'));
+    Ok(document.to_string())
+}
+
+fn ensure_table<'a>(parent: &'a mut Table, key: &str) -> Result<&'a mut Table, String> {
+    if !parent.contains_key(key) {
+        parent.insert(key, Item::Table(Table::new()));
+    }
+
+    let item = parent
+        .get_mut(key)
+        .ok_or_else(|| format!("无法创建 config.toml 表：{key}"))?;
+    if item.is_table() {
+        return item
+            .as_table_mut()
+            .ok_or_else(|| format!("无法读取 config.toml 表：{key}"));
+    }
+
+    let Some(inline) = item.as_value_mut().and_then(TomlValue::as_inline_table_mut) else {
+        return Err(format!(
+            "config.toml 中的 {key} 不是表，无法安全写入 imagegen CLI 配置。"
+        ));
+    };
+
+    let mut table = Table::new();
+    for (inline_key, inline_value) in inline.iter() {
+        table.insert(inline_key, Item::Value(inline_value.clone()));
+    }
+    *item = Item::Table(table);
+    item.as_table_mut()
+        .ok_or_else(|| format!("无法转换 config.toml 表：{key}"))
+}
+
+fn read_shell_environment_string(content: &str, key: &str) -> Option<String> {
+    let document = content.parse::<DocumentMut>().ok()?;
+    document
+        .get("shell_environment_policy")?
+        .get("set")?
+        .get(key)?
+        .as_str()
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+}
+
+fn has_matching_imagegen_cli_environment(
+    content: &str,
+    api_key: Option<&str>,
+    base_url: Option<&str>,
+) -> bool {
+    let Some(api_key) = api_key.filter(|value| !value.trim().is_empty()) else {
+        return false;
+    };
+    let Some(base_url) = base_url.filter(|value| !value.trim().is_empty()) else {
+        return false;
+    };
+
+    read_shell_environment_string(content, CODEX_AUTH_KEY).as_deref() == Some(api_key.trim())
+        && read_shell_environment_string(content, OPENAI_BASE_URL_ENV_KEY).as_deref()
+            == Some(base_url.trim_end_matches('/'))
+}
+
+fn remove_imagegen_cli_environment(content: &str) -> Result<String, String> {
+    let mut document = content
+        .parse::<DocumentMut>()
+        .map_err(|err| format!("现有 config.toml 无法解析，未移除 imagegen CLI 配置：{err}"))?;
+    let Some(policy_item) = document.as_table_mut().get_mut("shell_environment_policy") else {
+        return Ok(content.to_string());
+    };
+    let Some(policy) = policy_item.as_table_mut() else {
+        return Ok(content.to_string());
+    };
+    let Some(environment_item) = policy.get_mut("set") else {
+        return Ok(content.to_string());
+    };
+
+    if let Some(environment) = environment_item.as_table_mut() {
+        environment.remove(CODEX_AUTH_KEY);
+        environment.remove(OPENAI_BASE_URL_ENV_KEY);
+        if environment.is_empty() {
+            policy.remove("set");
+        }
+    } else if let Some(environment) = environment_item
+        .as_value_mut()
+        .and_then(TomlValue::as_inline_table_mut)
+    {
+        environment.remove(CODEX_AUTH_KEY);
+        environment.remove(OPENAI_BASE_URL_ENV_KEY);
+        if environment.is_empty() {
+            policy.remove("set");
+        }
+    }
+
+    if policy.is_empty() {
+        document.as_table_mut().remove("shell_environment_policy");
+    }
+    Ok(document.to_string())
+}
+
+fn remove_imagegen_cli_environment_from_file(config_path: &Path) -> Result<(), String> {
+    let original = fs::read_to_string(config_path).unwrap_or_default();
+    let rendered = remove_imagegen_cli_environment(&original)?;
+    fs::write(config_path, rendered).map_err(|err| format!("无法写入 config.toml：{err}"))
+}
+
 fn split_root_and_tables<'a>(lines: &[&'a str]) -> (Vec<&'a str>, Vec<&'a str>) {
     for (index, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
@@ -1682,6 +1880,7 @@ fn main() {
 fn run_gui() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
+            configure_imagegen_cli,
             configure_provider,
             get_config_status,
             get_history_migration_status,
@@ -1719,7 +1918,7 @@ fn run_cli(args: &[String]) -> Result<(), String> {
     } else {
         None
     };
-    let rendered_config = merge_config(
+    let mut rendered_config = merge_config(
         &original_config,
         &options.provider_id,
         &options.base_url,
@@ -1727,6 +1926,10 @@ fn run_cli(args: &[String]) -> Result<(), String> {
         dry_run_provider_token,
         auth_strategy,
     );
+    if let Some(api_key) = options.api_key.as_deref() {
+        rendered_config =
+            merge_imagegen_cli_environment(&rendered_config, api_key, &options.base_url)?;
+    }
 
     if options.dry_run {
         println!("--- {} ---", display_path(&config_path));
@@ -1765,11 +1968,13 @@ fn run_cli(args: &[String]) -> Result<(), String> {
         &model,
         provider_token,
         auth_strategy,
+        Some(&api_key),
     );
 
     match config_result {
         Ok(config_backup_path) => {
             println!("Configured provider: {}", options.provider_id);
+            println!("Configured imagegen CLI fallback environment.");
             println!("Config: {}", display_path(&config_path));
             println!("Auth: {}", display_path(&auth_path));
             if let Some(path) = config_backup_path {
@@ -1870,7 +2075,7 @@ fn print_help() {
             "  --name NAME        兼容旧参数，当前不影响输出\n",
             "  --base-url URL     Base URL\n",
             "  --model MODEL      Codex model，默认沿用旧配置或 gpt-5.4\n",
-            "  --api-key KEY      写入 auth.json 的 API Key\n"
+            "  --api-key KEY      写入认证配置，并同步 imagegen CLI 备用环境\n"
         )
     );
 }
@@ -1966,6 +2171,147 @@ mod tests {
             "\"local-image-extension\" }"
         )));
         assert!(!rendered.contains("experimental_bearer_token"));
+    }
+
+    #[test]
+    fn imagegen_cli_environment_is_added_and_matches_provider_credentials() {
+        let rendered =
+            merge_imagegen_cli_environment("", "ow-secret-key", "https://ocean-way.top/").unwrap();
+
+        assert_eq!(
+            read_shell_environment_string(&rendered, CODEX_AUTH_KEY).as_deref(),
+            Some("ow-secret-key")
+        );
+        assert_eq!(
+            read_shell_environment_string(&rendered, OPENAI_BASE_URL_ENV_KEY).as_deref(),
+            Some("https://ocean-way.top")
+        );
+        assert!(has_matching_imagegen_cli_environment(
+            &rendered,
+            Some("ow-secret-key"),
+            Some("https://ocean-way.top/")
+        ));
+    }
+
+    #[test]
+    fn imagegen_cli_environment_preserves_existing_inline_settings_and_updates_idempotently() {
+        let original = concat!(
+            "[shell_environment_policy]\n",
+            "inherit = \"core\"\n",
+            "set = { EXISTING_FLAG = \"keep\" }\n",
+        );
+        let first =
+            merge_imagegen_cli_environment(original, "first-key", DEFAULT_BASE_URL).unwrap();
+        let second =
+            merge_imagegen_cli_environment(&first, "second-key", DEFAULT_BASE_URL).unwrap();
+
+        assert_eq!(
+            read_shell_environment_string(&second, "EXISTING_FLAG").as_deref(),
+            Some("keep")
+        );
+        assert_eq!(
+            read_shell_environment_string(&second, CODEX_AUTH_KEY).as_deref(),
+            Some("second-key")
+        );
+        assert_eq!(second.matches("OPENAI_API_KEY").count(), 1);
+        assert!(second.contains("inherit = \"core\""));
+    }
+
+    #[test]
+    fn removing_imagegen_cli_environment_keeps_other_shell_policy_settings() {
+        let configured = concat!(
+            "[shell_environment_policy]\n",
+            "inherit = \"core\"\n",
+            "\n",
+            "[shell_environment_policy.set]\n",
+            "EXISTING_FLAG = \"keep\"\n",
+            "OPENAI_API_KEY = \"ow-secret-key\"\n",
+            "OPENAI_BASE_URL = \"https://ocean-way.top\"\n",
+        );
+        let rendered = remove_imagegen_cli_environment(configured).unwrap();
+
+        assert_eq!(
+            read_shell_environment_string(&rendered, "EXISTING_FLAG").as_deref(),
+            Some("keep")
+        );
+        assert!(read_shell_environment_string(&rendered, CODEX_AUTH_KEY).is_none());
+        assert!(read_shell_environment_string(&rendered, OPENAI_BASE_URL_ENV_KEY).is_none());
+        assert!(rendered.contains("inherit = \"core\""));
+    }
+
+    #[test]
+    fn imagegen_cli_status_detects_stale_key_or_base_url() {
+        let rendered = merge_imagegen_cli_environment("", "current-key", DEFAULT_BASE_URL).unwrap();
+
+        assert!(!has_matching_imagegen_cli_environment(
+            &rendered,
+            Some("old-key"),
+            Some(DEFAULT_BASE_URL)
+        ));
+        assert!(!has_matching_imagegen_cli_environment(
+            &rendered,
+            Some("current-key"),
+            Some("https://other.example")
+        ));
+    }
+
+    #[test]
+    fn second_click_imagegen_configuration_reuses_saved_provider_token() {
+        let dir = unique_test_dir("imagegen-second-click");
+        fs::create_dir_all(&dir).unwrap();
+        let config_path = dir.join("config.toml");
+        fs::write(
+            &config_path,
+            concat!(
+                "model_provider = \"OceanWay\"\n",
+                "\n",
+                "[model_providers.OceanWay]\n",
+                "name = \"OceanWay\"\n",
+                "base_url = \"https://ocean-way.top\"\n",
+                "wire_api = \"responses\"\n",
+                "experimental_bearer_token = \"saved-provider-key\"\n",
+                "requires_openai_auth = true\n",
+            ),
+        )
+        .unwrap();
+
+        let result = configure_imagegen_cli_in_home(&dir).unwrap();
+        let rendered = fs::read_to_string(&config_path).unwrap();
+
+        assert!(result.configured);
+        assert!(has_matching_imagegen_cli_environment(
+            &rendered,
+            Some("saved-provider-key"),
+            Some(DEFAULT_BASE_URL)
+        ));
+        assert!(dir.join(BACKUP_DIR_NAME).join("meta.json").exists());
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn second_click_imagegen_configuration_requires_active_oceanway_provider() {
+        let dir = unique_test_dir("imagegen-wrong-provider");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("config.toml"),
+            concat!(
+                "model_provider = \"openai\"\n",
+                "\n",
+                "[model_providers.OceanWay]\n",
+                "base_url = \"https://ocean-way.top\"\n",
+                "experimental_bearer_token = \"saved-provider-key\"\n",
+            ),
+        )
+        .unwrap();
+
+        let err = match configure_imagegen_cli_in_home(&dir) {
+            Ok(_) => panic!("imagegen repair should require active OceanWay provider"),
+            Err(err) => err,
+        };
+        assert!(err.contains("当前 provider 切换到 OceanWay"));
+
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

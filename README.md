@@ -8,6 +8,7 @@ This repository only contains the Rust/Tauri version. The old Python/PyQt packag
 
 - Writes the OceanWay provider to Codex config.
 - Uses a ChatGPT-login-preserving provider token when the user is already signed in, and falls back to an API Key mode compatible with the Codex Desktop local image tool when no ChatGPT login is detected.
+- Prepares the bundled `imagegen` skill's explicit CLI fallback by injecting `OPENAI_API_KEY` and `OPENAI_BASE_URL` into Codex tool subprocesses.
 - Uses `https://ocean-way.top` as the default Base URL.
 - Preserves existing non-OceanWay Codex settings and providers.
 - Creates a first-use backup before changing user config.
@@ -90,6 +91,24 @@ The non-empty actor authorization header lets Codex Desktop `0.143.0` and later 
 
 After configuration, fully quit and reopen Codex Desktop, then create a new task so the tool registry is rebuilt. The conversational model remains the configured GPT model; the local image extension calls the provider's image endpoint separately.
 
+## Imagegen CLI Fallback
+
+Both authentication modes also receive the following user-level Codex configuration:
+
+```toml
+[shell_environment_policy.set]
+OPENAI_API_KEY = "user-api-key"
+OPENAI_BASE_URL = "https://ocean-way.top"
+```
+
+This is a fallback for the bundled `imagegen` skill's official `scripts/image_gen.py` path. It does not replace the preferred built-in `image_gen` tool and does not modify the system skill. When the built-in tool is unavailable, the user must still explicitly choose the CLI fallback as required by the bundled skill.
+
+The values are injected into commands launched by Codex, including the imagegen CLI. They are not installed as global operating-system environment variables. This keeps the setup cross-platform, makes a second configuration click idempotently update stale values, and allows `恢复默认` to restore the original file snapshot.
+
+Existing users configured by an older release can reopen the app and click `补全图片备用配置`. The backend reuses the saved OceanWay credential without returning or displaying it in the UI.
+
+Security note: any command launched by Codex can read values configured under `shell_environment_policy.set`. Only use trusted repositories and prompts while this fallback is enabled.
+
 ## History Visibility Migration
 
 History migration is optional and is not run during one-click configuration. It is only available when the current provider is OceanWay.
@@ -116,7 +135,7 @@ When the user clicks restore, the app restores that original snapshot. This lets
 
 Restore also undoes recorded history visibility migrations by using the migration manifest. It only restores files and database rows that were changed by this tool, so sessions created after the migration are left alone. The app does not provide a default flow for migrating OceanWay-created sessions into OpenAI Official.
 
-If no snapshot exists, restore falls back to removing only the OceanWay provider and `OPENAI_API_KEY`.
+If no snapshot exists, restore falls back to removing the OceanWay provider, `OPENAI_API_KEY`, and the two imagegen CLI environment entries written by this tool.
 
 ## Development
 
