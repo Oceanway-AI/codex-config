@@ -44,6 +44,7 @@ const restoreButton = $("#restore-button");
 const restoreDialog = $("#restore-dialog");
 const confirmRestoreButton = $("#confirm-restore-button");
 const restartDialog = $("#restart-dialog");
+const restartDialogDetail = $("#restart-dialog-detail");
 const confirmRestartButton = $("#confirm-restart-button");
 const permissionList = $("#permission-list");
 const accountMessage = $("#account-message");
@@ -181,7 +182,11 @@ function renderSystemInfo(info) {
   const systemRelease = info.operatingSystemVersion || info.osVersion || "";
   systemVersion.textContent = [systemName, systemRelease].filter(Boolean).join(" ") || "未知";
   codexVersion.textContent = info.codexDesktopVersion || info.codexCliVersion || info.codexVersion || "未检测到";
-  codexStatus.textContent = info.codexRunning ? "正在运行" : "未运行";
+  codexStatus.textContent = info.codexRunning
+    ? info.codexHost === "ChatGPT"
+      ? "ChatGPT 内运行"
+      : "正在运行"
+    : "未运行";
   setDot(codexDot, info.codexRunning ? "success" : "muted");
 }
 
@@ -224,6 +229,7 @@ async function refreshStatus() {
         osName: "macOS",
         osVersion: "macOS 15.5",
         codexVersion: "0.143.0",
+        codexHost: "ChatGPT",
         codexRunning: true,
       });
       renderAccountStatus({
@@ -435,6 +441,9 @@ async function configureImagegenCli() {
 }
 
 function openRestartDialog() {
+  restartDialogDetail.textContent = currentSystemInfo?.codexHost === "ChatGPT"
+    ? "当前 Codex 运行在 ChatGPT 内。继续后 ChatGPT 将退出并重新打开，当前任务会中断，请先确认工作已保存。"
+    : "Codex 将先正常退出再重新打开。未提交的本地终端输入可能丢失，请确认当前任务已保存。";
   restartDialog.showModal?.();
 }
 

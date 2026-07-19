@@ -158,6 +158,7 @@ struct SystemInfo {
     architecture: String,
     codex_cli_version: Option<String>,
     codex_desktop_version: Option<String>,
+    codex_host: Option<String>,
     codex_running: bool,
     app_version: String,
     backup_created_at: Option<String>,
@@ -2030,6 +2031,7 @@ fn rollback_auth(auth_path: &Path, old_auth: Option<Vec<u8>>) {
 }
 
 fn collect_system_info(codex_home: &Path) -> SystemInfo {
+    let (codex_desktop_version, codex_host, codex_running) = codex_runtime_info();
     SystemInfo {
         operating_system: match env::consts::OS {
             "macos" => "macOS".to_string(),
@@ -2040,8 +2042,9 @@ fn collect_system_info(codex_home: &Path) -> SystemInfo {
             .unwrap_or_else(|| "未知版本".to_string()),
         architecture: env::consts::ARCH.to_string(),
         codex_cli_version: command_output("codex", &["--version"]),
-        codex_desktop_version: codex_desktop_version(),
-        codex_running: is_codex_running(),
+        codex_desktop_version,
+        codex_host,
+        codex_running,
         app_version: env!("CARGO_PKG_VERSION").to_string(),
         backup_created_at: read_restore_snapshot_created_at(codex_home),
     }
@@ -2193,15 +2196,18 @@ fn run_diagnostics_in_home(codex_home: &Path) -> Result<DiagnosticReport, String
     checks.push(diagnostic_check(
         "codex-process",
         "Codex 生效状态",
+        if system.codex_running { "pass" } else { "warning" },
         if system.codex_running {
-            "warning"
+            match system.codex_host.as_deref() {
+                Some("ChatGPT") => {
+                    "已检测到 Codex 正通过 ChatGPT 运行。配置发生变化后，请重启 ChatGPT 并新建任务。"
+                        .to_string()
+                }
+                _ => "已检测到 Codex Desktop 正在运行。配置发生变化后，请重启并新建任务。"
+                    .to_string(),
+            }
         } else {
-            "pass"
-        },
-        if system.codex_running {
-            "Codex 正在运行；配置后请重启并新建任务，确保工具列表刷新。".to_string()
-        } else {
-            "Codex 当前未运行，下次启动时会读取最新配置。".to_string()
+            "Codex 当前未运行；启动 Codex 或 ChatGPT 后会读取最新配置。".to_string()
         },
         false,
     ));
@@ -2294,6 +2300,10 @@ fn render_redacted_diagnostic_report(
                 .unwrap_or("未检测到")
         ),
         format!(
+            "Codex 宿主：{}",
+            system.codex_host.as_deref().unwrap_or("未检测到")
+        ),
+        format!(
             "Codex CLI：{}",
             system.codex_cli_version.as_deref().unwrap_or("未检测到")
         ),
@@ -2364,100 +2374,187 @@ fn operating_system_version() -> Option<String> {
     }
 }
 
-fn codex_desktop_version() -> Option<String> {
+fn codex_runtime_info() -> (Option<String>, Option<String>, bool) {
     #[cfg(target_os = "macos")]
     {
-        for path in [
-            PathBuf::from("/Applications/Codex.app/Contents/Info.plist"),
-            env::var_os("HOME")
-                .map(PathBuf::from)
-                .unwrap_or_default()
-                .join("Applications/Codex.app/Contents/Info.plist"),
-        ] {
-            if !path.exists() {
-                continue;
-            }
-            if let Some(version) = command_output(
-                "/usr/libexec/PlistBuddy",
-                &[
-                    "-c",
-                    "Print :CFBundleShortVersionString",
-                    &display_path(&path),
-                ],
-            ) {
-                return Some(version);
-            }
-        }
-        None
+        let process_list = macos_process_list().unwrap_or_default();
+        let running_host = macos_codex_host_from_process_list(&process_list);
+        let host = running_host.or_else(macos_installed_codex_host);
+        let version = host.and_then(macos_codex_version);
+        (
+            version,
+            host.map(|value| value.label().to_string()),
+            running_host.is_some(),
+        )
     }
 
     #[cfg(target_os = "windows")]
     {
-        let executable = find_windows_codex_executable()?;
-        command_output(
-            "powershell",
-            &[
-                "-NoProfile",
-                "-Command",
-                &format!(
-                    "(Get-Item '{}').VersionInfo.ProductVersion",
-                    display_path(&executable).replace('\'', "''")
-                ),
-            ],
+        let version = find_windows_codex_executable().and_then(|executable| {
+            command_output(
+                "powershell",
+                &[
+                    "-NoProfile",
+                    "-Command",
+                    &format!(
+                        "(Get-Item '{}').VersionInfo.ProductVersion",
+                        display_path(&executable).replace('\'', "''")
+                    ),
+                ],
+            )
+        });
+        let installed = find_windows_codex_executable().is_some();
+        (
+            version,
+            installed.then(|| "Codex Desktop".to_string()),
+            is_codex_running(),
         )
     }
 
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        None
+        (None, None, false)
     }
 }
 
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MacosCodexHost {
+    Standalone,
+    ChatGpt,
+}
+
+#[cfg(target_os = "macos")]
+impl MacosCodexHost {
+    fn app_name(self) -> &'static str {
+        match self {
+            Self::Standalone => "Codex",
+            Self::ChatGpt => "ChatGPT",
+        }
+    }
+
+    fn bundle_name(self) -> &'static str {
+        match self {
+            Self::Standalone => "Codex.app",
+            Self::ChatGpt => "ChatGPT.app",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Standalone => "Codex Desktop",
+            Self::ChatGpt => "ChatGPT",
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_app_path(host: MacosCodexHost) -> Option<PathBuf> {
+    let system_path = PathBuf::from("/Applications").join(host.bundle_name());
+    if system_path.exists() {
+        return Some(system_path);
+    }
+
+    let user_path = env::var_os("HOME")
+        .map(PathBuf::from)?
+        .join("Applications")
+        .join(host.bundle_name());
+    user_path.exists().then_some(user_path)
+}
+
+#[cfg(target_os = "macos")]
+fn macos_installed_codex_host() -> Option<MacosCodexHost> {
+    [MacosCodexHost::Standalone, MacosCodexHost::ChatGpt]
+        .into_iter()
+        .find(|host| {
+            macos_app_path(*host).is_some_and(|path| {
+                path.join("Contents/Resources/codex").exists()
+                    || matches!(host, MacosCodexHost::Standalone)
+            })
+        })
+}
+
+#[cfg(target_os = "macos")]
+fn macos_process_list() -> Option<String> {
+    command_output("ps", &["-axo", "command="])
+}
+
+#[cfg(target_os = "macos")]
+fn macos_codex_host_from_process_list(process_list: &str) -> Option<MacosCodexHost> {
+    let standalone_running = process_list
+        .lines()
+        .any(|line| line.contains("/Codex.app/Contents/MacOS/Codex"));
+    if standalone_running {
+        return Some(MacosCodexHost::Standalone);
+    }
+
+    let chatgpt_running = process_list
+        .lines()
+        .any(|line| line.contains("/ChatGPT.app/Contents/MacOS/ChatGPT"));
+    let chatgpt_codex_server_running = process_list.lines().any(|line| {
+        line.contains("/ChatGPT.app/Contents/Resources/codex") && line.contains("app-server")
+    });
+    (chatgpt_running && chatgpt_codex_server_running).then_some(MacosCodexHost::ChatGpt)
+}
+
+#[cfg(target_os = "macos")]
+fn macos_codex_version(host: MacosCodexHost) -> Option<String> {
+    let app_path = macos_app_path(host)?;
+    let embedded_codex = app_path.join("Contents/Resources/codex");
+    if embedded_codex.exists() {
+        if let Some(version) = command_output(&display_path(&embedded_codex), &["--version"]) {
+            return Some(version);
+        }
+    }
+
+    if host == MacosCodexHost::Standalone {
+        let info_plist = app_path.join("Contents/Info.plist");
+        return command_output(
+            "/usr/libexec/PlistBuddy",
+            &[
+                "-c",
+                "Print :CFBundleShortVersionString",
+                &display_path(&info_plist),
+            ],
+        );
+    }
+
+    None
+}
+
+#[cfg(target_os = "windows")]
 fn is_codex_running() -> bool {
-    #[cfg(target_os = "macos")]
-    {
-        Command::new("pgrep")
-            .args(["-f", "/Codex.app/Contents/MacOS/Codex"])
-            .status()
-            .is_ok_and(|status| status.success())
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        return Command::new("tasklist")
-            .args(["/FI", "IMAGENAME eq Codex.exe"])
-            .output()
-            .ok()
-            .is_some_and(|output| {
-                output.status.success()
-                    && String::from_utf8_lossy(&output.stdout).contains("Codex.exe")
-            });
-    }
-
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        false
-    }
+    Command::new("tasklist")
+        .args(["/FI", "IMAGENAME eq Codex.exe"])
+        .output()
+        .ok()
+        .is_some_and(|output| {
+            output.status.success() && String::from_utf8_lossy(&output.stdout).contains("Codex.exe")
+        })
 }
 
 fn restart_codex_desktop() -> Result<RestartCodexResult, String> {
     #[cfg(target_os = "macos")]
     {
-        let installed = Path::new("/Applications/Codex.app").exists()
-            || env::var_os("HOME")
-                .map(PathBuf::from)
-                .is_some_and(|home| home.join("Applications/Codex.app").exists());
-        if !installed {
-            return Err("未在“应用程序”目录检测到 Codex.app。".to_string());
-        }
-
-        let was_running = is_codex_running();
+        let process_list = macos_process_list().unwrap_or_default();
+        let running_host = macos_codex_host_from_process_list(&process_list);
+        let host = running_host
+            .or_else(macos_installed_codex_host)
+            .ok_or_else(|| "未在“应用程序”目录检测到 Codex 或 ChatGPT。".to_string())?;
+        let app_path = macos_app_path(host)
+            .ok_or_else(|| format!("未找到 {} 的应用程序文件。", host.label()))?;
+        let was_running = running_host.is_some();
         if was_running {
+            let quit_script = format!("tell application \"{}\" to quit", host.app_name());
             let _ = Command::new("osascript")
-                .args(["-e", "tell application \"Codex\" to quit"])
+                .args(["-e", &quit_script])
                 .status();
             for _ in 0..20 {
-                if !is_codex_running() {
+                let host_still_running = macos_process_list()
+                    .as_deref()
+                    .and_then(macos_codex_host_from_process_list)
+                    == Some(host);
+                if !host_still_running {
                     break;
                 }
                 thread::sleep(Duration::from_millis(150));
@@ -2465,13 +2562,13 @@ fn restart_codex_desktop() -> Result<RestartCodexResult, String> {
         }
 
         Command::new("open")
-            .args(["-a", "Codex"])
+            .arg(&app_path)
             .spawn()
-            .map_err(|err| format!("无法重新打开 Codex：{err}"))?;
+            .map_err(|err| format!("无法重新打开 {}：{err}", host.label()))?;
         Ok(RestartCodexResult {
             restarted: true,
             was_running,
-            message: "Codex 已重新打开。请新建任务以刷新工具列表。".to_string(),
+            message: format!("{} 已重新打开。请新建任务以刷新工具列表。", host.label()),
         })
     }
 
@@ -2906,6 +3003,48 @@ mod tests {
         assert!(version_at_least("0.144.1-beta.2", "0.143.0"));
         assert!(!version_at_least("Codex 0.142.9", "0.143.0"));
         assert!(!version_at_least("unknown", "0.143.0"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_process_detection_recognizes_standalone_codex() {
+        let processes = concat!(
+            "/Applications/Codex.app/Contents/MacOS/Codex\n",
+            "/Applications/Codex.app/Contents/Frameworks/Codex Framework.framework/",
+            "Helpers/Codex (Renderer).app/Contents/MacOS/Codex (Renderer)\n",
+        );
+
+        assert_eq!(
+            macos_codex_host_from_process_list(processes),
+            Some(MacosCodexHost::Standalone)
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_process_detection_recognizes_chatgpt_hosted_codex() {
+        let processes = concat!(
+            "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT\n",
+            "/Applications/ChatGPT.app/Contents/Resources/codex ",
+            "-c features.code_mode_host=true app-server --analytics-default-enabled\n",
+        );
+
+        assert_eq!(
+            macos_codex_host_from_process_list(processes),
+            Some(MacosCodexHost::ChatGpt)
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_process_detection_ignores_helpers_and_chatgpt_without_codex_server() {
+        let helper_only = concat!(
+            "/Applications/Codex.app/Contents/Frameworks/Codex Framework.framework/",
+            "Helpers/Codex (Renderer).app/Contents/MacOS/Codex (Renderer)\n",
+            "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT\n",
+        );
+
+        assert_eq!(macos_codex_host_from_process_list(helper_only), None);
     }
 
     #[test]
