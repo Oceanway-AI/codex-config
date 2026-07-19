@@ -1177,6 +1177,106 @@ svg {
   font-style: normal;
 }
 
+@media (min-width: 761px) {
+  .tools-panel,
+  .account-panel {
+    padding: 10px 12px;
+  }
+
+  .tool-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  .tool-row {
+    grid-template-columns: 28px minmax(0, 1fr) auto;
+    gap: 6px;
+    min-height: 46px;
+    padding: 6px 7px;
+  }
+
+  .tool-icon {
+    width: 28px;
+    height: 28px;
+  }
+
+  .tool-icon svg {
+    width: 15px;
+    height: 15px;
+  }
+
+  .tool-row p {
+    margin-top: 1px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .tool-row button {
+    min-width: 40px;
+    height: 26px;
+    padding: 0 7px;
+  }
+
+  .restore-action {
+    margin-top: 7px;
+  }
+
+  .account-intro {
+    grid-template-columns: 32px minmax(0, 1fr) auto;
+    gap: 8px;
+    padding: 7px 8px;
+  }
+
+  .account-intro p {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .reserved-icon {
+    width: 32px;
+    height: 32px;
+  }
+
+  .reserved-icon svg {
+    width: 17px;
+    height: 17px;
+  }
+
+  .quota-grid {
+    gap: 6px;
+    margin-top: 6px;
+  }
+
+  .quota-grid article {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    padding: 7px 8px;
+  }
+
+  .quota-grid strong {
+    grid-row: 1 / span 2;
+    grid-column: 2;
+    margin: 0;
+    font-size: 15px;
+  }
+
+  .quota-grid small {
+    margin-top: 2px;
+  }
+
+  .permission-list {
+    margin-top: 6px;
+  }
+
+  .permission-heading,
+  .permission-list li {
+    padding: 6px 8px;
+  }
+}
+
 .status-footer {
   display: flex;
   align-items: center;
