@@ -750,10 +750,11 @@ svg {
 }
 
 .control-panel {
+  flex: 1 1 0;
   display: grid;
-  grid-template-rows: 50px minmax(0, auto);
+  grid-template-rows: 50px minmax(0, 1fr);
   max-height: var(--control-panel-max-height, none);
-  margin-top: auto;
+  margin-top: 0;
   min-height: 0;
   overflow: hidden;
 }
@@ -804,6 +805,11 @@ svg {
   padding: 16px 18px;
   overflow: auto;
   overscroll-behavior: contain;
+}
+
+.diagnosis-panel {
+  display: flex;
+  flex-direction: column;
 }
 
 .tab-toolbar {
@@ -947,9 +953,11 @@ svg {
 }
 
 .copy-report-action {
+  align-self: flex-start;
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  margin-top: auto;
   padding: 7px 10px;
   border: 1px solid #dae5f2;
   border-radius: 9px;
@@ -1459,6 +1467,7 @@ svg {
   }
 
   .control-panel {
+    flex: none;
     max-height: none;
     margin-top: 0;
   }
