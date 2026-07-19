@@ -46,7 +46,6 @@ const confirmRestoreButton = $("#confirm-restore-button");
 const restartDialog = $("#restart-dialog");
 const restartDialogDetail = $("#restart-dialog-detail");
 const confirmRestartButton = $("#confirm-restart-button");
-const permissionList = $("#permission-list");
 const accountMessage = $("#account-message");
 const balanceValue = $("#balance-value");
 const planValue = $("#plan-value");
@@ -215,22 +214,14 @@ function renderSystemInfo(info) {
 }
 
 function renderAccountStatus(account) {
-  accountMessage.textContent = account.message || "接口结构已预留，等待接入 OceanWay 账户服务。";
+  accountMessage.textContent = account.balance == null
+    ? "接入账户服务后，将在这里自动显示余额与同步状态。"
+    : "账户余额与同步状态已更新。";
   balanceValue.textContent = account.balance == null
     ? "—"
     : `${account.balance}${account.balanceUnit ? ` ${account.balanceUnit}` : ""}`;
   planValue.textContent = account.planName || "等待账户接口";
   accountSyncValue.textContent = account.lastCheckedAt || "—";
-  permissionList.innerHTML = "";
-  for (const model of account.modelPermissions || account.models || []) {
-    const item = document.createElement("li");
-    const name = document.createElement("span");
-    const state = document.createElement("em");
-    name.textContent = model.model;
-    state.textContent = model.statusLabel || model.detail || model.status;
-    item.append(name, state);
-    permissionList.append(item);
-  }
 }
 
 function browserPreviewStatus() {
@@ -257,14 +248,7 @@ async function refreshStatus() {
         codexRunning: true,
       });
       renderAccountStatus({
-        message: "接口结构已预留，等待接入 OceanWay 账户服务。",
-        balanceDisplay: "—",
-        planDisplay: "等待账户接口",
-        lastSyncedAt: "—",
-        models: [
-          { model: "gpt-5.4", statusLabel: "等待接口" },
-          { model: "gpt-image-2", statusLabel: "等待接口" },
-        ],
+        message: "接入账户服务后，将在这里自动显示余额与同步状态。",
       });
       return;
     }
