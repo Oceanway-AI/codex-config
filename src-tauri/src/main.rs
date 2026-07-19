@@ -8,10 +8,14 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{self, Command};
+use std::process::{self, Command, Stdio};
+use std::sync::Mutex;
+use std::thread;
 use std::time::Duration;
-use tauri::{LogicalSize, Manager, Size};
+use tauri::{LogicalSize, Manager, Size, State};
+use tauri_plugin_updater::{Update, UpdaterExt};
 use toml_edit::{value, DocumentMut, Item, Table, Value as TomlValue};
 
 const PROVIDER_ID: &str = "OceanWay";
@@ -23,6 +27,7 @@ const IMAGE_EXTENSION_ACTOR_AUTHORIZATION: &str = "local-image-extension";
 const BACKUP_DIR_NAME: &str = "oceanway-ai-backup";
 const HISTORY_MIGRATION_BACKUP_DIR_NAME: &str = "oceanway-history-migration-backup";
 const CODEX_STATE_DB_NAME: &str = "state_5.sqlite";
+const MINIMUM_IMAGE_EXTENSION_VERSION: &str = "0.143.0";
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -145,6 +150,83 @@ struct ConnectionTestResult {
     endpoint: String,
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SystemInfo {
+    operating_system: String,
+    operating_system_version: String,
+    architecture: String,
+    codex_cli_version: Option<String>,
+    codex_desktop_version: Option<String>,
+    codex_running: bool,
+    app_version: String,
+    backup_created_at: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DiagnosticCheck {
+    id: String,
+    label: String,
+    status: String,
+    detail: String,
+    repairable: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DiagnosticReport {
+    generated_at: String,
+    overall_status: String,
+    passed: usize,
+    warnings: usize,
+    errors: usize,
+    checks: Vec<DiagnosticCheck>,
+    system: SystemInfo,
+    redacted_report: String,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ModelPermission {
+    model: String,
+    status: String,
+    detail: String,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AccountAccessStatus {
+    integration_available: bool,
+    status: String,
+    message: String,
+    balance: Option<f64>,
+    balance_unit: Option<String>,
+    plan_name: Option<String>,
+    last_checked_at: Option<String>,
+    model_permissions: Vec<ModelPermission>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RestartCodexResult {
+    restarted: bool,
+    was_running: bool,
+    message: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateCheckResult {
+    available: bool,
+    current_version: String,
+    latest_version: Option<String>,
+    notes: Option<String>,
+    published_at: Option<String>,
+}
+
+struct PendingUpdate(Mutex<Option<Update>>);
+
 #[derive(Deserialize, Serialize)]
 struct RestoreSnapshotMeta {
     config_existed: bool,
@@ -225,30 +307,43 @@ fn test_connection(api_key: String, base_url: String) -> Result<ConnectionTestRe
     } else {
         base_url
     };
+    Ok(test_connection_internal(&api_key, base_url))
+}
+
+fn test_connection_internal(api_key: &str, base_url: &str) -> ConnectionTestResult {
     let endpoints = model_endpoints(base_url);
-    let client = reqwest::blocking::Client::builder()
+    let client = match reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(12))
         .build()
-        .map_err(|err| format!("无法创建测试客户端：{err}"))?;
+    {
+        Ok(client) => client,
+        Err(err) => {
+            return ConnectionTestResult {
+                ok: false,
+                message: format!("无法创建测试客户端：{err}"),
+                endpoint: base_url.to_string(),
+            };
+        }
+    };
 
     let mut last_error = String::new();
     for endpoint in endpoints {
-        match client.get(&endpoint).bearer_auth(&api_key).send() {
+        match client.get(&endpoint).bearer_auth(api_key).send() {
             Ok(response) if response.status().is_success() => {
-                return Ok(ConnectionTestResult {
+                return ConnectionTestResult {
                     ok: true,
                     message: "连接成功，API Key 和 Base URL 可用。".to_string(),
                     endpoint,
-                });
+                };
             }
             Ok(response) => {
                 let status = response.status();
                 if status.as_u16() == 401 || status.as_u16() == 403 {
-                    return Ok(ConnectionTestResult {
+                    return ConnectionTestResult {
                         ok: false,
                         message: format!("连接到服务，但 API Key 无效或无权限。HTTP {status}"),
                         endpoint,
-                    });
+                    };
                 }
                 last_error = format!("HTTP {status}");
             }
@@ -258,11 +353,128 @@ fn test_connection(api_key: String, base_url: String) -> Result<ConnectionTestRe
         }
     }
 
-    Ok(ConnectionTestResult {
+    ConnectionTestResult {
         ok: false,
         message: format!("连接失败：{last_error}"),
         endpoint: base_url.to_string(),
-    })
+    }
+}
+
+#[tauri::command]
+fn get_system_info() -> Result<SystemInfo, String> {
+    let codex_home = codex_home()?;
+    Ok(collect_system_info(&codex_home))
+}
+
+#[tauri::command]
+fn get_account_access_status() -> AccountAccessStatus {
+    AccountAccessStatus {
+        integration_available: false,
+        status: "reserved".to_string(),
+        message: "额度与模型权限接口已预留，接入 OceanWay 账户接口后即可展示实时数据。".to_string(),
+        balance: None,
+        balance_unit: None,
+        plan_name: None,
+        last_checked_at: None,
+        model_permissions: vec![
+            ModelPermission {
+                model: "gpt-5.4".to_string(),
+                status: "pending".to_string(),
+                detail: "等待账户权限接口".to_string(),
+            },
+            ModelPermission {
+                model: "gpt-image-2".to_string(),
+                status: "pending".to_string(),
+                detail: "等待账户权限接口".to_string(),
+            },
+        ],
+    }
+}
+
+#[tauri::command]
+fn run_diagnostics() -> Result<DiagnosticReport, String> {
+    let codex_home = codex_home()?;
+    run_diagnostics_in_home(&codex_home)
+}
+
+#[tauri::command]
+fn copy_support_report() -> Result<String, String> {
+    let codex_home = codex_home()?;
+    let report = run_diagnostics_in_home(&codex_home)?;
+    copy_text_to_clipboard(&report.redacted_report)?;
+    Ok("脱敏诊断报告已复制到剪贴板。".to_string())
+}
+
+#[tauri::command]
+fn repair_configuration() -> Result<OperationResult, String> {
+    let codex_home = codex_home()?;
+    let config_path = codex_home.join("config.toml");
+    let config = fs::read_to_string(&config_path).unwrap_or_default();
+    let base_url = read_provider_base_url(&config, PROVIDER_ID)
+        .unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
+    configure_provider_internal(String::new(), base_url)
+}
+
+#[tauri::command]
+fn restart_codex() -> Result<RestartCodexResult, String> {
+    restart_codex_desktop()
+}
+
+#[tauri::command]
+async fn check_for_updates(
+    app: tauri::AppHandle,
+    pending_update: State<'_, PendingUpdate>,
+) -> Result<UpdateCheckResult, String> {
+    let current_version = app.package_info().version.to_string();
+    let update = app
+        .updater()
+        .map_err(|err| format!("无法初始化更新服务：{err}"))?
+        .check()
+        .await
+        .map_err(|err| format!("检查更新失败：{err}"))?;
+
+    let result = if let Some(update) = update.as_ref() {
+        UpdateCheckResult {
+            available: true,
+            current_version,
+            latest_version: Some(update.version.clone()),
+            notes: update.body.clone(),
+            published_at: update.date.map(|date| date.to_string()),
+        }
+    } else {
+        UpdateCheckResult {
+            available: false,
+            current_version,
+            latest_version: None,
+            notes: None,
+            published_at: None,
+        }
+    };
+
+    *pending_update
+        .0
+        .lock()
+        .map_err(|_| "无法保存待安装更新状态。".to_string())? = update;
+    Ok(result)
+}
+
+#[tauri::command]
+async fn install_update(
+    app: tauri::AppHandle,
+    pending_update: State<'_, PendingUpdate>,
+) -> Result<(), String> {
+    let update = pending_update
+        .0
+        .lock()
+        .map_err(|_| "无法读取待安装更新状态。".to_string())?
+        .take()
+        .ok_or_else(|| "没有待安装的更新，请先检查更新。".to_string())?;
+
+    update
+        .download_and_install(|_, _| {}, || {})
+        .await
+        .map_err(|err| format!("下载或安装更新失败：{err}"))?;
+    app.restart();
 }
 
 #[tauri::command]
@@ -1606,6 +1818,21 @@ fn read_provider_bearer_token(content: &str, provider_id: &str) -> Option<String
 }
 
 fn read_provider_string(content: &str, provider_id: &str, target_key: &str) -> Option<String> {
+    read_provider_raw_value(content, provider_id, target_key)
+        .and_then(|value| parse_quoted_toml_string(&value))
+}
+
+fn read_provider_bool(content: &str, provider_id: &str, target_key: &str) -> Option<bool> {
+    read_provider_raw_value(content, provider_id, target_key).and_then(|value| {
+        match value.as_str() {
+            "true" => Some(true),
+            "false" => Some(false),
+            _ => None,
+        }
+    })
+}
+
+fn read_provider_raw_value(content: &str, provider_id: &str, target_key: &str) -> Option<String> {
     let mut in_provider = false;
     let provider_header = format!("[model_providers.{provider_id}]");
     let quoted_provider_header = format!("[model_providers.\"{provider_id}\"]");
@@ -1630,7 +1857,7 @@ fn read_provider_string(content: &str, provider_id: &str, target_key: &str) -> O
         };
 
         if key.trim() == target_key {
-            return parse_quoted_toml_string(value.trim());
+            return Some(value.trim().to_string());
         }
     }
 
@@ -1802,6 +2029,562 @@ fn rollback_auth(auth_path: &Path, old_auth: Option<Vec<u8>>) {
     }
 }
 
+fn collect_system_info(codex_home: &Path) -> SystemInfo {
+    SystemInfo {
+        operating_system: match env::consts::OS {
+            "macos" => "macOS".to_string(),
+            "windows" => "Windows".to_string(),
+            other => other.to_string(),
+        },
+        operating_system_version: operating_system_version()
+            .unwrap_or_else(|| "未知版本".to_string()),
+        architecture: env::consts::ARCH.to_string(),
+        codex_cli_version: command_output("codex", &["--version"]),
+        codex_desktop_version: codex_desktop_version(),
+        codex_running: is_codex_running(),
+        app_version: env!("CARGO_PKG_VERSION").to_string(),
+        backup_created_at: read_restore_snapshot_created_at(codex_home),
+    }
+}
+
+fn run_diagnostics_in_home(codex_home: &Path) -> Result<DiagnosticReport, String> {
+    let config_path = codex_home.join("config.toml");
+    let auth_path = codex_home.join("auth.json");
+    let config = fs::read_to_string(&config_path).unwrap_or_default();
+    let provider_id = read_root_string(&config, "model_provider");
+    let base_url = read_provider_base_url(&config, PROVIDER_ID);
+    let provider_token = read_provider_bearer_token(&config, PROVIDER_ID);
+    let auth_api_key = read_auth_api_key(&auth_path);
+    let api_key = provider_token.as_ref().or(auth_api_key.as_ref());
+    let chatgpt_login = read_auth_has_chatgpt_login(&auth_path);
+    let provider_active = provider_id.as_deref() == Some(PROVIDER_ID);
+    let system = collect_system_info(codex_home);
+    let mut checks = Vec::new();
+
+    checks.push(diagnostic_check(
+        "provider",
+        "OceanWay provider",
+        if provider_active { "pass" } else { "error" },
+        if provider_active {
+            format!(
+                "当前 Base URL：{}",
+                base_url.as_deref().unwrap_or(DEFAULT_BASE_URL)
+            )
+        } else {
+            "当前 Codex 尚未切换到 OceanWay。".to_string()
+        },
+        !provider_active,
+    ));
+
+    let has_api_key = api_key.is_some_and(|value| !value.trim().is_empty());
+    checks.push(diagnostic_check(
+        "credential",
+        "认证凭据",
+        if has_api_key { "pass" } else { "error" },
+        if has_api_key {
+            if provider_token.is_some() {
+                "已检测到 provider 专用凭据，报告不会输出完整内容。".to_string()
+            } else {
+                "已检测到本机 API Key，报告不会输出完整内容。".to_string()
+            }
+        } else {
+            "未找到已保存的 OceanWay API Key。".to_string()
+        },
+        !has_api_key,
+    ));
+
+    let imagegen_ready = provider_active
+        && has_matching_imagegen_cli_environment(
+            &config,
+            api_key.map(String::as_str),
+            base_url.as_deref(),
+        );
+    checks.push(diagnostic_check(
+        "imagegen",
+        "图片备用链路",
+        if imagegen_ready { "pass" } else { "warning" },
+        if imagegen_ready {
+            "CLI 备用环境与当前 Key、Base URL 一致。".to_string()
+        } else {
+            "图片备用环境缺失或已过期，可在运维工具中修复。".to_string()
+        },
+        !imagegen_ready && provider_active && has_api_key,
+    ));
+
+    let compatibility_ready = if chatgpt_login {
+        provider_token.is_some()
+            && read_provider_bool(&config, PROVIDER_ID, "requires_openai_auth") == Some(true)
+    } else {
+        read_provider_bool(&config, PROVIDER_ID, "requires_openai_auth") == Some(false)
+            && read_provider_raw_value(&config, PROVIDER_ID, "http_headers").is_some_and(|value| {
+                value.contains("x-openai-actor-authorization")
+                    && value.contains(IMAGE_EXTENSION_ACTOR_AUTHORIZATION)
+            })
+    };
+    checks.push(diagnostic_check(
+        "auth-mode",
+        "Codex 图片兼容模式",
+        if compatibility_ready {
+            "pass"
+        } else {
+            "warning"
+        },
+        if compatibility_ready {
+            if chatgpt_login {
+                "已保留 ChatGPT 登录态并使用 provider 专用凭据。".to_string()
+            } else {
+                "API Key 模式所需的本地图片扩展标记已就绪。".to_string()
+            }
+        } else {
+            "当前认证模式缺少图片工具所需的兼容字段。".to_string()
+        },
+        !compatibility_ready && provider_active && has_api_key,
+    ));
+
+    let version_value = system
+        .codex_desktop_version
+        .as_deref()
+        .or(system.codex_cli_version.as_deref());
+    let version_status = match version_value {
+        Some(version) if version_at_least(version, MINIMUM_IMAGE_EXTENSION_VERSION) => "pass",
+        Some(_) => "warning",
+        None => "warning",
+    };
+    let version_detail = match version_value {
+        Some(version) if version_status == "pass" => {
+            format!("检测到 Codex {version}，满足当前兼容要求。")
+        }
+        Some(version) => format!(
+            "检测到 Codex {version}；建议升级到 {MINIMUM_IMAGE_EXTENSION_VERSION} 或更高版本。"
+        ),
+        None => "未检测到 Codex 版本，请确认 Codex Desktop 或 CLI 已安装。".to_string(),
+    };
+    checks.push(diagnostic_check(
+        "codex-version",
+        "Codex 版本兼容",
+        version_status,
+        version_detail,
+        false,
+    ));
+
+    let connection = if provider_active && has_api_key {
+        Some(test_connection_internal(
+            api_key.map(String::as_str).unwrap_or_default(),
+            base_url.as_deref().unwrap_or(DEFAULT_BASE_URL),
+        ))
+    } else {
+        None
+    };
+    checks.push(diagnostic_check(
+        "connection",
+        "OceanWay 服务连接",
+        match connection.as_ref() {
+            Some(result) if result.ok => "pass",
+            Some(_) => "error",
+            None => "warning",
+        },
+        connection
+            .as_ref()
+            .map(|result| result.message.clone())
+            .unwrap_or_else(|| "完成 provider 和 API Key 配置后才能测试连接。".to_string()),
+        false,
+    ));
+
+    checks.push(diagnostic_check(
+        "codex-process",
+        "Codex 生效状态",
+        if system.codex_running {
+            "warning"
+        } else {
+            "pass"
+        },
+        if system.codex_running {
+            "Codex 正在运行；配置后请重启并新建任务，确保工具列表刷新。".to_string()
+        } else {
+            "Codex 当前未运行，下次启动时会读取最新配置。".to_string()
+        },
+        false,
+    ));
+
+    checks.push(diagnostic_check(
+        "backup",
+        "恢复快照",
+        if system.backup_created_at.is_some() {
+            "pass"
+        } else {
+            "warning"
+        },
+        system
+            .backup_created_at
+            .as_ref()
+            .map(|created_at| format!("首次配置快照创建于 {created_at}。"))
+            .unwrap_or_else(|| "尚未创建首次配置快照。完成配置时会自动创建。".to_string()),
+        false,
+    ));
+
+    let passed = checks.iter().filter(|check| check.status == "pass").count();
+    let warnings = checks
+        .iter()
+        .filter(|check| check.status == "warning")
+        .count();
+    let errors = checks
+        .iter()
+        .filter(|check| check.status == "error")
+        .count();
+    let overall_status = if errors > 0 {
+        "error"
+    } else if warnings > 0 {
+        "warning"
+    } else {
+        "pass"
+    }
+    .to_string();
+    let generated_at = Local::now().to_rfc3339();
+    let redacted_report =
+        render_redacted_diagnostic_report(&generated_at, &overall_status, &system, &checks);
+
+    Ok(DiagnosticReport {
+        generated_at,
+        overall_status,
+        passed,
+        warnings,
+        errors,
+        checks,
+        system,
+        redacted_report,
+    })
+}
+
+fn diagnostic_check(
+    id: &str,
+    label: &str,
+    status: &str,
+    detail: String,
+    repairable: bool,
+) -> DiagnosticCheck {
+    DiagnosticCheck {
+        id: id.to_string(),
+        label: label.to_string(),
+        status: status.to_string(),
+        detail,
+        repairable,
+    }
+}
+
+fn render_redacted_diagnostic_report(
+    generated_at: &str,
+    overall_status: &str,
+    system: &SystemInfo,
+    checks: &[DiagnosticCheck],
+) -> String {
+    let mut lines = vec![
+        "OceanWay Codex 脱敏诊断报告".to_string(),
+        format!("生成时间：{generated_at}"),
+        format!("总体状态：{overall_status}"),
+        format!(
+            "系统：{} {} ({})",
+            system.operating_system, system.operating_system_version, system.architecture
+        ),
+        format!("配置工具版本：{}", system.app_version),
+        format!(
+            "Codex Desktop：{}",
+            system
+                .codex_desktop_version
+                .as_deref()
+                .unwrap_or("未检测到")
+        ),
+        format!(
+            "Codex CLI：{}",
+            system.codex_cli_version.as_deref().unwrap_or("未检测到")
+        ),
+        format!(
+            "Codex 进程：{}",
+            if system.codex_running {
+                "正在运行"
+            } else {
+                "未运行"
+            }
+        ),
+        String::new(),
+        "检查结果：".to_string(),
+    ];
+    for check in checks {
+        lines.push(format!(
+            "- [{}] {}：{}",
+            check.status.to_uppercase(),
+            check.label,
+            check.detail
+        ));
+    }
+    lines.extend([
+        String::new(),
+        "安全说明：本报告不会包含 API Key、Bearer Token 或完整认证内容。".to_string(),
+    ]);
+    lines.join("\n")
+}
+
+fn read_restore_snapshot_created_at(codex_home: &Path) -> Option<String> {
+    let path = codex_home.join(BACKUP_DIR_NAME).join("meta.json");
+    let content = fs::read_to_string(path).ok()?;
+    serde_json::from_str::<RestoreSnapshotMeta>(&content)
+        .ok()
+        .map(|meta| meta.created_at)
+}
+
+fn command_output(command: &str, args: &[&str]) -> Option<String> {
+    let output = Command::new(command).args(args).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!text.is_empty()).then_some(text)
+}
+
+fn operating_system_version() -> Option<String> {
+    #[cfg(target_os = "macos")]
+    {
+        command_output("sw_vers", &["-productVersion"])
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        return command_output(
+            "powershell",
+            &[
+                "-NoProfile",
+                "-Command",
+                "(Get-CimInstance Win32_OperatingSystem).Version",
+            ],
+        );
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        command_output("uname", &["-sr"])
+    }
+}
+
+fn codex_desktop_version() -> Option<String> {
+    #[cfg(target_os = "macos")]
+    {
+        for path in [
+            PathBuf::from("/Applications/Codex.app/Contents/Info.plist"),
+            env::var_os("HOME")
+                .map(PathBuf::from)
+                .unwrap_or_default()
+                .join("Applications/Codex.app/Contents/Info.plist"),
+        ] {
+            if !path.exists() {
+                continue;
+            }
+            if let Some(version) = command_output(
+                "/usr/libexec/PlistBuddy",
+                &[
+                    "-c",
+                    "Print :CFBundleShortVersionString",
+                    &display_path(&path),
+                ],
+            ) {
+                return Some(version);
+            }
+        }
+        None
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let executable = find_windows_codex_executable()?;
+        command_output(
+            "powershell",
+            &[
+                "-NoProfile",
+                "-Command",
+                &format!(
+                    "(Get-Item '{}').VersionInfo.ProductVersion",
+                    display_path(&executable).replace('\'', "''")
+                ),
+            ],
+        )
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        None
+    }
+}
+
+fn is_codex_running() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("pgrep")
+            .args(["-f", "/Codex.app/Contents/MacOS/Codex"])
+            .status()
+            .is_ok_and(|status| status.success())
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        return Command::new("tasklist")
+            .args(["/FI", "IMAGENAME eq Codex.exe"])
+            .output()
+            .ok()
+            .is_some_and(|output| {
+                output.status.success()
+                    && String::from_utf8_lossy(&output.stdout).contains("Codex.exe")
+            });
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        false
+    }
+}
+
+fn restart_codex_desktop() -> Result<RestartCodexResult, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let installed = Path::new("/Applications/Codex.app").exists()
+            || env::var_os("HOME")
+                .map(PathBuf::from)
+                .is_some_and(|home| home.join("Applications/Codex.app").exists());
+        if !installed {
+            return Err("未在“应用程序”目录检测到 Codex.app。".to_string());
+        }
+
+        let was_running = is_codex_running();
+        if was_running {
+            let _ = Command::new("osascript")
+                .args(["-e", "tell application \"Codex\" to quit"])
+                .status();
+            for _ in 0..20 {
+                if !is_codex_running() {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(150));
+            }
+        }
+
+        Command::new("open")
+            .args(["-a", "Codex"])
+            .spawn()
+            .map_err(|err| format!("无法重新打开 Codex：{err}"))?;
+        Ok(RestartCodexResult {
+            restarted: true,
+            was_running,
+            message: "Codex 已重新打开。请新建任务以刷新工具列表。".to_string(),
+        })
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let executable = find_windows_codex_executable()
+            .ok_or_else(|| "未找到 Codex.exe，请手动重启 Codex。".to_string())?;
+        let was_running = is_codex_running();
+        if was_running {
+            let _ = Command::new("taskkill")
+                .args(["/IM", "Codex.exe", "/T"])
+                .status();
+            thread::sleep(Duration::from_millis(500));
+        }
+        Command::new(&executable)
+            .spawn()
+            .map_err(|err| format!("无法重新打开 Codex：{err}"))?;
+        Ok(RestartCodexResult {
+            restarted: true,
+            was_running,
+            message: "Codex 已重新打开。请新建任务以刷新工具列表。".to_string(),
+        })
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        Err("当前系统暂不支持自动重启 Codex。".to_string())
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn find_windows_codex_executable() -> Option<PathBuf> {
+    if let Some(output) = command_output("where", &["Codex.exe"]) {
+        if let Some(path) = output.lines().next() {
+            let path = PathBuf::from(path.trim());
+            if path.exists() {
+                return Some(path);
+            }
+        }
+    }
+    let local_app_data = env::var_os("LOCALAPPDATA").map(PathBuf::from)?;
+    [
+        local_app_data.join("Programs/Codex/Codex.exe"),
+        local_app_data.join("Codex/Codex.exe"),
+    ]
+    .into_iter()
+    .find(|path| path.exists())
+}
+
+fn copy_text_to_clipboard(text: &str) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    let mut child = Command::new("pbcopy")
+        .stdin(Stdio::piped())
+        .spawn()
+        .map_err(|err| format!("无法访问系统剪贴板：{err}"))?;
+
+    #[cfg(target_os = "windows")]
+    let mut child = Command::new("clip")
+        .stdin(Stdio::piped())
+        .spawn()
+        .map_err(|err| format!("无法访问系统剪贴板：{err}"))?;
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut child = Command::new("xclip")
+        .args(["-selection", "clipboard"])
+        .stdin(Stdio::piped())
+        .spawn()
+        .map_err(|err| format!("无法访问系统剪贴板：{err}"))?;
+
+    child
+        .stdin
+        .take()
+        .ok_or_else(|| "无法写入系统剪贴板。".to_string())?
+        .write_all(text.as_bytes())
+        .map_err(|err| format!("无法写入系统剪贴板：{err}"))?;
+    let status = child
+        .wait()
+        .map_err(|err| format!("无法完成剪贴板操作：{err}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err("系统剪贴板操作失败。".to_string())
+    }
+}
+
+fn extract_version_parts(value: &str) -> Option<Vec<u64>> {
+    value
+        .split(|character: char| !(character.is_ascii_digit() || character == '.'))
+        .filter(|part| part.contains('.'))
+        .find_map(|part| {
+            let parts = part
+                .trim_matches('.')
+                .split('.')
+                .map(str::parse::<u64>)
+                .collect::<Result<Vec<_>, _>>()
+                .ok()?;
+            (parts.len() >= 2).then_some(parts)
+        })
+}
+
+fn version_at_least(value: &str, minimum: &str) -> bool {
+    let Some(mut current) = extract_version_parts(value) else {
+        return false;
+    };
+    let Some(mut required) = extract_version_parts(minimum) else {
+        return false;
+    };
+    let length = current.len().max(required.len());
+    current.resize(length, 0);
+    required.resize(length, 0);
+    current >= required
+}
+
 fn codex_home() -> Result<PathBuf, String> {
     if let Some(path) = env::var_os("CODEX_HOME") {
         return Ok(PathBuf::from(path));
@@ -1894,14 +2677,24 @@ fn main() {
 
 fn run_gui() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(PendingUpdate(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![
+            check_for_updates,
+            copy_support_report,
             configure_imagegen_cli,
             configure_provider,
+            get_account_access_status,
             get_config_status,
             get_history_migration_status,
+            get_system_info,
+            install_update,
             migrate_history_visibility,
             open_config_dir,
+            repair_configuration,
+            restart_codex,
             restore_defaults,
+            run_diagnostics,
             test_connection,
             resize_window_to_content,
             exit_app
@@ -2102,6 +2895,30 @@ mod tests {
     fn unique_test_dir(name: &str) -> PathBuf {
         let stamp = Local::now().timestamp_nanos_opt().unwrap_or_default();
         env::temp_dir().join(format!("oceanway-{name}-{stamp}"))
+    }
+
+    #[test]
+    fn version_compatibility_handles_cli_and_desktop_labels() {
+        assert!(version_at_least(
+            "codex-cli 0.143.0",
+            MINIMUM_IMAGE_EXTENSION_VERSION
+        ));
+        assert!(version_at_least("0.144.1-beta.2", "0.143.0"));
+        assert!(!version_at_least("Codex 0.142.9", "0.143.0"));
+        assert!(!version_at_least("unknown", "0.143.0"));
+    }
+
+    #[test]
+    fn account_access_placeholder_never_claims_live_data() {
+        let status = get_account_access_status();
+        assert!(!status.integration_available);
+        assert_eq!(status.status, "reserved");
+        assert!(status.balance.is_none());
+        assert!(status.last_checked_at.is_none());
+        assert!(status
+            .model_permissions
+            .iter()
+            .all(|permission| permission.status == "pending"));
     }
 
     #[test]

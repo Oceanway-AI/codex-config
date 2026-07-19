@@ -13,8 +13,13 @@ This repository only contains the Rust/Tauri version. The old Python/PyQt packag
 - Uses `https://ocean-way.top` as the default Base URL.
 - Preserves existing non-OceanWay Codex settings and providers.
 - Creates a first-use backup before changing user config.
+- Provides one-click diagnostics for provider, credential, image compatibility, Codex version, network, process state, and backup state.
+- Copies a redacted support report that never includes complete API keys or bearer tokens.
+- Can repair the saved configuration and restart Codex Desktop after confirmation.
 - Offers an explicit, backed-up history visibility migration for users who need old local sessions to appear under the current provider.
 - Restores the user's original files when they click restore.
+- Reserves a typed account/quota/model-permission surface without claiming live data before the customer account API is connected.
+- Checks and installs signed application updates from GitHub Releases.
 - Supports macOS and Windows builds.
 
 ## User Guide
@@ -106,7 +111,7 @@ This is a fallback for the bundled `imagegen` skill's official `scripts/image_ge
 
 The values are injected into commands launched by Codex, including the imagegen CLI. They are not installed as global operating-system environment variables. This keeps the setup cross-platform, makes a second configuration click idempotently update stale values, and allows `恢复默认` to restore the original file snapshot.
 
-Existing users configured by an older release can reopen the app, expand `高级选项`, and click `图片备用配置` → `同步`. The backend reuses the saved OceanWay credential without returning or displaying it in the UI.
+Existing users configured by an older release can reopen the app, switch to `运维工具`, and click `图片备用配置` → `同步`. The backend reuses the saved OceanWay credential without returning or displaying it in the UI.
 
 Starting with v1.2.0, the main form also reuses that saved credential when its API Key field is left empty. Entering a new value replaces the saved OceanWay credential. `恢复 Codex 默认配置` restores the first-use snapshot, including removal of the imagegen fallback values written by this tool.
 
@@ -161,23 +166,57 @@ cd src-tauri
 cargo test
 ```
 
+## Diagnostics and Account Access
+
+Starting with v1.3.0, the main window is organized as a configuration workspace:
+
+- `问题诊断` runs read-only checks and can copy a redacted support report.
+- `运维工具` contains restart, repair, image fallback synchronization, history migration, backup-directory access, and restore.
+- `额度与权限` uses a backend response type ready for balance, plan, sync time, and per-model permission data. It intentionally returns `reserved` and empty values until the OceanWay customer account API is connected.
+
+## Signed Auto Update
+
+The updater endpoint is:
+
+```text
+https://github.com/Oceanway-AI/codex-config/releases/latest/download/latest.json
+```
+
+Update packages must be signed. The public key is committed in `src-tauri/tauri.conf.json`; the private key must remain outside the repository.
+
+For this workstation, the generated private key is expected at:
+
+```text
+~/.tauri/oceanway-codex-config.key
+```
+
+Before using `.github/workflows/release.yml`, configure the repository secret:
+
+```bash
+gh secret set TAURI_SIGNING_PRIVATE_KEY < ~/.tauri/oceanway-codex-config.key
+```
+
+Only set `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` if the private key was generated with a password. Pushing a `v*` tag or manually running the release workflow builds signed updater artifacts into a draft GitHub Release. Review the draft, then publish it to make the new version discoverable.
+
 ## macOS Build
 
-Build locally on macOS:
+Build Apple Silicon and Intel packages locally:
 
 ```bash
 chmod +x ./build.sh
 ./build.sh
 ```
 
-Outputs:
+Outputs are versioned under `dist/`, including:
 
 ```text
-src-tauri/target/release/bundle/macos/codex-config.app
-dist/codex-config-macOS.zip
+dist/codex-config-v1.3.0-macOS-arm64.dmg
+dist/codex-config-v1.3.0-macOS-arm64.zip
+dist/codex-config-v1.3.0-macOS-intel.dmg
+dist/codex-config-v1.3.0-macOS-intel.zip
 ```
 
-For public distribution, macOS builds should eventually be signed and notarized with an Apple Developer ID.
+When the local updater private key exists, the script also produces signed `.app.tar.gz` updater archives and `.sig` files. The current local build uses ad-hoc app signing; public distribution should use an Apple Developer ID and notarization.
 
 ## Windows Build
 
@@ -198,12 +237,15 @@ GitHub Actions can also build the Windows installer when you do not have a Windo
 
 ## GitHub Actions
 
-The workflow in `.github/workflows/build.yml` builds:
+The validation workflow in `.github/workflows/build.yml` builds:
 
-- `codex-config-macOS`
+- `codex-config-macOS-arm64`
+- `codex-config-macOS-intel`
 - `codex-config-Windows`
 
-Run it from GitHub:
+The signed release workflow in `.github/workflows/release.yml` builds both macOS architectures and Windows, creates updater artifacts, and attaches them to a draft release.
+
+Run validation from GitHub:
 
 ```text
 Actions -> Build codex-config -> Run workflow
@@ -214,7 +256,8 @@ The generated artifacts can be downloaded from the completed workflow run page.
 ## Project Structure
 
 ```text
-.github/workflows/build.yml   GitHub Actions build workflow
+.github/workflows/build.yml   Pull-request build workflow
+.github/workflows/release.yml Signed updater release workflow
 src/                          Frontend UI
 src-tauri/                    Rust backend and Tauri configuration
 build.sh                      macOS build helper

@@ -3,221 +3,375 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>OceanWay Codex 配置</title>
+    <title>OceanWay Codex 配置中心</title>
     <link rel="stylesheet" href="./styles.css" />
     <script type="module" src="./main.js"></script>
   </head>
   <body>
     <main class="app-shell">
-      <header class="app-header">
-        <img class="app-icon" src="./assets/oceanway-ai-icon.png" alt="" />
-        <div>
-          <h1>OceanWay Codex 配置</h1>
-          <p class="header-subtitle">
-            <svg class="hint-icon" viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M8.5 15.5 15.5 8.5" />
-              <path d="M7 11.5 4.5 14a3.9 3.9 0 0 0 5.5 5.5l2.5-2.5" />
-              <path d="m17 12.5 2.5-2.5A3.9 3.9 0 0 0 14 4.5L11.5 7" />
-            </svg>
-            <span>连接 OceanWay AI，并同步 Codex 图片能力</span>
-          </p>
+      <header class="topbar">
+        <div class="brand">
+          <img class="brand-icon" src="./assets/oceanway-ai-icon.png" alt="" />
+          <div>
+            <h1>OceanWay Codex 配置中心</h1>
+            <p>配置、诊断与维护 Codex 图片能力</p>
+          </div>
+        </div>
+        <div class="topbar-state" aria-label="当前配置摘要">
+          <span id="topbar-state-dot" class="state-dot" aria-hidden="true"></span>
+          <span id="topbar-state-text">正在读取本机状态</span>
         </div>
       </header>
 
-      <section class="status-overview" aria-label="当前配置状态">
-        <div class="status-item">
-          <span id="service-dot" class="status-dot" aria-hidden="true"></span>
-          <span>
-            <span class="status-label">服务</span>
-            <strong id="service-status">正在读取</strong>
-            <small id="service-detail">请稍候</small>
-          </span>
-        </div>
-        <div class="status-item">
-          <span id="login-dot" class="status-dot" aria-hidden="true"></span>
-          <span>
-            <span class="status-label">登录</span>
-            <strong id="login-status">正在检测</strong>
-            <small id="login-detail">请稍候</small>
-          </span>
-        </div>
-        <div class="status-item">
-          <span id="image-dot" class="status-dot" aria-hidden="true"></span>
-          <span>
-            <span class="status-label">图片能力</span>
-            <strong id="image-status">正在检测</strong>
-            <small id="image-detail">请稍候</small>
-          </span>
-        </div>
-      </section>
-
-      <section class="setup-section" aria-labelledby="setup-title">
-        <div class="section-heading">
-          <h2 id="setup-title">连接配置</h2>
-          <div class="section-heading-actions">
+      <section class="workspace">
+        <section class="panel setup-panel" aria-labelledby="setup-title">
+          <div class="panel-heading setup-heading">
+            <div>
+              <h2 id="setup-title">一键配置 Codex</h2>
+              <p>保存连接信息，并准备内置图片工具与 CLI 备用链路。</p>
+            </div>
             <span id="saved-key-state" class="saved-key-state" hidden>
               <svg viewBox="0 0 24 24" aria-hidden="true">
                 <path d="m6.5 12.5 3.5 3.5 7.5-8" />
               </svg>
               Key 已保存
             </span>
-            <button id="test-button" type="button" class="secondary-action">
-              <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M5 9.5a10.5 10.5 0 0 1 14 0" />
-                <path d="M8.5 13a5.5 5.5 0 0 1 7 0" />
-                <circle cx="12" cy="16.5" r="1" fill="currentColor" stroke="none" />
-              </svg>
-              测试连接
-            </button>
           </div>
-          <p class="hint-line">
-            <svg class="hint-icon" viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M20 11a8 8 0 1 1-2.3-5.7" />
-              <path d="M20 4v7h-7" />
-            </svg>
-            <span>首次输入一次，之后打开软件可直接复用已保存的 Key。</span>
-          </p>
-        </div>
 
-        <form id="config-form" class="config-form">
-          <label class="field">
-            <span class="field-label">API Key</span>
-            <span class="input-shell">
-              <input
-                id="api-key"
-                type="password"
-                autocomplete="new-password"
-                placeholder="请输入 OceanWay API Key"
-                aria-describedby="key-helper"
-              />
-              <button
-                id="toggle-key-button"
-                type="button"
-                class="icon-button"
-                aria-label="显示 API Key"
-                title="显示 API Key"
-              >
+          <div class="connection-visual" aria-hidden="true">
+            <svg class="connection-map" viewBox="0 0 620 230">
+              <defs>
+                <linearGradient id="routeGradient" x1="0" y1="0" x2="1" y2="0">
+                  <stop offset="0" stop-color="#78b2ff" stop-opacity="0.2" />
+                  <stop offset="0.5" stop-color="#2d75ea" stop-opacity="0.9" />
+                  <stop offset="1" stop-color="#6cd8c1" stop-opacity="0.28" />
+                </linearGradient>
+                <filter id="softShadow" x="-40%" y="-40%" width="180%" height="180%">
+                  <feDropShadow dx="0" dy="12" stdDeviation="15" flood-color="#2f6fc2" flood-opacity="0.16" />
+                </filter>
+              </defs>
+              <path class="route route-a" d="M132 72 C220 72 225 115 302 115" />
+              <path class="route route-b" d="M488 72 C400 72 395 115 318 115" />
+              <path class="route route-c" d="M310 182 C310 166 310 148 310 137" />
+              <circle cx="132" cy="72" r="31" />
+              <circle cx="488" cy="72" r="31" />
+              <circle cx="310" cy="184" r="31" />
+              <rect x="251" y="55" width="118" height="118" rx="30" filter="url(#softShadow)" />
+              <rect class="core-inner" x="263" y="67" width="94" height="94" rx="24" />
+              <path class="core-wave" d="M282 120c16-26 39-29 57-7-17-8-29-3-39 10-8 10-15 13-22 11 1-5 2-9 4-14Z" />
+              <path class="node-glyph" d="M120 72h24M132 60v24" />
+              <path class="node-glyph" d="m477 72 8 8 15-17" />
+              <path class="node-glyph" d="M300 184h20M310 174v20" />
+            </svg>
+            <div class="visual-label label-config">
+              <strong>连接配置</strong>
+              <span>Provider 与凭据</span>
+            </div>
+            <div class="visual-label label-image">
+              <strong>图片能力</strong>
+              <span>内置与 CLI 备用</span>
+            </div>
+            <div class="visual-label label-restart">
+              <strong>重启生效</strong>
+              <span>新建任务刷新工具</span>
+            </div>
+            <div class="visual-core-label">
+              <img src="./assets/oceanway-ai-icon.png" alt="" />
+              <span>OceanWay × Codex</span>
+            </div>
+          </div>
+
+          <ol class="setup-progress" aria-label="配置流程">
+            <li id="step-credential" class="is-current">
+              <span>1</span>
+              <div><strong>连接信息</strong><small>填写或复用 Key</small></div>
+            </li>
+            <li id="step-config">
+              <span>2</span>
+              <div><strong>写入配置</strong><small>保留原有设置</small></div>
+            </li>
+            <li id="step-restart">
+              <span>3</span>
+              <div><strong>重启 Codex</strong><small>重新注册工具</small></div>
+            </li>
+            <li id="step-verify">
+              <span>4</span>
+              <div><strong>新建任务</strong><small>验证图片能力</small></div>
+            </li>
+          </ol>
+
+          <form id="config-form" class="config-form">
+            <label class="field field-key">
+              <span class="field-label">API Key</span>
+              <span class="input-shell">
+                <input
+                  id="api-key"
+                  type="password"
+                  autocomplete="new-password"
+                  placeholder="请输入 OceanWay API Key"
+                  aria-describedby="key-helper"
+                />
+                <button
+                  id="toggle-key-button"
+                  type="button"
+                  class="input-action"
+                  aria-label="显示 API Key"
+                  title="显示 API Key"
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" />
+                    <circle cx="12" cy="12" r="3" />
+                  </svg>
+                </button>
+              </span>
+            </label>
+
+            <label class="field field-url">
+              <span class="field-label">Base URL</span>
+              <input id="base-url" type="url" value="https://ocean-way.top" required />
+            </label>
+
+            <p id="key-helper" class="field-help">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 3 5 6v5c0 4.8 2.8 8.2 7 10 4.2-1.8 7-5.2 7-10V6l-7-3Z" />
+                <path d="m9 12 2 2 4-4" />
+              </svg>
+              <span id="key-helper-text">Key 仅保存到本机 Codex 配置，不会在界面回显完整内容。</span>
+            </p>
+
+            <div class="form-actions">
+              <button id="configure-button" type="submit" class="primary-action">
                 <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" />
-                  <circle cx="12" cy="12" r="3" />
+                  <path d="M20 6 9 17l-5-5" />
+                </svg>
+                完成配置
+              </button>
+              <button id="test-button" type="button" class="secondary-action">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M5 9.5a10.5 10.5 0 0 1 14 0" />
+                  <path d="M8.5 13a5.5 5.5 0 0 1 7 0" />
+                  <circle cx="12" cy="16.5" r="1" fill="currentColor" stroke="none" />
+                </svg>
+                测试连接
+              </button>
+            </div>
+          </form>
+
+          <p id="status" class="action-status" role="status" aria-live="polite" hidden>
+            <span class="action-status-icon" aria-hidden="true">
+              <svg class="status-icon status-icon-info" viewBox="0 0 24 24">
+                <circle cx="12" cy="12" r="9" />
+                <path d="M12 11v5M12 8h.01" />
+              </svg>
+              <svg class="status-icon status-icon-success" viewBox="0 0 24 24">
+                <circle cx="12" cy="12" r="9" />
+                <path d="m8 12 2.6 2.6L16.5 9" />
+              </svg>
+              <svg class="status-icon status-icon-error" viewBox="0 0 24 24">
+                <circle cx="12" cy="12" r="9" />
+                <path d="M12 7.5v5.5M12 16h.01" />
+              </svg>
+            </span>
+            <span id="status-message"></span>
+          </p>
+        </section>
+
+        <aside class="side-column">
+          <section class="panel health-panel" aria-labelledby="health-title">
+            <div class="panel-heading compact-heading">
+              <div>
+                <h2 id="health-title">当前状态</h2>
+                <p>本机配置与运行环境</p>
+              </div>
+              <button id="refresh-status-button" type="button" class="icon-action" aria-label="刷新状态" title="刷新状态">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M20 11a8 8 0 1 1-2.3-5.7" />
+                  <path d="M20 4v7h-7" />
                 </svg>
               </button>
-            </span>
-          </label>
+            </div>
+            <div class="health-grid">
+              <article class="health-item">
+                <span class="health-icon health-service" aria-hidden="true">
+                  <svg viewBox="0 0 24 24"><path d="M5 7h14M5 12h14M5 17h14" /><circle cx="8" cy="7" r=".7" /><circle cx="8" cy="12" r=".7" /><circle cx="8" cy="17" r=".7" /></svg>
+                </span>
+                <div><strong>服务连接</strong><span id="service-status">正在读取</span></div>
+                <span id="service-dot" class="state-dot" aria-hidden="true"></span>
+              </article>
+              <article class="health-item">
+                <span class="health-icon health-image" aria-hidden="true">
+                  <svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2" /><circle cx="9" cy="10" r="1.3" /><path d="m6 17 4-4 3 3 2-2 3 3" /></svg>
+                </span>
+                <div><strong>图片能力</strong><span id="image-status">正在读取</span></div>
+                <span id="image-dot" class="state-dot" aria-hidden="true"></span>
+              </article>
+              <article class="health-item">
+                <span class="health-icon health-codex" aria-hidden="true">
+                  <svg viewBox="0 0 24 24"><rect x="5" y="4" width="14" height="16" rx="3" /><path d="M9 8h6M9 12h6M9 16h3" /></svg>
+                </span>
+                <div><strong>Codex 状态</strong><span id="codex-status">正在检测</span></div>
+                <span id="codex-dot" class="state-dot" aria-hidden="true"></span>
+              </article>
+            </div>
+          </section>
 
-          <label class="field">
-            <span class="field-label">Base URL</span>
-            <input id="base-url" type="url" value="https://ocean-way.top" required />
-          </label>
+          <section class="panel control-panel">
+            <div class="tab-list" role="tablist" aria-label="配置中心功能">
+              <button id="diagnosis-tab" class="tab-button is-active" type="button" role="tab" aria-selected="true" aria-controls="diagnosis-panel">问题诊断</button>
+              <button id="tools-tab" class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="tools-panel">运维工具</button>
+              <button id="account-tab" class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="account-panel">额度与权限</button>
+            </div>
 
-          <p id="key-helper" class="field-help hint-line">
-            <svg class="hint-icon" viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M12 3 5 6v5c0 4.8 2.8 8.2 7 10 4.2-1.8 7-5.2 7-10V6l-7-3Z" />
-              <path d="m9 12 2 2 4-4" />
-            </svg>
-            <span id="key-helper-text">
-              Key 仅保存到本机 Codex 配置中，软件不会在界面回显完整内容。
-            </span>
-          </p>
+            <section id="diagnosis-panel" class="tab-panel diagnosis-panel" role="tabpanel" aria-labelledby="diagnosis-tab">
+              <div class="tab-toolbar">
+                <div>
+                  <h2>一键完整诊断</h2>
+                  <p>逐层检查配置、版本、连接和生效状态。</p>
+                </div>
+                <button id="run-diagnostics-button" type="button" class="small-primary-action">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h3l2-4 4 8 2-4h5" /></svg>
+                  开始诊断
+                </button>
+              </div>
 
-          <button id="configure-button" type="submit" class="primary-action">
-            <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M20 6 9 17l-5-5" />
-            </svg>
-            完成配置
-          </button>
-        </form>
+              <div id="diagnostic-summary" class="diagnostic-summary" hidden>
+                <span id="diagnostic-summary-icon" class="summary-icon" aria-hidden="true"></span>
+                <div>
+                  <strong id="diagnostic-summary-title">诊断完成</strong>
+                  <p id="diagnostic-summary-detail"></p>
+                </div>
+              </div>
 
-        <p id="status" class="action-status" role="status" aria-live="polite" hidden>
-          <span class="action-status-icon" aria-hidden="true">
-            <svg class="status-icon status-icon-info" viewBox="0 0 24 24">
-              <circle cx="12" cy="12" r="9" />
-              <path d="M12 11v5" />
-              <path d="M12 8h.01" />
-            </svg>
-            <svg class="status-icon status-icon-success" viewBox="0 0 24 24">
-              <circle cx="12" cy="12" r="9" />
-              <path d="m8 12 2.6 2.6L16.5 9" />
-            </svg>
-            <svg class="status-icon status-icon-error" viewBox="0 0 24 24">
-              <circle cx="12" cy="12" r="9" />
-              <path d="M12 7.5v5.5" />
-              <path d="M12 16h.01" />
-            </svg>
-          </span>
-          <span id="status-message"></span>
-        </p>
+              <ul id="diagnostic-list" class="diagnostic-list">
+                <li class="diagnostic-placeholder">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <circle cx="12" cy="12" r="8" />
+                    <path d="M12 8v4l3 2" />
+                  </svg>
+                  <div>
+                    <strong>等待开始诊断</strong>
+                    <p>不会修改配置，也不会输出完整 API Key。</p>
+                  </div>
+                </li>
+              </ul>
+
+              <button id="copy-report-button" class="copy-report-action" type="button" disabled>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="11" height="11" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" /></svg>
+                复制脱敏报告
+              </button>
+            </section>
+
+            <section id="tools-panel" class="tab-panel tools-panel" role="tabpanel" aria-labelledby="tools-tab" hidden>
+              <div class="tool-list">
+                <article class="tool-row tool-row-primary">
+                  <span class="tool-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 1-2.3-5.7" /><path d="M20 4v7h-7" /></svg>
+                  </span>
+                  <div><strong>重启 Codex</strong><p>退出并重新打开 Codex，然后新建任务。</p></div>
+                  <button id="restart-codex-button" type="button">重启</button>
+                </article>
+                <article class="tool-row">
+                  <span class="tool-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24"><path d="M4 12a8 8 0 0 1 14-5" /><path d="m18 3 .5 4-4 .5" /><path d="M20 12a8 8 0 0 1-14 5" /><path d="m6 21-.5-4 4-.5" /></svg>
+                  </span>
+                  <div><strong>修复配置</strong><p>使用已保存凭据补全缺失或过期字段。</p></div>
+                  <button id="repair-button" type="button">修复</button>
+                </article>
+                <article class="tool-row">
+                  <span class="tool-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2" /><path d="m6 17 4-4 3 3 2-2 3 3" /></svg>
+                  </span>
+                  <div><strong>图片备用配置</strong><p id="imagegen-row-detail">检查并同步 CLI 图片备用环境。</p></div>
+                  <button id="imagegen-button" type="button">同步</button>
+                </article>
+                <article class="tool-row">
+                  <span class="tool-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24"><path d="M6 4h12v16H6z" /><path d="M9 8h6M9 12h6M9 16h4" /></svg>
+                  </span>
+                  <div><strong>历史记录可见性</strong><p id="history-row-detail">切换 provider 后看不到旧任务时再使用。</p></div>
+                  <button id="migrate-history-button" type="button">迁移</button>
+                </article>
+                <article class="tool-row">
+                  <span class="tool-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24"><path d="M3 8a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8Z" /></svg>
+                  </span>
+                  <div><strong>配置与备份目录</strong><p>查看 Codex 配置、初始快照和迁移备份。</p></div>
+                  <button id="open-dir-button" type="button">打开</button>
+                </article>
+              </div>
+              <button id="restore-button" type="button" class="restore-action">恢复 Codex 默认配置</button>
+            </section>
+
+            <section id="account-panel" class="tab-panel account-panel" role="tabpanel" aria-labelledby="account-tab" hidden>
+              <div class="account-intro">
+                <span class="reserved-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24"><path d="M5 19V9M12 19V5M19 19v-7" /></svg>
+                </span>
+                <div>
+                  <h2>额度与模型权限</h2>
+                  <p id="account-message">接口结构已预留，等待接入 OceanWay 账户服务。</p>
+                </div>
+                <span class="reserved-state">待接入</span>
+              </div>
+              <div class="quota-grid">
+                <article>
+                  <span>可用额度</span>
+                  <strong id="balance-value">—</strong>
+                  <small id="plan-value">等待账户接口</small>
+                </article>
+                <article>
+                  <span>最近同步</span>
+                  <strong id="account-sync-value">—</strong>
+                  <small>接入后自动刷新</small>
+                </article>
+              </div>
+              <div class="permission-list">
+                <div class="permission-heading"><strong>模型权限</strong><span>实时状态预留</span></div>
+                <ul id="permission-list">
+                  <li><span>gpt-5.4</span><em>等待接口</em></li>
+                  <li><span>gpt-image-2</span><em>等待接口</em></li>
+                </ul>
+              </div>
+            </section>
+          </section>
+        </aside>
       </section>
 
-      <details id="advanced-options" class="advanced-options">
-        <summary>
-          <span>
-            <strong>高级选项</strong>
-            <small>图片备用与历史记录迁移</small>
-          </span>
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="m7 10 5 5 5-5" />
-          </svg>
-        </summary>
-
-        <div class="advanced-list">
-          <article class="advanced-row">
-            <span class="row-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24">
-                <rect x="3" y="4" width="18" height="16" rx="2" />
-                <circle cx="8.5" cy="9" r="1.5" />
-                <path d="m5 17 4.5-4.5 3 3 2-2L19 17" />
-              </svg>
-            </span>
-            <div class="row-copy">
-              <strong>图片备用配置</strong>
-              <p id="imagegen-row-detail">用于内置图片工具不可用时的 CLI 备用路径。</p>
-            </div>
-            <button id="imagegen-button" type="button" class="row-action">同步</button>
-          </article>
-
-          <article class="advanced-row">
-            <span class="row-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24">
-                <path d="M6 4h12v16H6z" />
-                <path d="M9 8h6M9 12h6M9 16h4" />
-              </svg>
-            </span>
-            <div class="row-copy">
-              <strong>历史记录可见性</strong>
-              <p id="history-row-detail">切换 provider 后看不到旧任务时再使用。</p>
-            </div>
-            <button id="migrate-history-button" type="button" class="row-action">迁移</button>
-          </article>
+      <footer class="status-footer">
+        <div class="machine-info">
+          <span>系统：<strong id="system-version">正在读取</strong></span>
+          <span>Codex：<strong id="codex-version">正在检测</strong></span>
+          <span>配置工具：<strong>v1.3.0</strong></span>
         </div>
-      </details>
-
-      <footer class="utility-footer">
-        <button id="open-dir-button" type="button" class="text-action">
-          <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H10l2 2h6.5A2.5 2.5 0 0 1 21 9.5v7A2.5 2.5 0 0 1 18.5 19h-13A2.5 2.5 0 0 1 3 16.5v-9Z" />
-          </svg>
-          打开配置目录
-        </button>
-        <div class="footer-actions">
-          <button id="restore-button" type="button" class="danger-action">恢复 Codex 默认配置</button>
-          <span class="version">v1.2.0</span>
+        <div class="update-area">
+          <span id="update-status">自动更新已启用</span>
+          <button id="update-button" type="button">检查更新</button>
         </div>
       </footer>
     </main>
 
     <dialog id="restore-dialog" class="confirm-dialog" aria-labelledby="restore-title">
       <form method="dialog">
-        <div class="dialog-icon" aria-hidden="true">!</div>
+        <div class="dialog-icon danger" aria-hidden="true">!</div>
         <h2 id="restore-title">恢复 Codex 默认配置？</h2>
-        <p>
-          将恢复到首次使用本工具前的状态，并撤销 OceanWay provider、已保存的 OceanWay Key、图片备用配置及本工具记录的历史迁移。
-        </p>
+        <p>将恢复首次使用本工具前的 provider、认证文件、图片备用配置，并撤销本工具记录的历史迁移。</p>
         <div class="dialog-actions">
           <button id="cancel-restore-button" value="cancel" type="submit">取消</button>
-          <button id="confirm-restore-button" value="default" type="button" class="danger-button">
-            确认恢复
-          </button>
+          <button id="confirm-restore-button" value="default" type="button" class="danger-button">确认恢复</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="restart-dialog" class="confirm-dialog" aria-labelledby="restart-title">
+      <form method="dialog">
+        <div class="dialog-icon restart" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 1-2.3-5.7" /><path d="M20 4v7h-7" /></svg>
+        </div>
+        <h2 id="restart-title">重新启动 Codex？</h2>
+        <p>Codex 将先正常退出再重新打开。未提交的本地终端输入可能丢失，请确认当前任务已保存。</p>
+        <div class="dialog-actions">
+          <button id="cancel-restart-button" value="cancel" type="submit">稍后</button>
+          <button id="confirm-restart-button" value="default" type="button" class="primary-dialog-button">立即重启</button>
         </div>
       </form>
     </dialog>
