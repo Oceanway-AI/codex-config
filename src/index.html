@@ -38,67 +38,56 @@
             </span>
           </div>
 
-          <div class="connection-visual" aria-hidden="true">
-            <svg class="connection-map" viewBox="0 0 620 230">
-              <defs>
-                <linearGradient id="routeGradient" x1="0" y1="0" x2="1" y2="0">
-                  <stop offset="0" stop-color="#78b2ff" stop-opacity="0.2" />
-                  <stop offset="0.5" stop-color="#2d75ea" stop-opacity="0.9" />
-                  <stop offset="1" stop-color="#6cd8c1" stop-opacity="0.28" />
-                </linearGradient>
-                <filter id="softShadow" x="-40%" y="-40%" width="180%" height="180%">
-                  <feDropShadow dx="0" dy="12" stdDeviation="15" flood-color="#2f6fc2" flood-opacity="0.16" />
-                </filter>
-              </defs>
-              <path class="route route-a" d="M132 72 C220 72 225 115 302 115" />
-              <path class="route route-b" d="M488 72 C400 72 395 115 318 115" />
-              <path class="route route-c" d="M310 182 C310 166 310 148 310 137" />
-              <circle cx="132" cy="72" r="31" />
-              <circle cx="488" cy="72" r="31" />
-              <circle cx="310" cy="184" r="31" />
-              <rect x="251" y="55" width="118" height="118" rx="30" filter="url(#softShadow)" />
-              <rect class="core-inner" x="263" y="67" width="94" height="94" rx="24" />
-              <path class="core-wave" d="M282 120c16-26 39-29 57-7-17-8-29-3-39 10-8 10-15 13-22 11 1-5 2-9 4-14Z" />
-              <path class="node-glyph" d="M120 72h24M132 60v24" />
-              <path class="node-glyph" d="m477 72 8 8 15-17" />
-              <path class="node-glyph" d="M300 184h20M310 174v20" />
-            </svg>
-            <div class="visual-label label-config">
-              <strong>连接配置</strong>
-              <span>Provider 与凭据</span>
+          <section class="activation-guide" aria-labelledby="activation-guide-title">
+            <div class="activation-guide-header">
+              <div class="activation-guide-heading">
+                <span class="activation-guide-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24">
+                    <path d="M5 7h7M5 12h14M12 17h7" />
+                    <path d="m9 4 3 3-3 3M15 14l-3 3 3 3" />
+                  </svg>
+                </span>
+                <div>
+                  <h3 id="activation-guide-title">配置生效流程</h3>
+                  <p>按顺序完成后，Codex 才会在新任务中重新注册图片工具。</p>
+                </div>
+              </div>
+              <span id="activation-state" class="activation-state">正在读取状态</span>
             </div>
-            <div class="visual-label label-image">
-              <strong>图片能力</strong>
-              <span>内置与 CLI 备用</span>
-            </div>
-            <div class="visual-label label-restart">
-              <strong>重启生效</strong>
-              <span>新建任务刷新工具</span>
-            </div>
-            <div class="visual-core-label">
-              <img src="./assets/oceanway-ai-icon.png" alt="" />
-              <span>OceanWay × Codex</span>
-            </div>
-          </div>
 
-          <ol class="setup-progress" aria-label="配置流程">
-            <li id="step-credential" class="is-current">
-              <span>1</span>
-              <div><strong>连接信息</strong><small>填写或复用 Key</small></div>
-            </li>
-            <li id="step-config">
-              <span>2</span>
-              <div><strong>写入配置</strong><small>保留原有设置</small></div>
-            </li>
-            <li id="step-restart">
-              <span>3</span>
-              <div><strong>重启 Codex</strong><small>重新注册工具</small></div>
-            </li>
-            <li id="step-verify">
-              <span>4</span>
-              <div><strong>新建任务</strong><small>验证图片能力</small></div>
-            </li>
-          </ol>
+            <ol class="setup-progress" aria-label="配置生效流程">
+              <li id="step-credential" class="is-current">
+                <span>1</span>
+                <div><strong>保存连接</strong><small>填写或复用 Key</small></div>
+              </li>
+              <li id="step-config">
+                <span>2</span>
+                <div><strong>写入配置</strong><small>同步图片能力</small></div>
+              </li>
+              <li id="step-restart">
+                <span>3</span>
+                <div><strong>重启 Codex</strong><small>重新加载工具</small></div>
+              </li>
+              <li id="step-verify">
+                <span>4</span>
+                <div><strong>新建任务</strong><small>生成图片验证</small></div>
+              </li>
+            </ol>
+
+            <div class="activation-next">
+              <span class="activation-next-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <circle cx="12" cy="12" r="9" />
+                  <path d="M8 12h8M13 9l3 3-3 3" />
+                </svg>
+              </span>
+              <div>
+                <span>当前下一步</span>
+                <strong id="next-step-title">正在读取本机配置</strong>
+                <p id="next-step-detail">请稍候，软件正在判断需要完成的操作。</p>
+              </div>
+            </div>
+          </section>
 
           <form id="config-form" class="config-form">
             <label class="field field-key">

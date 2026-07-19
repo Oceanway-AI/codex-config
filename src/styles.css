@@ -232,115 +232,88 @@ svg {
   stroke-width: 2.4;
 }
 
-.connection-visual {
-  position: relative;
-  max-width: 640px;
-  height: 205px;
-  margin: 4px auto 0;
-  overflow: hidden;
+.activation-guide {
+  margin: 18px 0 16px;
+  padding: 15px 16px;
+  border: 1px solid #dce7f4;
+  border-radius: 15px;
+  background: #f8fbff;
 }
 
-.connection-map {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  overflow: visible;
+.activation-guide-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
 }
 
-.connection-map .route {
-  fill: none;
-  stroke: url("#routeGradient");
-  stroke-dasharray: 5 8;
-  stroke-width: 3;
+.activation-guide-heading {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
 }
 
-.connection-map circle {
-  fill: #f5f9ff;
-  stroke: #8cb9fb;
-  stroke-width: 2;
-}
-
-.connection-map rect {
-  fill: #eaf2ff;
-  stroke: #b6d3ff;
-}
-
-.connection-map .core-inner {
-  fill: #fff;
-  stroke: #d9e8fa;
-}
-
-.connection-map .core-wave {
-  fill: #2d75ea;
-  stroke: none;
-}
-
-.connection-map .node-glyph {
-  stroke: #3b7fea;
-  stroke-width: 3;
-}
-
-.visual-label,
-.visual-core-label {
-  position: absolute;
-  z-index: 1;
-  text-align: center;
-  transform: translateX(-50%);
-}
-
-.visual-label {
-  top: 96px;
-}
-
-.visual-label strong {
-  display: block;
-  color: #24466f;
-  font-size: 11px;
-}
-
-.visual-label span {
-  display: block;
-  margin-top: 3px;
-  color: #8a9aaf;
-  font-size: 9px;
-}
-
-.label-config {
-  left: 21.3%;
-}
-
-.label-image {
-  left: 78.7%;
-}
-
-.label-restart {
-  top: 168px;
-  left: 50%;
-}
-
-.visual-core-label {
-  top: 69px;
-  left: 50%;
+.activation-guide-icon {
   display: grid;
-  place-items: center;
-  color: #294d78;
-  font-size: 9px;
-  font-weight: 700;
-}
-
-.visual-core-label img {
   width: 38px;
   height: 38px;
-  margin-bottom: 4px;
-  border-radius: 10px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 11px;
+  background: #e8f1ff;
+  color: #2f71d5;
+}
+
+.activation-guide-icon svg {
+  width: 20px;
+  height: 20px;
+}
+
+.activation-guide h3,
+.activation-guide p {
+  margin: 0;
+}
+
+.activation-guide h3 {
+  color: #2e4666;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.activation-guide-heading p {
+  margin-top: 4px;
+  color: #7c8ca3;
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.activation-state {
+  flex: 0 0 auto;
+  padding: 6px 9px;
+  border-radius: 8px;
+  background: #edf2f8;
+  color: #667a95;
+  font-size: 9px;
+  font-weight: 750;
+  white-space: nowrap;
+}
+
+.activation-state[data-kind="success"] {
+  background: var(--success-soft);
+  color: #16815d;
+}
+
+.activation-state[data-kind="warning"] {
+  background: var(--warning-soft);
+  color: #97630f;
 }
 
 .setup-progress {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 0;
-  margin: 0 0 16px;
+  margin: 16px 0 14px;
   padding: 0;
   list-style: none;
 }
@@ -410,6 +383,57 @@ svg {
   border-color: #8bd8bd;
   background: var(--success-soft);
   color: #13865e;
+}
+
+.activation-next {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 11px;
+  border: 1px solid #d7e5f7;
+  border-radius: 11px;
+  background: #fff;
+}
+
+.activation-next-icon {
+  display: grid;
+  width: 31px;
+  height: 31px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 9px;
+  background: var(--blue);
+  color: #fff;
+}
+
+.activation-next-icon svg {
+  width: 17px;
+  height: 17px;
+}
+
+.activation-next div > span,
+.activation-next strong,
+.activation-next p {
+  display: block;
+}
+
+.activation-next div > span {
+  margin-bottom: 2px;
+  color: #8190a5;
+  font-size: 8px;
+  font-weight: 650;
+}
+
+.activation-next strong {
+  color: #2c4a70;
+  font-size: 10px;
+}
+
+.activation-next p {
+  margin-top: 2px;
+  color: #7e8da1;
+  font-size: 8.5px;
+  line-height: 1.4;
 }
 
 .config-form {
@@ -1286,14 +1310,6 @@ svg {
     padding: 18px;
   }
 
-  .connection-visual {
-    height: 190px;
-  }
-
-  .visual-label span {
-    display: none;
-  }
-
   .setup-progress small {
     display: none;
   }
@@ -1355,17 +1371,16 @@ svg {
     padding: 16px 14px;
   }
 
-  .connection-visual {
-    height: 160px;
+  .activation-guide {
+    padding: 13px;
   }
 
-  .connection-map {
-    transform: scale(1.15);
+  .activation-guide-header {
+    gap: 9px;
   }
 
-  .visual-label,
-  .visual-core-label {
-    display: none;
+  .activation-guide-heading p {
+    max-width: 205px;
   }
 
   .setup-progress {

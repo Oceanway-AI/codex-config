@@ -12,6 +12,9 @@ const statusBox = $("#status");
 const statusMessage = $("#status-message");
 const savedKeyState = $("#saved-key-state");
 const keyHelperText = $("#key-helper-text");
+const activationState = $("#activation-state");
+const nextStepTitle = $("#next-step-title");
+const nextStepDetail = $("#next-step-detail");
 const refreshStatusButton = $("#refresh-status-button");
 const serviceStatus = $("#service-status");
 const serviceDot = $("#service-dot");
@@ -113,15 +116,27 @@ function updateProgress(status) {
   steps.forEach((step) => step.classList.remove("is-current", "is-done"));
   if (!status.hasApiKey) {
     steps[0].classList.add("is-current");
+    activationState.textContent = "等待连接";
+    activationState.dataset.kind = "warning";
+    nextStepTitle.textContent = "输入 API Key";
+    nextStepDetail.textContent = "首次使用需要填写 OceanWay API Key，然后点击“完成配置”。";
     return;
   }
   steps[0].classList.add("is-done");
   if (!status.configured || !status.imagegenCliConfigured) {
     steps[1].classList.add("is-current");
+    activationState.textContent = status.configured ? "图片能力待同步" : "配置未完成";
+    activationState.dataset.kind = "warning";
+    nextStepTitle.textContent = "点击“完成配置”";
+    nextStepDetail.textContent = "软件会保留已有 Codex 设置，并补全 Provider 与图片工具配置。";
     return;
   }
   steps[1].classList.add("is-done");
   steps[2].classList.add("is-current");
+  activationState.textContent = "配置已写入";
+  activationState.dataset.kind = "success";
+  nextStepTitle.textContent = "重启 Codex，然后新建任务";
+  nextStepDetail.textContent = "旧任务不会刷新工具列表；必须在重启后创建新任务再测试图片生成。";
 }
 
 function renderConfigStatus(status) {
