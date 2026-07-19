@@ -169,9 +169,11 @@ svg {
 .workspace {
   display: grid;
   grid-template-columns: minmax(0, 1.38fr) minmax(360px, 0.92fr);
+  align-items: start;
   gap: 18px;
   min-height: 0;
   padding: 18px 24px;
+  overflow: auto;
 }
 
 .panel {
@@ -183,9 +185,10 @@ svg {
 }
 
 .setup-panel {
+  align-self: start;
   min-height: 0;
   padding: 20px 22px;
-  overflow: auto;
+  overflow: visible;
 }
 
 .panel-heading {
@@ -626,7 +629,8 @@ svg {
 
 .side-column {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  align-self: start;
   gap: 14px;
   min-height: 0;
 }
@@ -747,7 +751,7 @@ svg {
 
 .control-panel {
   display: grid;
-  grid-template-rows: 50px minmax(0, 1fr);
+  grid-template-rows: 50px auto;
   min-height: 0;
   overflow: hidden;
 }
@@ -796,7 +800,7 @@ svg {
 .tab-panel {
   min-height: 0;
   padding: 16px 18px;
-  overflow: auto;
+  overflow: visible;
 }
 
 .tab-toolbar {
@@ -1347,7 +1351,7 @@ svg {
   }
 
   .side-column {
-    min-height: 620px;
+    min-height: 0;
   }
 
   .status-footer {
