@@ -53,6 +53,10 @@ const planValue = $("#plan-value");
 const accountSyncValue = $("#account-sync-value");
 const updateButton = $("#update-button");
 const updateStatus = $("#update-status");
+const setupPanel = $(".setup-panel");
+const sideColumn = $(".side-column");
+const healthPanel = $(".health-panel");
+const desktopLayoutQuery = window.matchMedia("(min-width: 761px)");
 
 let currentStatus = {
   configured: false,
@@ -63,6 +67,26 @@ let currentStatus = {
 let currentSystemInfo = null;
 let lastDiagnosticReport = null;
 let availableUpdate = null;
+
+function syncColumnHeights() {
+  if (!desktopLayoutQuery.matches) {
+    sideColumn.style.removeProperty("height");
+    sideColumn.style.removeProperty("--control-panel-max-height");
+    return;
+  }
+
+  const setupHeight = Math.ceil(setupPanel.getBoundingClientRect().height);
+  const healthHeight = Math.ceil(healthPanel.getBoundingClientRect().height);
+  const columnGap = Number.parseFloat(getComputedStyle(sideColumn).gap) || 14;
+  const controlMaxHeight = Math.max(0, setupHeight - healthHeight - columnGap);
+  sideColumn.style.height = `${setupHeight}px`;
+  sideColumn.style.setProperty("--control-panel-max-height", `${controlMaxHeight}px`);
+}
+
+const layoutResizeObserver = new ResizeObserver(syncColumnHeights);
+layoutResizeObserver.observe(setupPanel);
+layoutResizeObserver.observe(healthPanel);
+desktopLayoutQuery.addEventListener("change", syncColumnHeights);
 
 function setDot(element, kind) {
   element.dataset.kind = kind || "muted";
@@ -582,6 +606,7 @@ function setTab(button) {
     panel.hidden = !active;
   }
   if (button.id === "tools-tab") refreshHistoryStatus();
+  window.requestAnimationFrame(syncColumnHeights);
 }
 
 function toggleApiKeyVisibility() {
@@ -648,6 +673,7 @@ for (const tab of document.querySelectorAll(".tab-button")) {
   tab.addEventListener("click", () => setTab(tab));
 }
 
+syncColumnHeights();
 await refreshStatus();
 if (invoke) {
   window.setTimeout(() => handleUpdate({ silent: true }), 900);

@@ -628,8 +628,8 @@ svg {
 }
 
 .side-column {
-  display: grid;
-  grid-template-rows: auto auto;
+  display: flex;
+  flex-direction: column;
   align-self: start;
   gap: 14px;
   min-height: 0;
@@ -751,7 +751,9 @@ svg {
 
 .control-panel {
   display: grid;
-  grid-template-rows: 50px auto;
+  grid-template-rows: 50px minmax(0, auto);
+  max-height: var(--control-panel-max-height, none);
+  margin-top: auto;
   min-height: 0;
   overflow: hidden;
 }
@@ -800,7 +802,8 @@ svg {
 .tab-panel {
   min-height: 0;
   padding: 16px 18px;
-  overflow: visible;
+  overflow: auto;
+  overscroll-behavior: contain;
 }
 
 .tab-toolbar {
@@ -1351,7 +1354,17 @@ svg {
   }
 
   .side-column {
+    height: auto !important;
     min-height: 0;
+  }
+
+  .control-panel {
+    max-height: none;
+    margin-top: 0;
+  }
+
+  .tab-panel {
+    overflow: visible;
   }
 
   .status-footer {
