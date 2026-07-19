@@ -190,7 +190,10 @@ fn get_config_status() -> Result<ConfigStatus, String> {
             provider_token.as_deref().or(auth_api_key.as_deref()),
             base_url.as_deref(),
         );
-    let configured = oceanway_active && base_url.as_deref() == Some(DEFAULT_BASE_URL);
+    let configured = oceanway_active
+        && base_url
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty());
 
     Ok(ConfigStatus {
         configured,
@@ -209,12 +212,13 @@ fn get_config_status() -> Result<ConfigStatus, String> {
 
 #[tauri::command]
 fn test_connection(api_key: String, base_url: String) -> Result<ConnectionTestResult, String> {
-    let api_key = api_key.trim();
+    let api_key = if api_key.trim().is_empty() {
+        let codex_home = codex_home()?;
+        resolve_api_key_in_home(&codex_home, "")?
+    } else {
+        api_key.trim().to_string()
+    };
     let base_url = base_url.trim();
-
-    if api_key.is_empty() {
-        return Err("请先输入 API Key".to_string());
-    }
 
     let base_url = if base_url.is_empty() {
         DEFAULT_BASE_URL
@@ -229,7 +233,7 @@ fn test_connection(api_key: String, base_url: String) -> Result<ConnectionTestRe
 
     let mut last_error = String::new();
     for endpoint in endpoints {
-        match client.get(&endpoint).bearer_auth(api_key).send() {
+        match client.get(&endpoint).bearer_auth(&api_key).send() {
             Ok(response) if response.status().is_success() => {
                 return Ok(ConnectionTestResult {
                     ok: true,
@@ -321,12 +325,7 @@ fn configure_provider_internal(
     api_key: String,
     base_url: String,
 ) -> Result<OperationResult, String> {
-    let api_key = api_key.trim().to_string();
     let base_url = base_url.trim();
-
-    if api_key.is_empty() {
-        return Err("API Key 不能为空".to_string());
-    }
 
     let base_url = if base_url.is_empty() {
         DEFAULT_BASE_URL
@@ -335,6 +334,7 @@ fn configure_provider_internal(
     };
 
     let codex_home = codex_home()?;
+    let api_key = resolve_api_key_in_home(&codex_home, &api_key)?;
     let config_path = codex_home.join("config.toml");
     let auth_path = codex_home.join("auth.json");
     fs::create_dir_all(&codex_home).map_err(|err| format!("无法创建 Codex 目录：{err}"))?;
@@ -381,6 +381,21 @@ fn configure_provider_internal(
         imagegen_cli_configured: true,
         history_migration_restore: None,
     })
+}
+
+fn resolve_api_key_in_home(codex_home: &Path, candidate: &str) -> Result<String, String> {
+    let candidate = candidate.trim();
+    if !candidate.is_empty() {
+        return Ok(candidate.to_string());
+    }
+
+    let config_path = codex_home.join("config.toml");
+    let auth_path = codex_home.join("auth.json");
+    let config = fs::read_to_string(config_path).unwrap_or_default();
+    read_provider_bearer_token(&config, PROVIDER_ID)
+        .or_else(|| read_auth_api_key(&auth_path))
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| "尚未保存 API Key，请先输入 OceanWay API Key。".to_string())
 }
 
 #[tauri::command]
@@ -436,8 +451,8 @@ fn resize_window_to_content(app_handle: tauri::AppHandle, height: f64) -> Result
     let size = window
         .inner_size()
         .map_err(|err| format!("无法读取窗口尺寸：{err}"))?;
-    let width = (size.width as f64 / scale_factor).clamp(760.0, 1100.0);
-    let height = height.clamp(440.0, 820.0);
+    let width = (size.width as f64 / scale_factor).clamp(720.0, 980.0);
+    let height = height.clamp(500.0, 760.0);
     window
         .set_size(Size::Logical(LogicalSize { width, height }))
         .map_err(|err| format!("无法调整窗口尺寸：{err}"))
@@ -2171,6 +2186,61 @@ mod tests {
             "\"local-image-extension\" }"
         )));
         assert!(!rendered.contains("experimental_bearer_token"));
+    }
+
+    #[test]
+    fn saved_provider_token_is_reused_when_api_key_input_is_empty() {
+        let dir = unique_test_dir("reuse-provider-token");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("config.toml"),
+            concat!(
+                "[model_providers.OceanWay]\n",
+                "base_url = \"https://ocean-way.top\"\n",
+                "experimental_bearer_token = \"remembered-provider-key\"\n",
+            ),
+        )
+        .unwrap();
+
+        assert_eq!(
+            resolve_api_key_in_home(&dir, "").unwrap(),
+            "remembered-provider-key"
+        );
+        assert_eq!(
+            resolve_api_key_in_home(&dir, "replacement-key").unwrap(),
+            "replacement-key"
+        );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn saved_auth_key_is_reused_without_returning_it_in_status() {
+        let dir = unique_test_dir("reuse-auth-key");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("auth.json"),
+            r#"{"OPENAI_API_KEY":"remembered-auth-key"}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            resolve_api_key_in_home(&dir, "  ").unwrap(),
+            "remembered-auth-key"
+        );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn empty_api_key_requires_an_existing_saved_credential() {
+        let dir = unique_test_dir("reuse-key-missing");
+        fs::create_dir_all(&dir).unwrap();
+
+        let err = resolve_api_key_in_home(&dir, "").unwrap_err();
+        assert!(err.contains("尚未保存 API Key"));
+
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

@@ -9,6 +9,7 @@ This repository only contains the Rust/Tauri version. The old Python/PyQt packag
 - Writes the OceanWay provider to Codex config.
 - Uses a ChatGPT-login-preserving provider token when the user is already signed in, and falls back to an API Key mode compatible with the Codex Desktop local image tool when no ChatGPT login is detected.
 - Prepares the bundled `imagegen` skill's explicit CLI fallback by injecting `OPENAI_API_KEY` and `OPENAI_BASE_URL` into Codex tool subprocesses.
+- Reuses the previously saved OceanWay credential when the API Key field is left empty, without returning the full secret to the frontend.
 - Uses `https://ocean-way.top` as the default Base URL.
 - Preserves existing non-OceanWay Codex settings and providers.
 - Creates a first-use backup before changing user config.
@@ -105,7 +106,9 @@ This is a fallback for the bundled `imagegen` skill's official `scripts/image_ge
 
 The values are injected into commands launched by Codex, including the imagegen CLI. They are not installed as global operating-system environment variables. This keeps the setup cross-platform, makes a second configuration click idempotently update stale values, and allows `恢复默认` to restore the original file snapshot.
 
-Existing users configured by an older release can reopen the app and click `补全图片备用配置`. The backend reuses the saved OceanWay credential without returning or displaying it in the UI.
+Existing users configured by an older release can reopen the app, expand `高级选项`, and click `图片备用配置` → `同步`. The backend reuses the saved OceanWay credential without returning or displaying it in the UI.
+
+Starting with v1.2.0, the main form also reuses that saved credential when its API Key field is left empty. Entering a new value replaces the saved OceanWay credential. `恢复 Codex 默认配置` restores the first-use snapshot, including removal of the imagegen fallback values written by this tool.
 
 Security note: any command launched by Codex can read values configured under `shell_environment_policy.set`. Only use trusted repositories and prompts while this fallback is enabled.
 
