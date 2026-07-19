@@ -208,7 +208,6 @@
             <div class="tab-list" role="tablist" aria-label="配置中心功能">
               <button id="diagnosis-tab" class="tab-button is-active" type="button" role="tab" aria-selected="true" aria-controls="diagnosis-panel">问题诊断</button>
               <button id="tools-tab" class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="tools-panel">运维工具</button>
-              <button id="account-tab" class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="account-panel">账户额度</button>
             </div>
 
             <section id="diagnosis-panel" class="tab-panel diagnosis-panel" role="tabpanel" aria-labelledby="diagnosis-tab">
@@ -291,39 +290,6 @@
               <button id="restore-button" type="button" class="restore-action">恢复 Codex 默认配置</button>
             </section>
 
-            <section id="account-panel" class="tab-panel account-panel" role="tabpanel" aria-labelledby="account-tab" hidden>
-              <div class="account-intro">
-                <span class="reserved-icon" aria-hidden="true">
-                  <svg viewBox="0 0 24 24"><path d="M5 19V9M12 19V5M19 19v-7" /></svg>
-                </span>
-                <div>
-                  <h2>账户额度</h2>
-                  <p id="account-message">接入账户服务后，将在这里自动显示余额与同步状态。</p>
-                </div>
-                <span class="reserved-state">待接入</span>
-              </div>
-              <div class="quota-grid">
-                <article>
-                  <span>可用额度</span>
-                  <strong id="balance-value">—</strong>
-                  <small id="plan-value">等待账户接口</small>
-                </article>
-                <article>
-                  <span>最近同步</span>
-                  <strong id="account-sync-value">—</strong>
-                  <small>接入后自动刷新</small>
-                </article>
-              </div>
-              <div class="account-note">
-                <span class="account-note-icon" aria-hidden="true">
-                  <svg viewBox="0 0 24 24"><path d="M5 12a7 7 0 0 1 12-4.9" /><path d="m17 4 .5 4-4 .5" /><path d="M19 12a7 7 0 0 1-12 4.9" /><path d="m7 20-.5-4 4-.5" /></svg>
-                </span>
-                <div>
-                  <strong>接入后自动同步</strong>
-                  <p>配置工具会自动刷新可用额度和最近同步时间，无需额外操作。</p>
-                </div>
-              </div>
-            </section>
           </section>
         </aside>
       </section>

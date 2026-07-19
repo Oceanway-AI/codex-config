@@ -46,10 +46,6 @@ const confirmRestoreButton = $("#confirm-restore-button");
 const restartDialog = $("#restart-dialog");
 const restartDialogDetail = $("#restart-dialog-detail");
 const confirmRestartButton = $("#confirm-restart-button");
-const accountMessage = $("#account-message");
-const balanceValue = $("#balance-value");
-const planValue = $("#plan-value");
-const accountSyncValue = $("#account-sync-value");
 const updateButton = $("#update-button");
 const updateStatus = $("#update-status");
 const setupPanel = $(".setup-panel");
@@ -213,17 +209,6 @@ function renderSystemInfo(info) {
   setDot(codexDot, info.codexRunning ? "success" : "muted");
 }
 
-function renderAccountStatus(account) {
-  accountMessage.textContent = account.balance == null
-    ? "接入账户服务后，将在这里自动显示余额与同步状态。"
-    : "账户余额与同步状态已更新。";
-  balanceValue.textContent = account.balance == null
-    ? "—"
-    : `${account.balance}${account.balanceUnit ? ` ${account.balanceUnit}` : ""}`;
-  planValue.textContent = account.planName || "等待账户接口";
-  accountSyncValue.textContent = account.lastCheckedAt || "—";
-}
-
 function browserPreviewStatus() {
   return {
     configured: true,
@@ -247,20 +232,15 @@ async function refreshStatus() {
         codexHost: "ChatGPT",
         codexRunning: true,
       });
-      renderAccountStatus({
-        message: "接入账户服务后，将在这里自动显示余额与同步状态。",
-      });
       return;
     }
 
-    const [status, info, account] = await Promise.all([
+    const [status, info] = await Promise.all([
       invoke("get_config_status"),
       invoke("get_system_info"),
-      invoke("get_account_access_status"),
     ]);
     renderConfigStatus(status);
     renderSystemInfo(info);
-    renderAccountStatus(account);
   } catch (error) {
     serviceStatus.textContent = "读取失败";
     imageStatus.textContent = "未知";
