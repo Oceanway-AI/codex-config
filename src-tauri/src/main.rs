@@ -294,7 +294,19 @@ fn get_config_status() -> Result<ConfigStatus, String> {
 }
 
 #[tauri::command]
-fn test_connection(api_key: String, base_url: String) -> Result<ConnectionTestResult, String> {
+async fn test_connection(
+    api_key: String,
+    base_url: String,
+) -> Result<ConnectionTestResult, String> {
+    tauri::async_runtime::spawn_blocking(move || test_connection_command(api_key, base_url))
+        .await
+        .map_err(|_| "连接测试任务异常".to_string())?
+}
+
+fn test_connection_command(
+    api_key: String,
+    base_url: String,
+) -> Result<ConnectionTestResult, String> {
     let api_key = if api_key.trim().is_empty() {
         let codex_home = codex_home()?;
         resolve_api_key_in_home(&codex_home, "")?
@@ -312,6 +324,13 @@ fn test_connection(api_key: String, base_url: String) -> Result<ConnectionTestRe
 }
 
 fn test_connection_internal(api_key: &str, base_url: &str) -> ConnectionTestResult {
+    if let Err(message) = validate_base_url(base_url) {
+        return ConnectionTestResult {
+            ok: false,
+            message,
+            endpoint: "无效地址".into(),
+        };
+    }
     let endpoints = model_endpoints(base_url);
     let client = match reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(12))
@@ -362,9 +381,13 @@ fn test_connection_internal(api_key: &str, base_url: &str) -> ConnectionTestResu
 }
 
 #[tauri::command]
-fn get_system_info() -> Result<SystemInfo, String> {
-    let codex_home = codex_home()?;
-    Ok(collect_system_info(&codex_home))
+async fn get_system_info() -> Result<SystemInfo, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let codex_home = codex_home()?;
+        Ok(collect_system_info(&codex_home))
+    })
+    .await
+    .map_err(|_| "系统信息读取任务异常".to_string())?
 }
 
 #[tauri::command]
@@ -393,21 +416,35 @@ fn get_account_access_status() -> AccountAccessStatus {
 }
 
 #[tauri::command]
-fn run_diagnostics() -> Result<DiagnosticReport, String> {
-    let codex_home = codex_home()?;
-    run_diagnostics_in_home(&codex_home)
+async fn run_diagnostics() -> Result<DiagnosticReport, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let codex_home = codex_home()?;
+        run_diagnostics_in_home(&codex_home)
+    })
+    .await
+    .map_err(|_| "诊断任务异常".to_string())?
 }
 
 #[tauri::command]
-fn copy_support_report() -> Result<String, String> {
-    let codex_home = codex_home()?;
-    let report = run_diagnostics_in_home(&codex_home)?;
-    copy_text_to_clipboard(&report.redacted_report)?;
-    Ok("脱敏诊断报告已复制到剪贴板。".to_string())
+async fn copy_support_report() -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let codex_home = codex_home()?;
+        let report = run_diagnostics_in_home(&codex_home)?;
+        copy_text_to_clipboard(&report.redacted_report)?;
+        Ok("脱敏诊断报告已复制到剪贴板。".to_string())
+    })
+    .await
+    .map_err(|_| "诊断报告复制任务异常".to_string())?
 }
 
 #[tauri::command]
-fn repair_configuration() -> Result<OperationResult, String> {
+async fn repair_configuration() -> Result<OperationResult, String> {
+    tauri::async_runtime::spawn_blocking(repair_configuration_internal)
+        .await
+        .map_err(|_| "配置修复任务异常".to_string())?
+}
+
+fn repair_configuration_internal() -> Result<OperationResult, String> {
     let codex_home = codex_home()?;
     let config_path = codex_home.join("config.toml");
     let config = fs::read_to_string(&config_path).unwrap_or_default();
@@ -417,8 +454,10 @@ fn repair_configuration() -> Result<OperationResult, String> {
 }
 
 #[tauri::command]
-fn restart_codex() -> Result<RestartCodexResult, String> {
-    restart_codex_desktop()
+async fn restart_codex() -> Result<RestartCodexResult, String> {
+    tauri::async_runtime::spawn_blocking(restart_codex_desktop)
+        .await
+        .map_err(|_| "重启执行任务异常".to_string())?
 }
 
 #[tauri::command]
@@ -432,7 +471,12 @@ async fn check_for_updates(
         .map_err(|err| format!("无法初始化更新服务：{err}"))?
         .check()
         .await
-        .map_err(|err| format!("检查更新失败：{err}"))?;
+        .map_err(|err| match err {
+            tauri_plugin_updater::Error::ReleaseNotFound => {
+                "更新清单不可用或格式无效，请联系维护者检查发布通道。".to_string()
+            }
+            _ => format!("检查更新失败：{err}"),
+        })?;
 
     let result = if let Some(update) = update.as_ref() {
         UpdateCheckResult {
@@ -486,26 +530,40 @@ fn open_config_dir() -> Result<(), String> {
 }
 
 #[tauri::command]
-fn get_history_migration_status() -> Result<HistoryMigrationStatus, String> {
-    let codex_home = codex_home()?;
-    history_migration_status_in_home(&codex_home)
+async fn get_history_migration_status() -> Result<HistoryMigrationStatus, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let codex_home = codex_home()?;
+        history_migration_status_in_home(&codex_home)
+    })
+    .await
+    .map_err(|_| "历史记录扫描任务异常".to_string())?
 }
 
 #[tauri::command]
-fn migrate_history_visibility() -> Result<HistoryMigrationResult, String> {
-    let codex_home = codex_home()?;
-    migrate_history_visibility_in_home(&codex_home)
+async fn migrate_history_visibility() -> Result<HistoryMigrationResult, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let codex_home = codex_home()?;
+        migrate_history_visibility_in_home(&codex_home)
+    })
+    .await
+    .map_err(|_| "历史迁移任务异常".to_string())?
 }
 
 #[tauri::command]
-fn configure_provider(api_key: String, base_url: String) -> Result<OperationResult, String> {
-    configure_provider_internal(api_key, base_url)
+async fn configure_provider(api_key: String, base_url: String) -> Result<OperationResult, String> {
+    tauri::async_runtime::spawn_blocking(move || configure_provider_internal(api_key, base_url))
+        .await
+        .map_err(|_| "配置执行任务异常".to_string())?
 }
 
 #[tauri::command]
-fn configure_imagegen_cli() -> Result<ImagegenCliConfigResult, String> {
-    let codex_home = codex_home()?;
-    configure_imagegen_cli_in_home(&codex_home)
+async fn configure_imagegen_cli() -> Result<ImagegenCliConfigResult, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let codex_home = codex_home()?;
+        configure_imagegen_cli_in_home(&codex_home)
+    })
+    .await
+    .map_err(|_| "图片配置同步任务异常".to_string())?
 }
 
 fn configure_imagegen_cli_in_home(codex_home: &Path) -> Result<ImagegenCliConfigResult, String> {
@@ -545,6 +603,8 @@ fn configure_provider_internal(
     } else {
         base_url
     };
+
+    validate_base_url(base_url)?;
 
     let codex_home = codex_home()?;
     let api_key = resolve_api_key_in_home(&codex_home, &api_key)?;
@@ -612,7 +672,13 @@ fn resolve_api_key_in_home(codex_home: &Path, candidate: &str) -> Result<String,
 }
 
 #[tauri::command]
-fn restore_defaults() -> Result<OperationResult, String> {
+async fn restore_defaults() -> Result<OperationResult, String> {
+    tauri::async_runtime::spawn_blocking(restore_defaults_internal)
+        .await
+        .map_err(|_| "配置恢复任务异常".to_string())?
+}
+
+fn restore_defaults_internal() -> Result<OperationResult, String> {
     let codex_home = codex_home()?;
     let config_path = codex_home.join("config.toml");
     let auth_path = codex_home.join("auth.json");
@@ -680,6 +746,7 @@ fn write_config_toml(
     auth_strategy: ProviderAuthStrategy,
     imagegen_api_key: Option<&str>,
 ) -> Result<Option<PathBuf>, String> {
+    validate_base_url(base_url)?;
     let codex_home = config_path
         .parent()
         .ok_or_else(|| format!("无法定位 Codex 目录：{}", config_path.display()))?;
@@ -687,7 +754,7 @@ fn write_config_toml(
     ensure_restore_snapshot(codex_home, config_path, &auth_path)?;
 
     let backup_path = backup_file(config_path)?;
-    let original = fs::read_to_string(config_path).unwrap_or_default();
+    let original = read_config_for_write(config_path)?;
     let mut rendered = merge_config(
         &original,
         provider_id,
@@ -700,8 +767,8 @@ fn write_config_toml(
         rendered = merge_imagegen_cli_environment(&rendered, api_key, base_url)?;
     }
 
-    fs::write(config_path, rendered).map_err(|err| format!("无法写入 config.toml：{err}"))?;
-    set_private_permissions(config_path)?;
+    write_private_atomic(config_path, rendered.as_bytes())
+        .map_err(|err| format!("无法写入 config.toml：{err}"))?;
     Ok(backup_path)
 }
 
@@ -710,6 +777,7 @@ fn write_imagegen_cli_environment(
     api_key: &str,
     base_url: &str,
 ) -> Result<Option<PathBuf>, String> {
+    validate_base_url(base_url)?;
     let codex_home = config_path
         .parent()
         .ok_or_else(|| format!("无法定位 Codex 目录：{}", config_path.display()))?;
@@ -717,10 +785,10 @@ fn write_imagegen_cli_environment(
     ensure_restore_snapshot(codex_home, config_path, &auth_path)?;
 
     let backup_path = backup_file(config_path)?;
-    let original = fs::read_to_string(config_path).unwrap_or_default();
+    let original = read_config_for_write(config_path)?;
     let rendered = merge_imagegen_cli_environment(&original, api_key, base_url)?;
-    fs::write(config_path, rendered).map_err(|err| format!("无法写入 config.toml：{err}"))?;
-    set_private_permissions(config_path)?;
+    write_private_atomic(config_path, rendered.as_bytes())
+        .map_err(|err| format!("无法写入 config.toml：{err}"))?;
     Ok(backup_path)
 }
 
@@ -729,13 +797,29 @@ fn write_auth_json(
     api_key: &str,
     strategy: ProviderAuthStrategy,
 ) -> Result<Option<PathBuf>, String> {
-    let backup_path = backup_file(auth_path)?;
-    let content = fs::read_to_string(auth_path).unwrap_or_else(|_| "{}".to_string());
+    let content = match fs::read_to_string(auth_path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => "{}".to_string(),
+        Err(_) => return Err("无法读取 auth.json，已停止写入，请检查权限。".into()),
+    };
     let rendered = render_auth_json_content(&content, api_key, strategy)?;
+    let backup_path = backup_file(auth_path)?;
 
-    fs::write(auth_path, rendered).map_err(|err| format!("无法写入 auth.json：{err}"))?;
-    set_private_permissions(auth_path)?;
+    write_private_atomic(auth_path, rendered.as_bytes())
+        .map_err(|err| format!("无法写入 auth.json：{err}"))?;
     Ok(backup_path)
+}
+
+fn read_config_for_write(path: &Path) -> Result<String, String> {
+    let content = match fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(_) => return Err("无法读取 config.toml，已停止写入，请检查编码与权限。".into()),
+    };
+    content
+        .parse::<DocumentMut>()
+        .map_err(|_| "config.toml 格式损坏，已停止写入。".to_string())?;
+    Ok(content)
 }
 
 fn render_auth_json_content(
@@ -743,8 +827,11 @@ fn render_auth_json_content(
     api_key: &str,
     strategy: ProviderAuthStrategy,
 ) -> Result<String, String> {
-    let mut value =
-        serde_json::from_str::<serde_json::Value>(content).unwrap_or_else(|_| json!({}));
+    let mut value = serde_json::from_str::<serde_json::Value>(content)
+        .map_err(|_| "auth.json 格式损坏，已停止写入，请先修复或恢复认证文件。".to_string())?;
+    if !value.is_object() {
+        return Err("auth.json 必须是 JSON 对象，已停止写入。".into());
+    }
 
     if let Some(object) = value.as_object_mut() {
         match strategy {
@@ -832,11 +919,13 @@ fn ensure_restore_snapshot(
     let snapshot_dir = codex_home.join(BACKUP_DIR_NAME);
     let meta_path = snapshot_dir.join("meta.json");
     if meta_path.exists() {
+        secure_snapshot_permissions(&snapshot_dir)?;
         return Ok(());
     }
 
     fs::create_dir_all(&snapshot_dir)
         .map_err(|err| format!("无法创建 OceanWay 备份目录：{err}"))?;
+    secure_snapshot_permissions(&snapshot_dir)?;
 
     let meta = RestoreSnapshotMeta {
         config_existed: config_path.exists(),
@@ -845,11 +934,11 @@ fn ensure_restore_snapshot(
     };
 
     if meta.config_existed {
-        fs::copy(config_path, snapshot_dir.join("config.toml"))
+        copy_private_new(config_path, &snapshot_dir.join("config.toml"))
             .map_err(|err| format!("无法保存 config.toml 初始快照：{err}"))?;
     }
     if meta.auth_existed {
-        fs::copy(auth_path, snapshot_dir.join("auth.json"))
+        copy_private_new(auth_path, &snapshot_dir.join("auth.json"))
             .map_err(|err| format!("无法保存 auth.json 初始快照：{err}"))?;
     }
 
@@ -2012,11 +2101,96 @@ fn backup_file(path: &Path) -> Result<Option<PathBuf>, String> {
         .file_name()
         .and_then(|value| value.to_str())
         .ok_or_else(|| format!("无法读取文件名：{}", path.display()))?;
-    let stamp = Local::now().format("%Y%m%d-%H%M%S");
+    static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let sequence = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let stamp = format!(
+        "{}-{}-{sequence}",
+        Local::now().format("%Y%m%d-%H%M%S-%f"),
+        process::id()
+    );
     let backup_path = path.with_file_name(format!("{file_name}.bak.{stamp}"));
 
-    fs::copy(path, &backup_path).map_err(|err| format!("无法备份 {}：{err}", path.display()))?;
+    copy_private_new(path, &backup_path)
+        .map_err(|err| format!("无法备份 {}：{err}", path.display()))?;
     Ok(Some(backup_path))
+}
+
+// Exclusive creation prevents collisions from truncating an existing backup.
+fn copy_private_new(source: &Path, destination: &Path) -> std::io::Result<()> {
+    let mut input = fs::File::open(source)?;
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut output = options.open(destination)?;
+    std::io::copy(&mut input, &mut output)?;
+    output.sync_all()
+}
+
+// Stage private contents next to the destination before replacement. Failed writes
+// leave the previous file intact; newly created secret files never start at 0644.
+fn write_private_atomic(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let sequence = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let name = path
+        .file_name()
+        .ok_or_else(|| std::io::Error::other("invalid file path"))?;
+    let temporary = path.with_file_name(format!(
+        ".{}.tmp-{}-{}-{sequence}",
+        name.to_string_lossy(),
+        process::id(),
+        Local::now().timestamp_nanos_opt().unwrap_or_default()
+    ));
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&temporary)?;
+    let result = file.write_all(contents).and_then(|_| file.sync_all());
+    drop(file);
+    let result = result.and_then(|_| fs::rename(&temporary, path));
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
+fn secure_snapshot_permissions(directory: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(directory, fs::Permissions::from_mode(0o700))
+            .map_err(|_| "无法保护备份目录权限，已停止写入。".to_string())?;
+    }
+    for name in ["config.toml", "auth.json", "meta.json"] {
+        let path = directory.join(name);
+        if path.exists() {
+            set_private_permissions(&path)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_base_url(base_url: &str) -> Result<(), String> {
+    let message = "Base URL 必须是完整的 HTTP(S) 地址，且不能包含账号密码、查询参数或片段。";
+    let url = reqwest::Url::parse(base_url).map_err(|_| message.to_string())?;
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || base_url.chars().any(char::is_whitespace)
+    {
+        return Err(message.into());
+    }
+    Ok(())
 }
 
 fn rollback_auth(auth_path: &Path, old_auth: Option<Vec<u8>>) {
@@ -2546,9 +2720,13 @@ fn restart_codex_desktop() -> Result<RestartCodexResult, String> {
         let was_running = running_host.is_some();
         if was_running {
             let quit_script = format!("tell application \"{}\" to quit", host.app_name());
-            let _ = Command::new("osascript")
+            let quit = Command::new("osascript")
                 .args(["-e", &quit_script])
-                .status();
+                .status()
+                .map_err(|err| format!("无法退出应用：{err}"))?;
+            if !quit.success() {
+                return Err("应用拒绝退出，自动流程已停止，请保存任务后重试。".into());
+            }
             for _ in 0..20 {
                 let host_still_running = macos_process_list()
                     .as_deref()
@@ -2559,12 +2737,22 @@ fn restart_codex_desktop() -> Result<RestartCodexResult, String> {
                 }
                 thread::sleep(Duration::from_millis(150));
             }
+            if macos_process_list()
+                .as_deref()
+                .and_then(macos_codex_host_from_process_list)
+                == Some(host)
+            {
+                return Err("应用仍在运行，未完成重启；请保存任务后重试。".into());
+            }
         }
 
-        Command::new("open")
+        let opened = Command::new("open")
             .arg(&app_path)
-            .spawn()
+            .status()
             .map_err(|err| format!("无法重新打开 {}：{err}", host.label()))?;
+        if !opened.success() {
+            return Err("启动应用失败，配置已保留，请手动打开应用。".into());
+        }
         Ok(RestartCodexResult {
             restarted: true,
             was_running,
@@ -2578,10 +2766,17 @@ fn restart_codex_desktop() -> Result<RestartCodexResult, String> {
             .ok_or_else(|| "未找到 Codex.exe，请手动重启 Codex。".to_string())?;
         let was_running = is_codex_running();
         if was_running {
-            let _ = Command::new("taskkill")
+            let quit = Command::new("taskkill")
                 .args(["/IM", "Codex.exe", "/T"])
-                .status();
+                .status()
+                .map_err(|err| format!("无法退出 Codex：{err}"))?;
+            if !quit.success() {
+                return Err("Codex 未能退出，自动流程已停止。".into());
+            }
             thread::sleep(Duration::from_millis(500));
+            if is_codex_running() {
+                return Err("Codex 仍在运行，请保存任务后重试。".into());
+            }
         }
         Command::new(&executable)
             .spawn()
@@ -2808,6 +3003,7 @@ fn run_cli(args: &[String]) -> Result<(), String> {
 
     let options = parse_cli_args(args)?;
     validate_provider_id(&options.provider_id)?;
+    validate_base_url(&options.base_url)?;
 
     let codex_home = codex_home()?;
     let config_path = codex_home.join("config.toml");
@@ -2984,6 +3180,9 @@ fn print_help() {
         )
     );
 }
+
+#[cfg(test)]
+mod regression_tests;
 
 #[cfg(test)]
 mod tests {

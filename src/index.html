@@ -48,32 +48,18 @@
                   </svg>
                 </span>
                 <div>
-                  <h3 id="activation-guide-title">配置生效流程</h3>
-                  <p>按顺序完成后，Codex 才会在新任务中重新注册图片工具。</p>
+                  <h3 id="activation-guide-title">自动配置</h3>
+                  <p>自动推进，遇到阻塞可手动处理后继续</p>
                 </div>
               </div>
               <span id="activation-state" class="activation-state">正在读取状态</span>
             </div>
-
-            <ol class="setup-progress" aria-label="配置生效流程">
-              <li id="step-credential" class="is-current">
-                <span>1</span>
-                <div><strong>保存连接</strong><small>填写或复用 Key</small></div>
-              </li>
-              <li id="step-config">
-                <span>2</span>
-                <div><strong>写入配置</strong><small>同步图片能力</small></div>
-              </li>
-              <li id="step-restart">
-                <span>3</span>
-                <div><strong>重启 Codex</strong><small>重新加载工具</small></div>
-              </li>
-              <li id="step-verify">
-                <span>4</span>
-                <div><strong>新建任务</strong><small>生成图片验证</small></div>
-              </li>
+            <ol class="setup-progress" aria-label="配置进度">
+              <li data-phase="writing"><span>1</span><div><strong>写入配置</strong><small>等待执行</small></div></li>
+              <li data-phase="checking"><span>2</span><div><strong>检查配置</strong><small>等待执行</small></div></li>
+              <li data-phase="restarting"><span>3</span><div><strong>重启 Codex</strong><small>等待执行</small></div></li>
+              <li data-phase="complete"><span>4</span><div><strong>完成</strong><small>等待执行</small></div></li>
             </ol>
-
             <div class="activation-next">
               <span class="activation-next-icon" aria-hidden="true">
                 <svg viewBox="0 0 24 24">
@@ -82,10 +68,14 @@
                 </svg>
               </span>
               <div>
-                <span>当前下一步</span>
+                <span>执行状态</span>
                 <strong id="next-step-title">正在读取本机配置</strong>
                 <p id="next-step-detail">请稍候，软件正在判断需要完成的操作。</p>
               </div>
+            </div>
+            <div id="configuration-recovery" hidden>
+              <button id="retry-configuration" class="button secondary" type="button">重试当前步骤</button>
+              <button id="configuration-diagnostics" class="button secondary" type="button">查看问题诊断</button>
             </div>
           </section>
 
@@ -127,13 +117,14 @@
               </svg>
               <span id="key-helper-text">Key 仅保存到本机 Codex 配置，不会在界面回显完整内容。</span>
             </p>
+            <p class="field-help">点击下方按钮会自动写入配置并重启 Codex / ChatGPT，请先保存正在进行的任务。</p>
 
             <div class="form-actions">
               <button id="configure-button" type="submit" class="primary-action">
                 <svg viewBox="0 0 24 24" aria-hidden="true">
                   <path d="M20 6 9 17l-5-5" />
                 </svg>
-                完成配置
+                一键配置并重启
               </button>
               <button id="test-button" type="button" class="secondary-action">
                 <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -208,6 +199,7 @@
             <div class="tab-list" role="tablist" aria-label="配置中心功能">
               <button id="diagnosis-tab" class="tab-button is-active" type="button" role="tab" aria-selected="true" aria-controls="diagnosis-panel">问题诊断</button>
               <button id="tools-tab" class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="tools-panel">运维工具</button>
+              <button id="logs-tab" class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="logs-panel">配置日志</button>
             </div>
 
             <section id="diagnosis-panel" class="tab-panel diagnosis-panel" role="tabpanel" aria-labelledby="diagnosis-tab">
@@ -290,6 +282,15 @@
               <button id="restore-button" type="button" class="restore-action">恢复 Codex 默认配置</button>
             </section>
 
+            <section id="logs-panel" class="tab-panel logs-panel" role="tabpanel" aria-labelledby="logs-tab" hidden>
+              <div class="tab-toolbar">
+                <div><h2>配置日志</h2><p>仅本次打开 · 最多 200 条 · 不记录密钥</p></div>
+                <button id="clear-logs-button" class="copy-report-action" type="button">清空</button>
+              </div>
+              <div id="configuration-log" class="configuration-log" role="log" aria-label="配置操作日志" aria-live="polite" aria-relevant="additions" tabindex="0">
+                <p id="log-placeholder">点击一键配置后，在这里查看自动执行进度。</p>
+              </div>
+            </section>
           </section>
         </aside>
       </section>

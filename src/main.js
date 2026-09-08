@@ -1,3 +1,6 @@
+import { createConfigurationLog, redactLogMessage } from './configuration-log.js';
+import { runAutoConfiguration } from './auto-configure.js';
+import { validateBaseUrl } from './validation.js';
 const DEFAULT_BASE_URL = "https://ocean-way.top";
 const invoke = window.__TAURI__?.core?.invoke;
 
@@ -62,6 +65,11 @@ let currentStatus = {
 let currentSystemInfo = null;
 let lastDiagnosticReport = null;
 let availableUpdate = null;
+let configurationLog = null;
+let configurationPhase = 'idle';
+let configuring = false;
+let formDirty = false;
+let maintenanceRunning = false;
 
 function syncColumnHeights() {
   if (!desktopLayoutQuery.matches) {
@@ -74,8 +82,10 @@ function syncColumnHeights() {
   const healthHeight = Math.ceil(healthPanel.getBoundingClientRect().height);
   const columnGap = Number.parseFloat(getComputedStyle(sideColumn).gap) || 14;
   const controlMaxHeight = Math.max(0, setupHeight - healthHeight - columnGap);
-  sideColumn.style.height = `${setupHeight}px`;
-  sideColumn.style.setProperty("--control-panel-max-height", `${controlMaxHeight}px`);
+  if (sideColumn.style.height !== `${setupHeight}px`) sideColumn.style.height = `${setupHeight}px`;
+  if (sideColumn.style.getPropertyValue('--control-panel-max-height') !== `${controlMaxHeight}px`) {
+    sideColumn.style.setProperty("--control-panel-max-height", `${controlMaxHeight}px`);
+  }
 }
 
 const layoutResizeObserver = new ResizeObserver(syncColumnHeights);
@@ -88,6 +98,8 @@ function setDot(element, kind) {
 }
 
 function setStatus(message, kind = "") {
+  message = redactLogMessage(message ?? '', [apiKeyInput.value.trim()]);
+  configurationLog?.append(message, kind || 'info');
   statusMessage.textContent = message;
   statusBox.dataset.kind = kind;
   statusBox.hidden = !message;
@@ -112,6 +124,9 @@ function normalizeBaseUrl(value) {
 function readFormValues() {
   const apiKey = apiKeyInput.value.trim();
   const baseUrl = normalizeBaseUrl(baseUrlInput.value);
+  try { validateBaseUrl(baseUrl); } catch (error) {
+    setStatus(error.message, 'error'); baseUrlInput.focus(); return null;
+  }
   if (!apiKey && !currentStatus.hasApiKey) {
     setStatus("首次配置请先输入 OceanWay API Key。", "error");
     apiKeyInput.focus();
@@ -127,41 +142,19 @@ function authStrategyText(strategy) {
 }
 
 function updateProgress(status) {
-  const steps = [
-    $("#step-credential"),
-    $("#step-config"),
-    $("#step-restart"),
-    $("#step-verify"),
-  ];
-  steps.forEach((step) => step.classList.remove("is-current", "is-done"));
-  if (!status.hasApiKey) {
-    steps[0].classList.add("is-current");
-    activationState.textContent = "等待连接";
-    activationState.dataset.kind = "warning";
-    nextStepTitle.textContent = "输入 API Key";
-    nextStepDetail.textContent = "首次使用需要填写 OceanWay API Key，然后点击“完成配置”。";
-    return;
-  }
-  steps[0].classList.add("is-done");
-  if (!status.configured || !status.imagegenCliConfigured) {
-    steps[1].classList.add("is-current");
-    activationState.textContent = status.configured ? "图片能力待同步" : "配置未完成";
-    activationState.dataset.kind = "warning";
-    nextStepTitle.textContent = "点击“完成配置”";
-    nextStepDetail.textContent = "软件会保留已有 Codex 设置，并补全 Provider 与图片工具配置。";
-    return;
-  }
-  steps[1].classList.add("is-done");
-  steps[2].classList.add("is-current");
-  activationState.textContent = "配置已写入";
-  activationState.dataset.kind = "success";
-  nextStepTitle.textContent = "重启 Codex，然后新建任务";
-  nextStepDetail.textContent = "旧任务不会刷新工具列表；必须在重启后创建新任务再测试图片生成。";
+  if (configurationPhase !== 'idle') return;
+  if (formDirty) return;
+  activationState.textContent = status.configured ? '配置已保存' : '等待配置';
+  activationState.dataset.kind = 'warning';
+  nextStepTitle.textContent = '点击一次，自动完成配置与重启';
+  nextStepDetail.textContent = '请先保存 Codex / ChatGPT 中的任务。执行进度显示在右侧配置日志，不需要逐步确认。';
 }
 
 function renderConfigStatus(status) {
+  const previousStatus = currentStatus;
   currentStatus = status;
-  const ready = status.configured && status.imagegenCliConfigured;
+  const ready = status.configured && status.hasApiKey && status.imagegenCliConfigured;
+  if (configurationPhase === 'complete' && (!ready || previousStatus.baseUrl !== status.baseUrl)) resetConfigurationProgress();
 
   serviceStatus.textContent = status.configured ? "已配置" : "未配置";
   setDot(serviceDot, status.configured ? "success" : "warning");
@@ -177,7 +170,7 @@ function renderConfigStatus(status) {
     ? "Key 已保存在本机。留空继续使用，界面不会回显完整内容。"
     : "Key 仅保存到本机 Codex 配置，不会在界面回显完整内容。";
 
-  if (status.baseUrl && document.activeElement !== baseUrlInput) {
+  if (status.baseUrl && !formDirty && document.activeElement !== baseUrlInput) {
     baseUrlInput.value = status.baseUrl;
   }
 
@@ -253,30 +246,93 @@ async function refreshStatus() {
   }
 }
 
-async function configureProvider(event) {
+function renderConfigurationProgress(phase, blocked = false) {
+  const phases = ['writing', 'checking', 'restarting', 'complete'];
+  const current = phases.indexOf(phase);
+  document.querySelectorAll('.setup-progress li').forEach((step, index) => {
+    const done = index < current || phase === 'complete';
+    const active = index === current && phase !== 'complete';
+    step.classList.toggle('is-done', done);
+    step.classList.toggle('is-current', active);
+    step.classList.toggle('is-blocked', active && blocked);
+    if (active) step.setAttribute('aria-current', 'step');
+    else step.removeAttribute('aria-current');
+    step.querySelector('small').textContent = done ? '已完成' : active ? (blocked ? '已阻塞' : '执行中…') : '等待执行';
+  });
+}
+
+let blockedPhase = null;
+function resetConfigurationProgress() {
+  configurationPhase = 'idle'; blockedPhase = null;
+  $('#configuration-recovery').hidden = true;
+  renderConfigurationProgress('idle');
+  setStatus('');
+  updateProgress(currentStatus);
+}
+
+async function runMaintenance(operation) {
+  if (configuring || maintenanceRunning) return;
+  maintenanceRunning = true;
+  const controls = [...document.querySelectorAll('#config-form input, #config-form button, #tools-panel button, #update-button')];
+  const disabled = controls.map(control => control.disabled);
+  controls.forEach(control => { control.disabled = true; });
+  try { await operation(); } finally {
+    maintenanceRunning = false;
+    controls.forEach((control, index) => { control.disabled = disabled[index]; });
+  }
+}
+async function configureProvider(event, resumeFrom = 'writing') {
   event.preventDefault();
+  if (configuring || maintenanceRunning) return;
   const values = readFormValues();
   if (!values) return;
-  if (!invoke) {
-    renderConfigStatus({ ...browserPreviewStatus(), baseUrl: values.baseUrl });
-    setStatus("界面预览：配置写入与图片能力同步流程已完成。", "success");
-    return;
-  }
-
-  setButtonBusy(configureButton, true, "正在配置…");
-  setStatus(values.apiKey ? "正在保存并配置 OceanWay AI…" : "正在使用已保存的 Key 更新配置…");
+  configuring = true;
+  blockedPhase = null;
+  $('#configuration-recovery').hidden = true;
+  setTab($('#logs-tab'));
+  setButtonBusy(configureButton, true, '自动配置中…');
+  apiKeyInput.disabled = baseUrlInput.disabled = true;
+  const actionButtons = [...document.querySelectorAll('#tools-panel button, #test-button, #refresh-status-button, #update-button')];
+  const previousDisabled = actionButtons.map(button => button.disabled);
+  actionButtons.forEach(button => { button.disabled = true; });
+  const onStage = (phase, message) => {
+    configurationPhase = phase;
+    renderConfigurationProgress(phase);
+    activationState.textContent = phase === 'complete' ? '配置完成' : '执行中';
+    activationState.dataset.kind = phase === 'complete' ? 'success' : 'warning';
+    nextStepTitle.textContent = message;
+    nextStepDetail.textContent = phase === 'complete' ? '无需继续确认。实际图片能力请在新任务使用时确认。' : '请稍候，详细进度见右侧配置日志。';
+    setStatus(message, phase === 'complete' ? 'success' : '');
+  };
   try {
-    const result = await invoke("configure_provider", values);
-    apiKeyInput.value = "";
-    apiKeyInput.type = "password";
-    await refreshStatus();
-    setStatus(
-      `${authStrategyText(result.authStrategy)} 请重启 Codex 并新建任务验证图片能力。`,
-      "success",
-    );
+    const call = invoke || (async command => {
+      if (command === 'get_config_status') return { ...browserPreviewStatus(), baseUrl: values.baseUrl };
+      if (command === 'restart_codex') return { restarted: true };
+      return {};
+    });
+    if (!invoke) setStatus('界面预览：下面仅模拟流程，不写入文件、不重启应用。');
+    await runAutoConfiguration({ invoke: call, values, onStage, onConfigured: status => {
+      formDirty = false; renderConfigStatus(status);
+    }, resumeFrom });
+    apiKeyInput.value = ''; apiKeyInput.type = 'password';
   } catch (error) {
-    setStatus(`配置失败：${error}`, "error");
+    blockedPhase = configurationPhase;
+    renderConfigurationProgress(blockedPhase, true);
+    configurationPhase = 'failed';
+    activationState.textContent = '配置未完成'; activationState.dataset.kind = 'error';
+    nextStepTitle.textContent = `自动流程已停止：${redactLogMessage(String(error), [values.apiKey].filter(Boolean))}`;
+    nextStepDetail.textContent = blockedPhase === 'restarting'
+      ? '请保存任务并手动退出 Codex / ChatGPT，再点击“重试重启并继续”。不会重复写入配置。'
+      : blockedPhase === 'checking'
+        ? '请在问题诊断中检查或修复配置，再点击“重新检查并继续”。'
+        : '请检查 Key、地址及配置目录权限，修改后点击“重试写入并继续”。';
+    $('#retry-configuration').textContent = { writing: '重试写入并继续', checking: '重新检查并继续', restarting: '重试重启并继续' }[blockedPhase];
+    $('#configuration-recovery').hidden = false;
+    setStatus(String(error), 'error');
   } finally {
+    configuring = false;
+    apiKeyInput.disabled = baseUrlInput.disabled = false;
+    actionButtons.forEach((button, index) => { button.disabled = previousDisabled[index]; });
     setButtonBusy(configureButton, false);
   }
 }
@@ -406,7 +462,8 @@ async function repairConfiguration() {
     }
     const result = await invoke("repair_configuration");
     await refreshStatus();
-    setStatus(result.message, "success");
+    resetConfigurationProgress();
+    setStatus(result.message || '配置已修复，请重新执行一键配置以检查并重启。', "success");
   } catch (error) {
     setStatus(`配置修复失败：${error}`, "error");
   } finally {
@@ -420,6 +477,7 @@ async function configureImagegenCli() {
   try {
     if (invoke) await invoke("configure_imagegen_cli");
     await refreshStatus();
+    resetConfigurationProgress();
     setStatus("图片备用配置已同步。请重启 Codex 并新建任务。", "success");
   } catch (error) {
     setStatus(`图片备用配置失败：${error}`, "error");
@@ -537,6 +595,8 @@ async function restoreDefaults() {
   setStatus("正在恢复首次使用本工具前的 Codex 配置…");
   try {
     if (!invoke) {
+      formDirty = false;
+      resetConfigurationProgress();
       renderConfigStatus({
         ...browserPreviewStatus(),
         configured: false,
@@ -548,6 +608,8 @@ async function restoreDefaults() {
     }
     const result = await invoke("restore_defaults");
     apiKeyInput.value = "";
+    formDirty = false;
+    resetConfigurationProgress();
     await refreshStatus();
     const restored = result.historyMigrationRestore;
     const historyText = restored?.restoredBackups
@@ -562,6 +624,7 @@ async function restoreDefaults() {
 }
 
 function setTab(button) {
+  if (button.getAttribute('aria-selected') === 'true') return;
   for (const tab of document.querySelectorAll(".tab-button")) {
     const active = tab === button;
     tab.classList.toggle("is-active", active);
@@ -569,8 +632,8 @@ function setTab(button) {
     const panel = document.getElementById(tab.getAttribute("aria-controls"));
     panel.hidden = !active;
   }
-  if (button.id === "tools-tab") refreshHistoryStatus();
-  window.requestAnimationFrame(syncColumnHeights);
+  // Navigation only: history scanning is explicitly triggered by the migration action.
+  // ResizeObserver handles actual size changes without forcing layout on every tab click.
 }
 
 function toggleApiKeyVisibility() {
@@ -592,7 +655,7 @@ async function handleUpdate(options = {}) {
   }
   setButtonBusy(updateButton, true, availableUpdate ? "安装中…" : "检查中…");
   try {
-    if (availableUpdate) {
+    if (availableUpdate && !silent) {
       updateStatus.textContent = `正在安装 v${availableUpdate.latestVersion}，完成后自动重启…`;
       await invoke("install_update");
       return;
@@ -607,7 +670,7 @@ async function handleUpdate(options = {}) {
       updateStatus.textContent = "当前已是最新版本";
     }
   } catch (error) {
-    updateStatus.textContent = String(error).includes("404")
+    updateStatus.textContent = String(error).includes('更新清单不可用') ? '更新通道不可用' : String(error).includes("404")
       ? "更新通道尚未发布"
       : "检查更新失败";
     if (!silent) {
@@ -618,20 +681,37 @@ async function handleUpdate(options = {}) {
   }
 }
 
+configurationLog = createConfigurationLog({ $, getSecret: () => apiKeyInput.value.trim() });
 configForm.addEventListener("submit", configureProvider);
+$('#retry-configuration').addEventListener('click', event => configureProvider(event, blockedPhase || 'writing'));
+$('#configuration-diagnostics').addEventListener('click', () => setTab($('#diagnosis-tab')));
+// Edited inputs describe a new configuration, so an interrupted run cannot skip writing them.
+for (const input of [apiKeyInput, baseUrlInput]) input.addEventListener('input', () => {
+  formDirty = true;
+  if (!blockedPhase) {
+    resetConfigurationProgress();
+    activationState.textContent = '修改未保存'; activationState.dataset.kind = 'warning';
+    nextStepTitle.textContent = '输入已修改，请重新执行一键配置';
+    nextStepDetail.textContent = '当前输入尚未写入，不代表已生效。';
+    return;
+  }
+  blockedPhase = 'writing';
+  $('#retry-configuration').textContent = '保存修改并继续';
+  nextStepDetail.textContent = '输入已修改，继续时将重新写入并自动完成后续步骤。';
+});
 testButton.addEventListener("click", testConnection);
 toggleKeyButton.addEventListener("click", toggleApiKeyVisibility);
 refreshStatusButton.addEventListener("click", refreshStatus);
 runDiagnosticsButton.addEventListener("click", runDiagnostics);
 copyReportButton.addEventListener("click", copySupportReport);
 restartCodexButton.addEventListener("click", openRestartDialog);
-confirmRestartButton.addEventListener("click", restartCodex);
-repairButton.addEventListener("click", repairConfiguration);
-imagegenButton.addEventListener("click", configureImagegenCli);
-migrateHistoryButton.addEventListener("click", migrateHistoryVisibility);
+confirmRestartButton.addEventListener("click", () => runMaintenance(restartCodex));
+repairButton.addEventListener("click", () => runMaintenance(repairConfiguration));
+imagegenButton.addEventListener("click", () => runMaintenance(configureImagegenCli));
+migrateHistoryButton.addEventListener("click", () => runMaintenance(migrateHistoryVisibility));
 openDirButton.addEventListener("click", openConfigDirectory);
 restoreButton.addEventListener("click", openRestoreDialog);
-confirmRestoreButton.addEventListener("click", restoreDefaults);
+confirmRestoreButton.addEventListener("click", () => runMaintenance(restoreDefaults));
 updateButton.addEventListener("click", () => handleUpdate());
 for (const tab of document.querySelectorAll(".tab-button")) {
   tab.addEventListener("click", () => setTab(tab));

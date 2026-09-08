@@ -1,3 +1,13 @@
+.logs-panel { display: flex; flex-direction: column; gap: 12px; }
+.logs-panel .tab-toolbar { flex-shrink: 0; }
+.configuration-log { flex: 1; min-height: 140px; overflow: auto; border: 1px solid #dce7f4; border-radius: 10px; padding: 10px; background: #f7faff; font: 12px/1.7 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.configuration-log > p { color: #6e7f98; }
+.log-entry { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 8px; padding: 5px 0; border-bottom: 1px solid #e8eef6; }
+.log-entry time { color: #74859d; font-size: 11px; }
+.log-entry span { overflow-wrap: anywhere; color: #294766; white-space: pre-wrap; }
+.log-entry[data-kind="success"] span { color: #13765c; }
+.log-entry[data-kind="error"] span { color: #ae3939; }
+.log-entry[data-kind="warning"] span { color: #906215; }
 :root {
   color: #11284a;
   font-family:
@@ -240,8 +250,8 @@ svg {
 
 .activation-guide {
   display: flex;
-  min-height: 0;
-  flex: 1 1 auto;
+  min-height: min-content;
+  flex: 1 0 auto;
   flex-direction: column;
   margin: var(--module-gap) 0;
   padding: 14px 15px;
@@ -325,7 +335,7 @@ svg {
   align-items: stretch;
   gap: 8px;
   min-height: 54px;
-  flex: 1 1 auto;
+  flex: 0 0 auto;
   margin: 10px 0;
   padding: 0;
   list-style: none;
@@ -397,6 +407,14 @@ svg {
   background: var(--success-soft);
   color: #13865e;
 }
+
+.setup-progress li.is-blocked { border-color: #e9a2a2; background: #fff3f3; }
+.setup-progress li.is-blocked > span { background: #b93838; border-color: #b93838; box-shadow: none; }
+.activation-state[data-kind="error"] { background: #fff0f0; color: #b93838; }
+#configuration-recovery:not([hidden]) { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+#configuration-recovery button { min-height: 34px; padding: 6px 10px; border: 1px solid #c7dafa; border-radius: 8px; background: white; color: #245aa5; font-size: 12px; }
+#configuration-recovery button:hover { background: #eaf2ff; }
+@media (max-width: 620px) { .setup-progress { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 
 .activation-next {
   display: flex;
@@ -1384,15 +1402,14 @@ svg {
   }
 
   .setup-progress {
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .setup-progress li {
-    justify-content: center;
-    padding: 0;
+    justify-content: flex-start;
+    padding: 8px;
   }
 
-  .setup-progress li div,
   .setup-progress li::after {
     display: none;
   }

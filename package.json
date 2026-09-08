@@ -4,6 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "test": "node --test tests/*.test.js",
+    "test:ui": "node tests/serve-fixture.mjs",
     "build": "tauri build",
     "dev": "tauri dev"
   },
