@@ -21,7 +21,7 @@ cd src-tauri
 cargo test
 ```
 
-## macOS
+## macOS (Apple Silicon + Intel)
 
 ```bash
 ./build.sh
@@ -30,9 +30,13 @@ cargo test
 Output:
 
 ```text
-src-tauri/target/release/bundle/macos/codex-config.app
-dist/codex-config-macOS.zip
+dist/codex-config-v<version>-macOS-arm64.dmg
+dist/codex-config-v<version>-macOS-arm64.zip
+dist/codex-config-v<version>-macOS-intel.dmg
+dist/codex-config-v<version>-macOS-intel.zip
 ```
+
+If `~/.tauri/oceanway-codex-config.key` exists, the script also creates signed updater archives and signatures. The updater private key must never be committed.
 
 ## Windows
 
@@ -52,4 +56,10 @@ The workflow builds macOS and Windows artifacts from the repository root:
 
 ```text
 .github/workflows/build.yml
+```
+
+Signed release artifacts and `latest.json` are created by:
+
+```text
+.github/workflows/release.yml
 ```

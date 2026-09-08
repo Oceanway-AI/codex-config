@@ -1,450 +1,724 @@
+import { createConfigurationLog, redactLogMessage } from './configuration-log.js';
+import { runAutoConfiguration } from './auto-configure.js';
+import { validateBaseUrl } from './validation.js';
 const DEFAULT_BASE_URL = "https://ocean-way.top";
-
-const currentProvider = document.querySelector("#current-provider");
-const currentBaseUrl = document.querySelector("#current-base-url");
-const currentApiKey = document.querySelector("#current-api-key");
-const currentKeyProfile = document.querySelector("#current-key-profile");
-const profileCount = document.querySelector("#profile-count");
-const profileList = document.querySelector("#profile-list");
-const emptyState = document.querySelector("#empty-state");
-const emptyAddKeyButton = document.querySelector("#empty-add-key-button");
-const statusText = document.querySelector("#status");
-const addKeyButton = document.querySelector("#add-key-button");
-const restoreButton = document.querySelector("#restore-button");
-const exitButton = document.querySelector("#exit-button");
-const openDirButton = document.querySelector("#open-dir-button");
-const keyDialog = document.querySelector("#key-dialog");
-const keyForm = document.querySelector("#key-form");
-const closeDialogButton = document.querySelector("#close-dialog-button");
-const dialogTitle = document.querySelector("#dialog-title");
-const keyProfileIdInput = document.querySelector("#key-profile-id");
-const keyProfileNameInput = document.querySelector("#key-profile-name");
-const apiKeyInput = document.querySelector("#api-key");
-const baseUrlInput = document.querySelector("#base-url");
-const toggleKeyButton = document.querySelector("#toggle-key-button");
-const saveKeyProfileButton = document.querySelector("#save-key-profile-button");
-const saveAndUseButton = document.querySelector("#save-and-use-button");
-
 const invoke = window.__TAURI__?.core?.invoke;
-let keyProfiles = [];
-let resizeTimer = 0;
 
-function setBusy(isBusy) {
-  for (const element of document.querySelectorAll("button, input")) {
-    element.disabled = isBusy;
-  }
-}
+const $ = (selector) => document.querySelector(selector);
+const configForm = $("#config-form");
+const apiKeyInput = $("#api-key");
+const baseUrlInput = $("#base-url");
+const toggleKeyButton = $("#toggle-key-button");
+const configureButton = $("#configure-button");
+const testButton = $("#test-button");
+const statusBox = $("#status");
+const statusMessage = $("#status-message");
+const savedKeyState = $("#saved-key-state");
+const keyHelperText = $("#key-helper-text");
+const activationState = $("#activation-state");
+const nextStepTitle = $("#next-step-title");
+const nextStepDetail = $("#next-step-detail");
+const refreshStatusButton = $("#refresh-status-button");
+const serviceStatus = $("#service-status");
+const serviceDot = $("#service-dot");
+const imageStatus = $("#image-status");
+const imageDot = $("#image-dot");
+const codexStatus = $("#codex-status");
+const codexDot = $("#codex-dot");
+const topbarStateText = $("#topbar-state-text");
+const topbarStateDot = $("#topbar-state-dot");
+const systemVersion = $("#system-version");
+const codexVersion = $("#codex-version");
+const runDiagnosticsButton = $("#run-diagnostics-button");
+const diagnosticSummary = $("#diagnostic-summary");
+const diagnosticSummaryIcon = $("#diagnostic-summary-icon");
+const diagnosticSummaryTitle = $("#diagnostic-summary-title");
+const diagnosticSummaryDetail = $("#diagnostic-summary-detail");
+const diagnosticList = $("#diagnostic-list");
+const copyReportButton = $("#copy-report-button");
+const restartCodexButton = $("#restart-codex-button");
+const repairButton = $("#repair-button");
+const imagegenButton = $("#imagegen-button");
+const imagegenRowDetail = $("#imagegen-row-detail");
+const migrateHistoryButton = $("#migrate-history-button");
+const historyRowDetail = $("#history-row-detail");
+const openDirButton = $("#open-dir-button");
+const restoreButton = $("#restore-button");
+const restoreDialog = $("#restore-dialog");
+const confirmRestoreButton = $("#confirm-restore-button");
+const restartDialog = $("#restart-dialog");
+const restartDialogDetail = $("#restart-dialog-detail");
+const confirmRestartButton = $("#confirm-restart-button");
+const updateButton = $("#update-button");
+const updateStatus = $("#update-status");
+const setupPanel = $(".setup-panel");
+const sideColumn = $(".side-column");
+const healthPanel = $(".health-panel");
+const desktopLayoutQuery = window.matchMedia("(min-width: 761px)");
 
-function setStatus(message, kind = "") {
-  statusText.textContent = message;
-  statusText.dataset.kind = kind;
-  statusText.hidden = !message;
-  scheduleWindowResize();
-}
+let currentStatus = {
+  configured: false,
+  hasApiKey: false,
+  imagegenCliConfigured: false,
+  chatgptLoginDetected: false,
+};
+let currentSystemInfo = null;
+let lastDiagnosticReport = null;
+let availableUpdate = null;
+let configurationLog = null;
+let configurationPhase = 'idle';
+let configuring = false;
+let formDirty = false;
+let maintenanceRunning = false;
 
-function scheduleWindowResize() {
-  window.clearTimeout(resizeTimer);
-  resizeTimer = window.setTimeout(resizeWindowToContent, 80);
-}
-
-async function resizeWindowToContent() {
-  if (!invoke) {
+function syncColumnHeights() {
+  if (!desktopLayoutQuery.matches) {
+    sideColumn.style.removeProperty("height");
+    sideColumn.style.removeProperty("--control-panel-max-height");
     return;
   }
 
-  const contentHeight = Math.ceil(document.documentElement.scrollHeight + 20);
-  const maxHeight = Math.max(520, Math.min(760, window.screen.availHeight - 80));
-  const height = Math.max(440, Math.min(contentHeight, maxHeight));
-  try {
-    await invoke("resize_window_to_content", { height });
-  } catch {
-    // Resizing is a convenience; the UI remains usable if the platform refuses it.
+  const setupHeight = Math.ceil(setupPanel.getBoundingClientRect().height);
+  const healthHeight = Math.ceil(healthPanel.getBoundingClientRect().height);
+  const columnGap = Number.parseFloat(getComputedStyle(sideColumn).gap) || 14;
+  const controlMaxHeight = Math.max(0, setupHeight - healthHeight - columnGap);
+  if (sideColumn.style.height !== `${setupHeight}px`) sideColumn.style.height = `${setupHeight}px`;
+  if (sideColumn.style.getPropertyValue('--control-panel-max-height') !== `${controlMaxHeight}px`) {
+    sideColumn.style.setProperty("--control-panel-max-height", `${controlMaxHeight}px`);
+  }
+}
+
+const layoutResizeObserver = new ResizeObserver(syncColumnHeights);
+layoutResizeObserver.observe(setupPanel);
+layoutResizeObserver.observe(healthPanel);
+desktopLayoutQuery.addEventListener("change", syncColumnHeights);
+
+function setDot(element, kind) {
+  element.dataset.kind = kind || "muted";
+}
+
+function setStatus(message, kind = "") {
+  message = redactLogMessage(message ?? '', [apiKeyInput.value.trim()]);
+  configurationLog?.append(message, kind || 'info');
+  statusMessage.textContent = message;
+  statusBox.dataset.kind = kind;
+  statusBox.hidden = !message;
+}
+
+function setButtonBusy(button, busy, busyText) {
+  if (!button.dataset.label) {
+    button.dataset.label = button.innerHTML;
+  }
+  button.disabled = busy;
+  if (busy) {
+    button.textContent = busyText;
+  } else {
+    button.innerHTML = button.dataset.label;
   }
 }
 
 function normalizeBaseUrl(value) {
-  const trimmed = value.trim();
-  return trimmed || DEFAULT_BASE_URL;
+  return value.trim() || DEFAULT_BASE_URL;
 }
 
-function sessionSyncText(sync = {}) {
-  const synced = (sync.rolloutFilesUpdated || 0) + (sync.sqliteRowsUpdated || 0);
-  const warningText = sync.warnings?.length ? `，有 ${sync.warnings.length} 个同步提示` : "";
-  return synced > 0 ? `已同步历史记录${warningText}。` : `历史记录无需同步${warningText}。`;
-}
-
-function setCurrentStatus(status) {
-  currentProvider.textContent = status.configured ? "已配置 OceanWay AI" : "未配置 OceanWay AI";
-  currentBaseUrl.textContent = status.baseUrl || "-";
-  currentBaseUrl.title = status.baseUrl || "";
-  currentApiKey.textContent = status.hasApiKey ? "已保存" : "未保存";
-  updateActiveProfile();
-}
-
-function updateActiveProfile() {
-  const activeProfile = keyProfiles.find((profile) => profile.active);
-  currentKeyProfile.textContent = activeProfile?.name || (currentProvider.textContent === "已配置 OceanWay AI" ? "未匹配保存档案" : "-");
-}
-
-function renderProfiles() {
-  profileList.replaceChildren();
-  profileCount.textContent = `${keyProfiles.length} 个密钥`;
-  emptyState.hidden = keyProfiles.length > 0;
-
-  for (const profile of keyProfiles) {
-    const card = document.createElement("article");
-    card.className = "profile-card";
-    card.dataset.active = String(Boolean(profile.active));
-    card.innerHTML = `
-      <div class="profile-main">
-        <div>
-          <div class="profile-title-row">
-            <h3></h3>
-            <span class="active-pill">当前使用中</span>
-          </div>
-          <span class="masked-key"></span>
-        </div>
-        <button type="button" class="primary activate-button" data-action="activate"></button>
-      </div>
-      <div class="profile-meta">
-        <span>Base URL</span>
-        <strong></strong>
-      </div>
-      <div class="profile-actions">
-        <button type="button" data-action="test">
-          <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M13 2 4 14h7l-1 8 10-13h-7l1-7Z" />
-          </svg>
-          测试
-        </button>
-        <button type="button" data-action="edit">
-          <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M12 20h9" />
-            <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
-          </svg>
-          编辑
-        </button>
-        <button type="button" data-action="delete">
-          <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M3 6h18" />
-            <path d="M8 6V4h8v2" />
-            <path d="M6 6l1 15h10l1-15" />
-          </svg>
-          删除
-        </button>
-      </div>
-    `;
-
-    card.querySelector("h3").textContent = profile.name;
-    card.querySelector(".masked-key").textContent = profile.maskedKey;
-    card.querySelector(".profile-meta strong").textContent = profile.baseUrl || DEFAULT_BASE_URL;
-    card.querySelector(".profile-meta strong").title = profile.baseUrl || DEFAULT_BASE_URL;
-    const activateButton = card.querySelector("[data-action='activate']");
-    activateButton.textContent = profile.active ? "已启用" : "启用";
-    activateButton.disabled = Boolean(profile.active);
-    activateButton.classList.toggle("is-active", Boolean(profile.active));
-    card.addEventListener("click", (event) => handleProfileAction(event, profile));
-    profileList.append(card);
-  }
-
-  updateActiveProfile();
-  scheduleWindowResize();
-}
-
-async function refreshStatus() {
-  if (!invoke) {
-    currentProvider.textContent = "预览模式";
-    currentBaseUrl.textContent = DEFAULT_BASE_URL;
-    currentApiKey.textContent = "-";
-    return;
-  }
-
-  try {
-    const status = await invoke("get_config_status");
-    setCurrentStatus(status);
-  } catch (error) {
-    currentProvider.textContent = "读取失败";
-    currentBaseUrl.textContent = "-";
-    currentApiKey.textContent = "-";
-    setStatus(`读取当前配置失败：${error}`, "error");
-  }
-}
-
-async function refreshKeyProfiles() {
-  if (!invoke) {
-    keyProfiles = [];
-    renderProfiles();
-    return;
-  }
-
-  try {
-    keyProfiles = await invoke("list_key_profiles");
-    renderProfiles();
-  } catch (error) {
-    setStatus(`读取密钥档案失败：${error}`, "error");
-  }
-}
-
-function openKeyDialog(profile = null) {
-  keyProfileIdInput.value = profile?.id || "";
-  keyProfileNameInput.value = profile?.name || "";
-  apiKeyInput.value = "";
-  apiKeyInput.placeholder = profile ? "留空则保留已保存的 API Key" : "请输入 API Key";
-  baseUrlInput.value = profile?.baseUrl || DEFAULT_BASE_URL;
-  dialogTitle.textContent = profile ? "编辑密钥" : "添加密钥";
-  keyDialog.showModal();
-  keyProfileNameInput.focus();
-  scheduleWindowResize();
-}
-
-function closeKeyDialog() {
-  keyDialog.close();
-  apiKeyInput.type = "password";
-  scheduleWindowResize();
-}
-
-async function saveKeyProfile() {
-  const profileId = keyProfileIdInput.value || null;
-  const name = keyProfileNameInput.value.trim();
+function readFormValues() {
   const apiKey = apiKeyInput.value.trim();
   const baseUrl = normalizeBaseUrl(baseUrlInput.value);
-
-  if (!name) {
-    setStatus("请先填写密钥名称。", "error");
-    keyProfileNameInput.focus();
-    return null;
+  try { validateBaseUrl(baseUrl); } catch (error) {
+    setStatus(error.message, 'error'); baseUrlInput.focus(); return null;
   }
-
-  if (!apiKey && !profileId) {
-    setStatus("请先输入 API Key。", "error");
+  if (!apiKey && !currentStatus.hasApiKey) {
+    setStatus("首次配置请先输入 OceanWay API Key。", "error");
     apiKeyInput.focus();
     return null;
   }
-
-  if (!invoke) {
-    const profile = {
-      id: profileId || `preview-${Date.now()}`,
-      name,
-      maskedKey: apiKey ? `${apiKey.slice(0, 6)}...${apiKey.slice(-4)}` : "sk-new...demo",
-      baseUrl,
-      active: false,
-    };
-    keyProfiles = profileId
-      ? keyProfiles.map((item) => (item.id === profileId ? { ...item, ...profile } : item))
-      : [profile, ...keyProfiles];
-    renderProfiles();
-    return profile;
-  }
-
-  const profile = await invoke("save_key_profile", { profileId, name, apiKey, baseUrl });
-  await refreshKeyProfiles();
-  return profile;
+  return { apiKey, baseUrl };
 }
 
-async function handleSave(event) {
+function authStrategyText(strategy) {
+  return strategy === "chatgptBearerToken"
+    ? "已保留 ChatGPT 登录态，并更新 OceanWay Provider。"
+    : "已保存 API Key，并启用 Codex Desktop 图片工具兼容配置。";
+}
+
+function updateProgress(status) {
+  if (configurationPhase !== 'idle') return;
+  if (formDirty) return;
+  activationState.textContent = status.configured ? '配置已保存' : '等待配置';
+  activationState.dataset.kind = 'warning';
+  nextStepTitle.textContent = '点击一次，自动完成配置与重启';
+  nextStepDetail.textContent = '请先保存 Codex / ChatGPT 中的任务。执行进度显示在右侧配置日志，不需要逐步确认。';
+}
+
+function renderConfigStatus(status) {
+  const previousStatus = currentStatus;
+  currentStatus = status;
+  const ready = status.configured && status.hasApiKey && status.imagegenCliConfigured;
+  if (configurationPhase === 'complete' && (!ready || previousStatus.baseUrl !== status.baseUrl)) resetConfigurationProgress();
+
+  serviceStatus.textContent = status.configured ? "已配置" : "未配置";
+  setDot(serviceDot, status.configured ? "success" : "warning");
+  imageStatus.textContent = status.imagegenCliConfigured ? "已就绪" : "待同步";
+  setDot(imageDot, status.imagegenCliConfigured ? "success" : "warning");
+
+  savedKeyState.hidden = !status.hasApiKey;
+  apiKeyInput.required = !status.hasApiKey;
+  apiKeyInput.placeholder = status.hasApiKey
+    ? "已保存；留空继续使用，输入新 Key 可替换"
+    : "请输入 OceanWay API Key";
+  keyHelperText.textContent = status.hasApiKey
+    ? "Key 已保存在本机。留空继续使用，界面不会回显完整内容。"
+    : "Key 仅保存到本机 Codex 配置，不会在界面回显完整内容。";
+
+  if (status.baseUrl && !formDirty && document.activeElement !== baseUrlInput) {
+    baseUrlInput.value = status.baseUrl;
+  }
+
+  imagegenButton.textContent = status.imagegenCliConfigured ? "重新同步" : "同步";
+  imagegenRowDetail.textContent = status.imagegenCliConfigured
+    ? "已同步；内置工具不可用时可使用 CLI 备用路径。"
+    : "尚未同步；完成主配置时会自动处理。";
+
+  topbarStateText.textContent = ready
+    ? "核心配置已就绪"
+    : status.configured
+      ? "图片能力待同步"
+      : "等待完成配置";
+  setDot(topbarStateDot, ready ? "success" : "warning");
+  updateProgress(status);
+}
+
+function renderSystemInfo(info) {
+  currentSystemInfo = info;
+  const systemName = info.operatingSystem || info.osName || "";
+  const systemRelease = info.operatingSystemVersion || info.osVersion || "";
+  systemVersion.textContent = [systemName, systemRelease].filter(Boolean).join(" ") || "未知";
+  codexVersion.textContent = info.codexDesktopVersion || info.codexCliVersion || info.codexVersion || "未检测到";
+  codexStatus.textContent = info.codexRunning
+    ? info.codexHost === "ChatGPT"
+      ? "ChatGPT 内运行"
+      : "正在运行"
+    : "未运行";
+  setDot(codexDot, info.codexRunning ? "success" : "muted");
+}
+
+function browserPreviewStatus() {
+  return {
+    configured: true,
+    hasApiKey: true,
+    chatgptLoginDetected: true,
+    chatgptAccountLabel: "浏览器预览",
+    imagegenCliConfigured: true,
+    baseUrl: DEFAULT_BASE_URL,
+  };
+}
+
+async function refreshStatus() {
+  refreshStatusButton.disabled = true;
+  try {
+    if (!invoke) {
+      renderConfigStatus(browserPreviewStatus());
+      renderSystemInfo({
+        osName: "macOS",
+        osVersion: "macOS 15.5",
+        codexVersion: "0.143.0",
+        codexHost: "ChatGPT",
+        codexRunning: true,
+      });
+      return;
+    }
+
+    const [status, info] = await Promise.all([
+      invoke("get_config_status"),
+      invoke("get_system_info"),
+    ]);
+    renderConfigStatus(status);
+    renderSystemInfo(info);
+  } catch (error) {
+    serviceStatus.textContent = "读取失败";
+    imageStatus.textContent = "未知";
+    codexStatus.textContent = "未知";
+    [serviceDot, imageDot, codexDot, topbarStateDot].forEach((dot) => setDot(dot, "error"));
+    topbarStateText.textContent = "本机状态读取失败";
+    setStatus(`读取本机状态失败：${error}`, "error");
+  } finally {
+    refreshStatusButton.disabled = false;
+  }
+}
+
+function renderConfigurationProgress(phase, blocked = false) {
+  const phases = ['writing', 'checking', 'restarting', 'complete'];
+  const current = phases.indexOf(phase);
+  document.querySelectorAll('.setup-progress li').forEach((step, index) => {
+    const done = index < current || phase === 'complete';
+    const active = index === current && phase !== 'complete';
+    step.classList.toggle('is-done', done);
+    step.classList.toggle('is-current', active);
+    step.classList.toggle('is-blocked', active && blocked);
+    if (active) step.setAttribute('aria-current', 'step');
+    else step.removeAttribute('aria-current');
+    step.querySelector('small').textContent = done ? '已完成' : active ? (blocked ? '已阻塞' : '执行中…') : '等待执行';
+  });
+}
+
+let blockedPhase = null;
+function resetConfigurationProgress() {
+  configurationPhase = 'idle'; blockedPhase = null;
+  $('#configuration-recovery').hidden = true;
+  renderConfigurationProgress('idle');
+  setStatus('');
+  updateProgress(currentStatus);
+}
+
+async function runMaintenance(operation) {
+  if (configuring || maintenanceRunning) return;
+  maintenanceRunning = true;
+  const controls = [...document.querySelectorAll('#config-form input, #config-form button, #tools-panel button, #update-button')];
+  const disabled = controls.map(control => control.disabled);
+  controls.forEach(control => { control.disabled = true; });
+  try { await operation(); } finally {
+    maintenanceRunning = false;
+    controls.forEach((control, index) => { control.disabled = disabled[index]; });
+  }
+}
+async function configureProvider(event, resumeFrom = 'writing') {
   event.preventDefault();
-  setBusy(true);
+  if (configuring || maintenanceRunning) return;
+  const values = readFormValues();
+  if (!values) return;
+  configuring = true;
+  blockedPhase = null;
+  $('#configuration-recovery').hidden = true;
+  setTab($('#logs-tab'));
+  setButtonBusy(configureButton, true, '自动配置中…');
+  apiKeyInput.disabled = baseUrlInput.disabled = true;
+  const actionButtons = [...document.querySelectorAll('#tools-panel button, #test-button, #refresh-status-button, #update-button')];
+  const previousDisabled = actionButtons.map(button => button.disabled);
+  actionButtons.forEach(button => { button.disabled = true; });
+  const onStage = (phase, message) => {
+    configurationPhase = phase;
+    renderConfigurationProgress(phase);
+    activationState.textContent = phase === 'complete' ? '配置完成' : '执行中';
+    activationState.dataset.kind = phase === 'complete' ? 'success' : 'warning';
+    nextStepTitle.textContent = message;
+    nextStepDetail.textContent = phase === 'complete' ? '无需继续确认。实际图片能力请在新任务使用时确认。' : '请稍候，详细进度见右侧配置日志。';
+    setStatus(message, phase === 'complete' ? 'success' : '');
+  };
   try {
-    const profile = await saveKeyProfile();
-    if (profile) {
-      closeKeyDialog();
-      setStatus(`已保存密钥档案：${profile.name}`, "success");
+    const call = invoke || (async command => {
+      if (command === 'get_config_status') return { ...browserPreviewStatus(), baseUrl: values.baseUrl };
+      if (command === 'restart_codex') return { restarted: true };
+      return {};
+    });
+    if (!invoke) setStatus('界面预览：下面仅模拟流程，不写入文件、不重启应用。');
+    await runAutoConfiguration({ invoke: call, values, onStage, onConfigured: status => {
+      formDirty = false; renderConfigStatus(status);
+    }, resumeFrom });
+    apiKeyInput.value = ''; apiKeyInput.type = 'password';
+  } catch (error) {
+    blockedPhase = configurationPhase;
+    renderConfigurationProgress(blockedPhase, true);
+    configurationPhase = 'failed';
+    activationState.textContent = '配置未完成'; activationState.dataset.kind = 'error';
+    nextStepTitle.textContent = `自动流程已停止：${redactLogMessage(String(error), [values.apiKey].filter(Boolean))}`;
+    nextStepDetail.textContent = blockedPhase === 'restarting'
+      ? '请保存任务并手动退出 Codex / ChatGPT，再点击“重试重启并继续”。不会重复写入配置。'
+      : blockedPhase === 'checking'
+        ? '请在问题诊断中检查或修复配置，再点击“重新检查并继续”。'
+        : '请检查 Key、地址及配置目录权限，修改后点击“重试写入并继续”。';
+    $('#retry-configuration').textContent = { writing: '重试写入并继续', checking: '重新检查并继续', restarting: '重试重启并继续' }[blockedPhase];
+    $('#configuration-recovery').hidden = false;
+    setStatus(String(error), 'error');
+  } finally {
+    configuring = false;
+    apiKeyInput.disabled = baseUrlInput.disabled = false;
+    actionButtons.forEach((button, index) => { button.disabled = previousDisabled[index]; });
+    setButtonBusy(configureButton, false);
+  }
+}
+
+async function testConnection() {
+  const values = readFormValues();
+  if (!values) return;
+  setButtonBusy(testButton, true, "测试中…");
+  setStatus(currentStatus.hasApiKey && !values.apiKey ? "正在使用已保存的 Key 测试连接…" : "正在测试连接…");
+  try {
+    if (!invoke) {
+      await new Promise((resolve) => window.setTimeout(resolve, 350));
+      setStatus(`连接测试通过。服务地址：${values.baseUrl}`, "success");
+      return;
     }
-  } catch (error) {
-    setStatus(`保存密钥失败：${error}`, "error");
-  } finally {
-    setBusy(false);
-  }
-}
-
-async function handleSaveAndUse() {
-  setBusy(true);
-  try {
-    const profile = await saveKeyProfile();
-    if (profile) {
-      closeKeyDialog();
-      await activateProfile(profile.id);
-    }
-  } catch (error) {
-    setStatus(`保存密钥失败：${error}`, "error");
-  } finally {
-    setBusy(false);
-  }
-}
-
-async function activateProfile(profileId) {
-  const profile = keyProfiles.find((item) => item.id === profileId);
-  if (!profile) {
-    setStatus("未找到选中的密钥档案。", "error");
-    return;
-  }
-
-  if (!invoke) {
-    keyProfiles = keyProfiles.map((item) => ({ ...item, active: item.id === profileId }));
-    renderProfiles();
-    setStatus(`已启用预览档案：${profile.name}`, "success");
-    return;
-  }
-
-  setBusy(true);
-  setStatus(`正在启用 ${profile.name}...`);
-  try {
-    const result = await invoke("configure_with_key_profile", { profileId });
-    await refreshKeyProfiles();
-    await refreshStatus();
-    setStatus(`已启用 ${profile.name}，请重启 Codex。${sessionSyncText(result.sessionSync)}`, "success");
-  } catch (error) {
-    setStatus(`启用失败：${error}`, "error");
-  } finally {
-    setBusy(false);
-  }
-}
-
-async function testProfile(profileId) {
-  const profile = keyProfiles.find((item) => item.id === profileId);
-  if (!profile) {
-    setStatus("未找到选中的密钥档案。", "error");
-    return;
-  }
-
-  if (!invoke) {
-    setStatus(`${profile.name} 预览测试通过。测试地址：${profile.baseUrl}`, "success");
-    return;
-  }
-
-  setBusy(true);
-  setStatus(`正在测试 ${profile.name}...`);
-  try {
-    const result = await invoke("test_key_profile", { profileId });
-    setStatus(`${profile.name}：${result.message} 测试地址：${result.endpoint}`, result.ok ? "success" : "error");
+    const result = await invoke("test_connection", values);
+    setStatus(`${result.message} 测试地址：${result.endpoint}`, result.ok ? "success" : "error");
   } catch (error) {
     setStatus(`测试失败：${error}`, "error");
   } finally {
-    setBusy(false);
+    setButtonBusy(testButton, false);
   }
 }
 
-async function deleteProfile(profileId) {
-  const profile = keyProfiles.find((item) => item.id === profileId);
-  if (!profile) {
-    setStatus("未找到选中的密钥档案。", "error");
-    return;
+function diagnosticGlyph(kind) {
+  if (kind === "pass" || kind === "success") return "✓";
+  if (kind === "warning") return "!";
+  return "×";
+}
+
+function renderDiagnosticReport(report) {
+  lastDiagnosticReport = report;
+  diagnosticList.innerHTML = "";
+  for (const check of report.checks || []) {
+    const item = document.createElement("li");
+    item.dataset.kind = check.status === "pass" ? "success" : check.status;
+    const state = document.createElement("span");
+    state.className = "check-state";
+    state.textContent = diagnosticGlyph(check.status);
+    const content = document.createElement("div");
+    const title = document.createElement("strong");
+    const detail = document.createElement("p");
+    title.textContent = check.label;
+    detail.textContent = check.detail;
+    content.append(title, detail);
+    item.append(state, content);
+    diagnosticList.append(item);
   }
 
-  const deleteMessage = profile.active
-    ? `“${profile.name}”当前正在使用。删除只会移除保存的档案，不会清除 Codex 当前配置。是否继续？`
-    : `将删除密钥档案“${profile.name}”，是否继续？`;
-  const confirmed = window.confirm(deleteMessage);
-  if (!confirmed) {
-    return;
-  }
+  const passed = report.passed ?? report.passedCount ?? 0;
+  const failed = report.errors ?? report.errorCount ?? 0;
+  const warnings = report.warnings ?? report.warningCount ?? 0;
+  const kind = failed ? "error" : warnings ? "warning" : "success";
+  diagnosticSummary.dataset.kind = kind;
+  diagnosticSummary.hidden = false;
+  diagnosticSummaryIcon.textContent = diagnosticGlyph(kind);
+  diagnosticSummaryTitle.textContent = failed
+    ? `发现 ${failed} 项异常`
+    : warnings
+      ? `诊断完成，${warnings} 项需留意`
+      : "全部核心检查通过";
+  diagnosticSummaryDetail.textContent = `${passed} 项通过 · ${warnings} 项提醒 · ${failed} 项异常`;
+  copyReportButton.disabled = false;
+}
 
-  if (!invoke) {
-    keyProfiles = keyProfiles.filter((item) => item.id !== profileId);
-    renderProfiles();
-    setStatus(`已删除预览档案：${profile.name}`, "success");
-    return;
-  }
+function previewDiagnosticReport() {
+  return {
+    passedCount: 6,
+    warningCount: 1,
+    errorCount: 0,
+    checks: [
+      { label: "Provider 配置", status: "success", detail: "OceanWay Provider 已写入并设为当前渠道。" },
+      { label: "API 凭据", status: "success", detail: "已检测到本机保存的凭据，报告不会包含完整 Key。" },
+      { label: "图片工具兼容", status: "success", detail: "内置图片工具与 CLI 备用配置已同步。" },
+      { label: "Codex 版本", status: "success", detail: "当前版本满足图片扩展最低要求。" },
+      { label: "服务连通性", status: "success", detail: "OceanWay 服务连接正常。" },
+      { label: "Codex 进程", status: "success", detail: "Codex Desktop 正在运行。" },
+      { label: "配置备份", status: "warning", detail: "这是浏览器预览；桌面端会显示真实快照时间。" },
+    ],
+  };
+}
 
-  setBusy(true);
+async function runDiagnostics() {
+  setButtonBusy(runDiagnosticsButton, true, "诊断中…");
+  diagnosticSummary.hidden = true;
+  diagnosticList.innerHTML = '<li class="diagnostic-placeholder"><span class="check-state">…</span><div><strong>正在逐层检查</strong><p>配置、版本、连接、进程与备份状态。</p></div></li>';
   try {
-    await invoke("delete_key_profile", { profileId });
-    await refreshKeyProfiles();
-    setStatus(`已删除密钥档案：${profile.name}`, "success");
+    const report = invoke ? await invoke("run_diagnostics") : previewDiagnosticReport();
+    renderDiagnosticReport(report);
   } catch (error) {
-    setStatus(`删除密钥失败：${error}`, "error");
+    diagnosticList.innerHTML = "";
+    renderDiagnosticReport({
+      passedCount: 0,
+      warningCount: 0,
+      errorCount: 1,
+      checks: [{ label: "诊断执行失败", status: "error", detail: String(error) }],
+    });
   } finally {
-    setBusy(false);
+    setButtonBusy(runDiagnosticsButton, false);
   }
 }
 
-function handleProfileAction(event, profile) {
-  const button = event.target.closest("button[data-action]");
-  if (!button) {
-    return;
-  }
-
-  const action = button.dataset.action;
-  if (action === "activate") {
-    activateProfile(profile.id);
-  } else if (action === "test") {
-    testProfile(profile.id);
-  } else if (action === "edit") {
-    openKeyDialog(profile);
-  } else if (action === "delete") {
-    deleteProfile(profile.id);
-  }
-}
-
-async function restoreDefaults() {
-  const confirmed = window.confirm("将恢复到首次使用本工具前的 Codex 配置，并备份当前文件。是否继续？");
-  if (!confirmed) {
-    return;
-  }
-
-  if (!invoke) {
-    keyProfiles = keyProfiles.map((profile) => ({ ...profile, active: false }));
-    renderProfiles();
-    setStatus("浏览器预览已恢复默认状态。", "success");
-    return;
-  }
-
-  setBusy(true);
-  setStatus("正在恢复默认值...");
-
+async function copySupportReport() {
+  if (!lastDiagnosticReport) return;
   try {
-    const result = await invoke("restore_defaults");
-    await refreshKeyProfiles();
+    if (invoke) {
+      await invoke("copy_support_report");
+    } else {
+      await navigator.clipboard?.writeText(
+        `OceanWay Codex Config v1.3.0\n诊断通过 ${lastDiagnosticReport.passed ?? lastDiagnosticReport.passedCount ?? 0} 项\n敏感凭据：已脱敏`,
+      );
+    }
+    setStatus("脱敏诊断报告已复制，不包含完整 API Key 或访问令牌。", "success");
+  } catch (error) {
+    setStatus(`复制报告失败：${error}`, "error");
+  }
+}
+
+async function repairConfiguration() {
+  setButtonBusy(repairButton, true, "修复中…");
+  setStatus("正在使用已保存信息检查并补全配置…");
+  try {
+    if (!invoke) {
+      await new Promise((resolve) => window.setTimeout(resolve, 300));
+      setStatus("界面预览：配置修复完成。", "success");
+      return;
+    }
+    const result = await invoke("repair_configuration");
     await refreshStatus();
-    setStatus(`已恢复默认值，请重启 Codex。已写入：${result.configPath}。${sessionSyncText(result.sessionSync)}`, "success");
+    resetConfigurationProgress();
+    setStatus(result.message || '配置已修复，请重新执行一键配置以检查并重启。', "success");
   } catch (error) {
-    setStatus(`恢复失败：${error}`, "error");
+    setStatus(`配置修复失败：${error}`, "error");
   } finally {
-    setBusy(false);
+    setButtonBusy(repairButton, false);
+  }
+}
+
+async function configureImagegenCli() {
+  setButtonBusy(imagegenButton, true, "同步中…");
+  setStatus("正在同步图片备用配置…");
+  try {
+    if (invoke) await invoke("configure_imagegen_cli");
+    await refreshStatus();
+    resetConfigurationProgress();
+    setStatus("图片备用配置已同步。请重启 Codex 并新建任务。", "success");
+  } catch (error) {
+    setStatus(`图片备用配置失败：${error}`, "error");
+  } finally {
+    setButtonBusy(imagegenButton, false);
+  }
+}
+
+function openRestartDialog() {
+  restartDialogDetail.textContent = currentSystemInfo?.codexHost === "ChatGPT"
+    ? "当前 Codex 运行在 ChatGPT 内。继续后 ChatGPT 将退出并重新打开，当前任务会中断，请先确认工作已保存。"
+    : "Codex 将先正常退出再重新打开。未提交的本地终端输入可能丢失，请确认当前任务已保存。";
+  restartDialog.showModal?.();
+}
+
+async function restartCodex() {
+  restartDialog.close();
+  setButtonBusy(restartCodexButton, true, "重启中…");
+  setStatus("正在退出并重新启动 Codex…");
+  try {
+    if (!invoke) {
+      await new Promise((resolve) => window.setTimeout(resolve, 350));
+      setStatus("界面预览：Codex 重启流程已完成。", "success");
+      return;
+    }
+    const result = await invoke("restart_codex");
+    setStatus(result.message, result.restarted ? "success" : "error");
+    window.setTimeout(refreshStatus, 1200);
+  } catch (error) {
+    setStatus(`重启 Codex 失败：${error}`, "error");
+  } finally {
+    setButtonBusy(restartCodexButton, false);
+  }
+}
+
+function historyProviderCountText(providerCounts = []) {
+  return providerCounts.map((item) => `${item.provider}: ${item.files}`).join("，") || "无";
+}
+
+async function refreshHistoryStatus() {
+  if (!invoke) {
+    historyRowDetail.textContent = "历史记录已与当前 Provider 一致。";
+    return;
+  }
+  try {
+    const status = await invoke("get_history_migration_status");
+    if (!status.migrationSupported) {
+      historyRowDetail.textContent = "完成 OceanWay 配置后可检测旧任务。";
+    } else {
+      historyRowDetail.textContent = status.needsMigration
+        ? `检测到 ${status.rolloutFilesToUpdate} 个会话文件需要迁移。`
+        : "历史记录已与当前 Provider 一致，无需迁移。";
+    }
+  } catch {
+    historyRowDetail.textContent = "无法读取历史状态，请稍后重试。";
+  }
+}
+
+async function migrateHistoryVisibility() {
+  if (!invoke) {
+    setStatus("界面预览：历史记录无需迁移。", "success");
+    return;
+  }
+  setButtonBusy(migrateHistoryButton, true, "扫描中…");
+  setStatus("正在扫描历史会话…");
+  try {
+    const status = await invoke("get_history_migration_status");
+    if (!status.migrationSupported) {
+      setStatus("请先完成 OceanWay 配置，再迁移历史记录。", "error");
+      return;
+    }
+    if (!status.needsMigration) {
+      setStatus("历史会话已与当前 Provider 一致，无需迁移。", "success");
+      return;
+    }
+    const warning = status.encryptedContentFiles
+      ? `\n其中 ${status.encryptedContentFiles} 个会话包含加密内容；迁移只修复列表可见性。`
+      : "";
+    const confirmed = window.confirm(
+      `将迁移 ${status.rolloutFilesToUpdate} 个会话文件和 ${status.sqliteRowsToUpdate} 行索引。\n当前分布：${historyProviderCountText(status.providerCounts)}。${warning}\n\n执行前会自动备份，是否继续？`,
+    );
+    if (!confirmed) {
+      setStatus("已取消历史迁移。");
+      return;
+    }
+    const result = await invoke("migrate_history_visibility");
+    setStatus(
+      `历史迁移完成：${result.changedSessionFiles} 个会话文件，${result.sqliteRowsUpdated} 行索引。`,
+      "success",
+    );
+    await refreshHistoryStatus();
+  } catch (error) {
+    setStatus(`历史迁移失败：${error}`, "error");
+  } finally {
+    setButtonBusy(migrateHistoryButton, false);
   }
 }
 
 async function openConfigDirectory() {
-  if (!invoke) {
-    setStatus("浏览器预览无法打开本机目录。", "error");
-    return;
-  }
-
   try {
-    await invoke("open_config_dir");
-    setStatus("已打开 Codex 配置目录。");
+    if (invoke) await invoke("open_config_dir");
+    setStatus(invoke ? "已打开 Codex 配置目录。" : "界面预览：桌面端会打开 Codex 配置目录。");
   } catch (error) {
     setStatus(`打开配置目录失败：${error}`, "error");
   }
 }
 
-function toggleApiKeyVisibility() {
-  const shouldShow = apiKeyInput.type === "password";
-  apiKeyInput.type = shouldShow ? "text" : "password";
-  toggleKeyButton.title = shouldShow ? "隐藏 API Key" : "显示 API Key";
-  toggleKeyButton.setAttribute("aria-label", shouldShow ? "隐藏 API Key" : "显示 API Key");
+function openRestoreDialog() {
+  restoreDialog.showModal?.();
 }
 
-async function exitApp() {
-  if (!invoke) {
-    window.close();
+async function restoreDefaults() {
+  restoreDialog.close();
+  setButtonBusy(restoreButton, true, "恢复中…");
+  setStatus("正在恢复首次使用本工具前的 Codex 配置…");
+  try {
+    if (!invoke) {
+      formDirty = false;
+      resetConfigurationProgress();
+      renderConfigStatus({
+        ...browserPreviewStatus(),
+        configured: false,
+        hasApiKey: false,
+        imagegenCliConfigured: false,
+      });
+      setStatus("界面预览：默认配置恢复完成。", "success");
+      return;
+    }
+    const result = await invoke("restore_defaults");
+    apiKeyInput.value = "";
+    formDirty = false;
+    resetConfigurationProgress();
+    await refreshStatus();
+    const restored = result.historyMigrationRestore;
+    const historyText = restored?.restoredBackups
+      ? ` 同时撤销 ${restored.restoredSessionFiles} 个历史文件和 ${restored.sqliteRowsRestored} 行索引迁移。`
+      : "";
+    setStatus(`已恢复默认配置。${historyText} 请重启 Codex。`, "success");
+  } catch (error) {
+    setStatus(`恢复失败：${error}`, "error");
+  } finally {
+    setButtonBusy(restoreButton, false);
+  }
+}
+
+function setTab(button) {
+  if (button.getAttribute('aria-selected') === 'true') return;
+  for (const tab of document.querySelectorAll(".tab-button")) {
+    const active = tab === button;
+    tab.classList.toggle("is-active", active);
+    tab.setAttribute("aria-selected", String(active));
+    const panel = document.getElementById(tab.getAttribute("aria-controls"));
+    panel.hidden = !active;
+  }
+  // Navigation only: history scanning is explicitly triggered by the migration action.
+  // ResizeObserver handles actual size changes without forcing layout on every tab click.
+}
+
+function toggleApiKeyVisibility() {
+  if (!apiKeyInput.value) {
+    apiKeyInput.focus();
     return;
   }
-
-  await invoke("exit_app");
+  const show = apiKeyInput.type === "password";
+  apiKeyInput.type = show ? "text" : "password";
+  toggleKeyButton.title = show ? "隐藏 API Key" : "显示 API Key";
+  toggleKeyButton.setAttribute("aria-label", toggleKeyButton.title);
 }
 
-addKeyButton.addEventListener("click", () => openKeyDialog());
-emptyAddKeyButton.addEventListener("click", () => openKeyDialog());
-closeDialogButton.addEventListener("click", closeKeyDialog);
-keyForm.addEventListener("submit", handleSave);
-saveAndUseButton.addEventListener("click", handleSaveAndUse);
-restoreButton.addEventListener("click", restoreDefaults);
-exitButton.addEventListener("click", exitApp);
-openDirButton.addEventListener("click", openConfigDirectory);
+async function handleUpdate(options = {}) {
+  const silent = options?.silent === true;
+  if (!invoke) {
+    updateStatus.textContent = "当前已是最新版本";
+    return;
+  }
+  setButtonBusy(updateButton, true, availableUpdate ? "安装中…" : "检查中…");
+  try {
+    if (availableUpdate && !silent) {
+      updateStatus.textContent = `正在安装 v${availableUpdate.latestVersion}，完成后自动重启…`;
+      await invoke("install_update");
+      return;
+    }
+    const result = await invoke("check_for_updates");
+    if (result.available) {
+      availableUpdate = result;
+      updateStatus.textContent = `发现 v${result.latestVersion}`;
+      updateButton.dataset.label = `安装 v${result.latestVersion}`;
+      updateButton.textContent = updateButton.dataset.label;
+    } else {
+      updateStatus.textContent = "当前已是最新版本";
+    }
+  } catch (error) {
+    updateStatus.textContent = String(error).includes('更新清单不可用') ? '更新通道不可用' : String(error).includes("404")
+      ? "更新通道尚未发布"
+      : "检查更新失败";
+    if (!silent) {
+      setStatus(`自动更新暂不可用：${error}`, "error");
+    }
+  } finally {
+    setButtonBusy(updateButton, false);
+  }
+}
+
+configurationLog = createConfigurationLog({ $, getSecret: () => apiKeyInput.value.trim() });
+configForm.addEventListener("submit", configureProvider);
+$('#retry-configuration').addEventListener('click', event => configureProvider(event, blockedPhase || 'writing'));
+$('#configuration-diagnostics').addEventListener('click', () => setTab($('#diagnosis-tab')));
+// Edited inputs describe a new configuration, so an interrupted run cannot skip writing them.
+for (const input of [apiKeyInput, baseUrlInput]) input.addEventListener('input', () => {
+  formDirty = true;
+  if (!blockedPhase) {
+    resetConfigurationProgress();
+    activationState.textContent = '修改未保存'; activationState.dataset.kind = 'warning';
+    nextStepTitle.textContent = '输入已修改，请重新执行一键配置';
+    nextStepDetail.textContent = '当前输入尚未写入，不代表已生效。';
+    return;
+  }
+  blockedPhase = 'writing';
+  $('#retry-configuration').textContent = '保存修改并继续';
+  nextStepDetail.textContent = '输入已修改，继续时将重新写入并自动完成后续步骤。';
+});
+testButton.addEventListener("click", testConnection);
 toggleKeyButton.addEventListener("click", toggleApiKeyVisibility);
-statusText.hidden = true;
-await refreshKeyProfiles();
+refreshStatusButton.addEventListener("click", refreshStatus);
+runDiagnosticsButton.addEventListener("click", runDiagnostics);
+copyReportButton.addEventListener("click", copySupportReport);
+restartCodexButton.addEventListener("click", openRestartDialog);
+confirmRestartButton.addEventListener("click", () => runMaintenance(restartCodex));
+repairButton.addEventListener("click", () => runMaintenance(repairConfiguration));
+imagegenButton.addEventListener("click", () => runMaintenance(configureImagegenCli));
+migrateHistoryButton.addEventListener("click", () => runMaintenance(migrateHistoryVisibility));
+openDirButton.addEventListener("click", openConfigDirectory);
+restoreButton.addEventListener("click", openRestoreDialog);
+confirmRestoreButton.addEventListener("click", () => runMaintenance(restoreDefaults));
+updateButton.addEventListener("click", () => handleUpdate());
+for (const tab of document.querySelectorAll(".tab-button")) {
+  tab.addEventListener("click", () => setTab(tab));
+}
+
+syncColumnHeights();
 await refreshStatus();
-window.addEventListener("resize", scheduleWindowResize);
-scheduleWindowResize();
+if (invoke) {
+  window.setTimeout(() => handleUpdate({ silent: true }), 900);
+}

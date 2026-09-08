@@ -6,6 +6,7 @@ on:
     branches:
       - main
       - master
+      - codex/**
   pull_request:
 
 jobs:
@@ -18,12 +19,21 @@ jobs:
         include:
           - platform: macos-arm64
             os: macos-latest
-            bundle_args: --bundles app
-            artifact_name: codex-config-macOS
+            rust_target: aarch64-apple-darwin
+            bundle_args: --target aarch64-apple-darwin --bundles app
+            artifact_name: codex-config-macOS-arm64
             artifact_path: |
-              dist/codex-config-macOS.zip
+              dist/codex-config-macOS-arm64.zip
+          - platform: macos-intel
+            os: macos-latest
+            rust_target: x86_64-apple-darwin
+            bundle_args: --target x86_64-apple-darwin --bundles app
+            artifact_name: codex-config-macOS-intel
+            artifact_path: |
+              dist/codex-config-macOS-intel.zip
           - platform: windows-x64
             os: windows-latest
+            rust_target: ""
             bundle_args: --bundles nsis
             artifact_name: codex-config-Windows
             artifact_path: |
@@ -32,10 +42,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: npm
@@ -43,6 +53,8 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
 
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
@@ -52,6 +64,9 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Run frontend tests
+        run: npm test
+
       - name: Run Rust tests
         run: cargo test
         working-directory: src-tauri
@@ -60,13 +75,17 @@ jobs:
         run: npm exec tauri -- build ${{ matrix.bundle_args }}
 
       - name: Package macOS app
-        if: matrix.platform == 'macos-arm64'
+        if: startsWith(matrix.platform, 'macos-')
         run: |
           mkdir -p dist
-          ditto -c -k --keepParent "src-tauri/target/release/bundle/macos/codex-config.app" "dist/codex-config-macOS.zip"
+          ARCH_LABEL="${{ matrix.platform == 'macos-arm64' && 'arm64' || 'intel' }}"
+          TARGET="${{ matrix.rust_target }}"
+          ditto -c -k --keepParent \
+            "src-tauri/target/$TARGET/release/bundle/macos/codex-config.app" \
+            "dist/codex-config-macOS-$ARCH_LABEL.zip"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.artifact_name }}
           path: ${{ matrix.artifact_path }}
