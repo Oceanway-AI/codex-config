@@ -18,6 +18,9 @@ use tauri::{LogicalSize, Manager, Size, State};
 use tauri_plugin_updater::{Update, UpdaterExt};
 use toml_edit::{value, DocumentMut, Item, Table, Value as TomlValue};
 
+#[cfg(any(target_os = "windows", test))]
+mod windows_host;
+
 const PROVIDER_ID: &str = "OceanWay";
 const DEFAULT_BASE_URL: &str = "https://ocean-way.top";
 const MODEL_FALLBACK: &str = "gpt-5.4";
@@ -160,6 +163,8 @@ struct SystemInfo {
     codex_desktop_version: Option<String>,
     codex_host: Option<String>,
     codex_running: bool,
+    host_running: bool,
+    runtime_detection_error: Option<String>,
     app_version: String,
     backup_created_at: Option<String>,
 }
@@ -836,6 +841,7 @@ fn render_auth_json_content(
     if let Some(object) = value.as_object_mut() {
         match strategy {
             ProviderAuthStrategy::ApiKey => {
+                object.remove("auth_mode");
                 object.insert(CODEX_AUTH_KEY.to_string(), json!(api_key));
             }
             ProviderAuthStrategy::ChatGptBearerToken => {
@@ -1955,11 +1961,10 @@ fn read_provider_raw_value(content: &str, provider_id: &str, target_key: &str) -
 }
 
 fn choose_provider_auth_strategy(auth_path: &Path) -> ProviderAuthStrategy {
-    if read_auth_has_chatgpt_login(auth_path) {
-        ProviderAuthStrategy::ChatGptBearerToken
-    } else {
-        ProviderAuthStrategy::ApiKey
-    }
+    // Custom providers need the stable API-key path; recent Codex builds do
+    // not reliably translate experimental_bearer_token into Authorization.
+    let _ = auth_path;
+    ProviderAuthStrategy::ApiKey
 }
 
 fn read_auth_has_chatgpt_login(auth_path: &Path) -> bool {
@@ -2205,7 +2210,23 @@ fn rollback_auth(auth_path: &Path, old_auth: Option<Vec<u8>>) {
 }
 
 fn collect_system_info(codex_home: &Path) -> SystemInfo {
+    #[cfg(not(target_os = "windows"))]
     let (codex_desktop_version, codex_host, codex_running) = codex_runtime_info();
+    #[cfg(not(target_os = "windows"))]
+    let (host_running, runtime_detection_error) = (codex_running, None);
+    #[cfg(target_os = "windows")]
+    let (codex_desktop_version, codex_host, codex_running, host_running, runtime_detection_error) =
+        match windows_host::discover() {
+            Ok(Some(host)) => (
+                host.version,
+                Some(host.name.clone()),
+                host.running && (host.name != "ChatGPT" || host.server_running),
+                host.running,
+                None,
+            ),
+            Ok(None) => (None, None, false, false, None),
+            Err(error) => (None, None, false, false, Some(error)),
+        };
     SystemInfo {
         operating_system: match env::consts::OS {
             "macos" => "macOS".to_string(),
@@ -2219,6 +2240,8 @@ fn collect_system_info(codex_home: &Path) -> SystemInfo {
         codex_desktop_version,
         codex_host,
         codex_running,
+        host_running,
+        runtime_detection_error,
         app_version: env!("CARGO_PKG_VERSION").to_string(),
         backup_created_at: read_restore_snapshot_created_at(codex_home),
     }
@@ -2371,7 +2394,9 @@ fn run_diagnostics_in_home(codex_home: &Path) -> Result<DiagnosticReport, String
         "codex-process",
         "Codex 生效状态",
         if system.codex_running { "pass" } else { "warning" },
-        if system.codex_running {
+        if let Some(error) = &system.runtime_detection_error {
+            format!("运行状态检测失败：{error}")
+        } else if system.codex_running {
             match system.codex_host.as_deref() {
                 Some("ChatGPT") => {
                     "已检测到 Codex 正通过 ChatGPT 运行。配置发生变化后，请重启 ChatGPT 并新建任务。"
@@ -2380,6 +2405,8 @@ fn run_diagnostics_in_home(codex_home: &Path) -> Result<DiagnosticReport, String
                 _ => "已检测到 Codex Desktop 正在运行。配置发生变化后，请重启并新建任务。"
                     .to_string(),
             }
+        } else if system.host_running {
+            "ChatGPT 已运行，尚未检测到内部 Codex 服务；请进入 Codex 并新建任务。".to_string()
         } else {
             "Codex 当前未运行；启动 Codex 或 ChatGPT 后会读取最新配置。".to_string()
         },
@@ -2483,8 +2510,12 @@ fn render_redacted_diagnostic_report(
         ),
         format!(
             "Codex 进程：{}",
-            if system.codex_running {
+            if system.runtime_detection_error.is_some() {
+                "检测失败"
+            } else if system.codex_running {
                 "正在运行"
+            } else if system.host_running {
+                "ChatGPT 已运行，Codex 服务待启动"
             } else {
                 "未运行"
             }
@@ -2548,6 +2579,7 @@ fn operating_system_version() -> Option<String> {
     }
 }
 
+#[cfg(not(target_os = "windows"))]
 fn codex_runtime_info() -> (Option<String>, Option<String>, bool) {
     #[cfg(target_os = "macos")]
     {
@@ -2559,29 +2591,6 @@ fn codex_runtime_info() -> (Option<String>, Option<String>, bool) {
             version,
             host.map(|value| value.label().to_string()),
             running_host.is_some(),
-        )
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        let version = find_windows_codex_executable().and_then(|executable| {
-            command_output(
-                "powershell",
-                &[
-                    "-NoProfile",
-                    "-Command",
-                    &format!(
-                        "(Get-Item '{}').VersionInfo.ProductVersion",
-                        display_path(&executable).replace('\'', "''")
-                    ),
-                ],
-            )
-        });
-        let installed = find_windows_codex_executable().is_some();
-        (
-            version,
-            installed.then(|| "Codex Desktop".to_string()),
-            is_codex_running(),
         )
     }
 
@@ -2696,17 +2705,6 @@ fn macos_codex_version(host: MacosCodexHost) -> Option<String> {
     None
 }
 
-#[cfg(target_os = "windows")]
-fn is_codex_running() -> bool {
-    Command::new("tasklist")
-        .args(["/FI", "IMAGENAME eq Codex.exe"])
-        .output()
-        .ok()
-        .is_some_and(|output| {
-            output.status.success() && String::from_utf8_lossy(&output.stdout).contains("Codex.exe")
-        })
-}
-
 fn restart_codex_desktop() -> Result<RestartCodexResult, String> {
     #[cfg(target_os = "macos")]
     {
@@ -2762,55 +2760,13 @@ fn restart_codex_desktop() -> Result<RestartCodexResult, String> {
 
     #[cfg(target_os = "windows")]
     {
-        let executable = find_windows_codex_executable()
-            .ok_or_else(|| "未找到 Codex.exe，请手动重启 Codex。".to_string())?;
-        let was_running = is_codex_running();
-        if was_running {
-            let quit = Command::new("taskkill")
-                .args(["/IM", "Codex.exe", "/T"])
-                .status()
-                .map_err(|err| format!("无法退出 Codex：{err}"))?;
-            if !quit.success() {
-                return Err("Codex 未能退出，自动流程已停止。".into());
-            }
-            thread::sleep(Duration::from_millis(500));
-            if is_codex_running() {
-                return Err("Codex 仍在运行，请保存任务后重试。".into());
-            }
-        }
-        Command::new(&executable)
-            .spawn()
-            .map_err(|err| format!("无法重新打开 Codex：{err}"))?;
-        Ok(RestartCodexResult {
-            restarted: true,
-            was_running,
-            message: "Codex 已重新打开。请新建任务以刷新工具列表。".to_string(),
-        })
+        windows_host::restart()
     }
 
     #[cfg(all(unix, not(target_os = "macos")))]
     {
         Err("当前系统暂不支持自动重启 Codex。".to_string())
     }
-}
-
-#[cfg(target_os = "windows")]
-fn find_windows_codex_executable() -> Option<PathBuf> {
-    if let Some(output) = command_output("where", &["Codex.exe"]) {
-        if let Some(path) = output.lines().next() {
-            let path = PathBuf::from(path.trim());
-            if path.exists() {
-                return Some(path);
-            }
-        }
-    }
-    let local_app_data = env::var_os("LOCALAPPDATA").map(PathBuf::from)?;
-    [
-        local_app_data.join("Programs/Codex/Codex.exe"),
-        local_app_data.join("Codex/Codex.exe"),
-    ]
-    .into_iter()
-    .find(|path| path.exists())
 }
 
 fn copy_text_to_clipboard(text: &str) -> Result<(), String> {
@@ -3713,7 +3669,7 @@ mod tests {
     }
 
     #[test]
-    fn chatgpt_auth_strategy_preserves_login_and_nulls_openai_api_key() {
+    fn api_key_strategy_overrides_chatgpt_mode_for_custom_provider() {
         let dir = unique_test_dir("auth-chatgpt-token");
         fs::create_dir_all(&dir).unwrap();
         let auth_path = dir.join("auth.json");
@@ -3730,23 +3686,15 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(
-            choose_provider_auth_strategy(&auth_path).as_str(),
-            "chatgptBearerToken"
-        );
-        write_auth_json(
-            &auth_path,
-            "new-oceanway-key",
-            ProviderAuthStrategy::ChatGptBearerToken,
-        )
-        .unwrap();
+        assert_eq!(choose_provider_auth_strategy(&auth_path).as_str(), "apiKey");
+        write_auth_json(&auth_path, "new-oceanway-key", ProviderAuthStrategy::ApiKey).unwrap();
 
         let value =
             serde_json::from_str::<serde_json::Value>(&fs::read_to_string(&auth_path).unwrap())
                 .unwrap();
-        assert_eq!(value["auth_mode"], "chatgpt");
         assert_eq!(value["tokens"]["id_token"], "logged-in-user");
-        assert!(value["OPENAI_API_KEY"].is_null());
+        assert_eq!(value["OPENAI_API_KEY"], "new-oceanway-key");
+        assert!(value.get("auth_mode").is_none());
 
         fs::remove_dir_all(dir).unwrap();
     }

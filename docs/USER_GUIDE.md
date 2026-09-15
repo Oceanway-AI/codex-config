@@ -98,9 +98,9 @@ https://ocean-way.top
 
 重新打开 Codex 并新建任务后，即可使用 OceanWay AI provider。
 
-如果您已经在 Codex 里登录过 ChatGPT，本工具会尽量保留这个登录状态，并把 OceanWay API Key 写到 provider 配置中。这样更有机会继续使用 Codex Mobile、插件、自动化、额度查询等依赖登录态的功能。
+无论当前是否登录 ChatGPT，本工具都会使用当前 Codex Desktop 版本兼容性最好的 API Key provider 模式，把 Key 写入 `auth.json` 的 `OPENAI_API_KEY`，并保留已有的其他登录字段。这样可以确保发往 OceanWay 的请求带上标准 `Authorization: Bearer` 认证头。
 
-如果您一开始没有登录 ChatGPT，本工具不会伪造登录状态，会使用 API Key 方式配置 OceanWay AI，并为 Codex Desktop 0.143.0 及以上版本启用本地图片工具兼容配置。这种方式也可以使用 OceanWay AI，但部分依赖 ChatGPT 登录态的功能可能不可用。
+切换到 API Key provider 后，部分依赖 ChatGPT 登录态的 Codex Mobile、插件、自动化或额度查询功能可能不可用；这不影响 OceanWay 会话本身。
 
 ### 图片生成备用配置
 
@@ -238,6 +238,10 @@ Codex 启动时会读取 provider 配置并注册可用工具。配置完成后�
 这通常表示您曾使用旧版本工具配置 OceanWay，但还没有写入 imagegen CLI 备用环境。打开右侧“运维工具”，在“图片备用配置”右侧点击“同步”，然后完全退出并重新打开 Codex 即可。
 
 ## 十一、给用户的简短操作版
+
+Windows 版本优先检测和重启 ChatGPT，兼容开始菜单注册的商店版本及常见安装目录。状态会区分“ChatGPT 已运行，Codex 待启动”“ChatGPT 内运行”和“检测失败”。进程运行不等于配置已经被新任务加载。
+
+自动重启只请求正常退出，不强制结束进程。如果有保存提示或应用仍驻留托盘，流程会停止；请保存任务、完全退出 ChatGPT 后重试。重新启动后仍需进入 Codex 并新建任务。
 
 如果您只想快速完成配置，请按这几步操作：
 

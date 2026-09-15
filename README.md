@@ -7,7 +7,7 @@ This repository only contains the Rust/Tauri version. The old Python/PyQt packag
 ## What It Does
 
 - Writes the OceanWay provider to Codex config.
-- Uses a ChatGPT-login-preserving provider token when the user is already signed in, and falls back to an API Key mode compatible with the Codex Desktop local image tool when no ChatGPT login is detected.
+- Uses the stable API Key provider mode required by current Codex Desktop releases, while preserving unrelated existing login fields.
 - Prepares the bundled `imagegen` skill's explicit CLI fallback by injecting `OPENAI_API_KEY` and `OPENAI_BASE_URL` into Codex tool subprocesses.
 - Reuses the previously saved OceanWay credential when the API Key field is left empty, without returning the full secret to the frontend.
 - Uses `https://ocean-way.top` as the default Base URL.
@@ -46,32 +46,7 @@ When the user explicitly clicks history migration, the app can also update:
 ~/.codex/oceanway-history-migration-backup/
 ```
 
-For users who are already signed in to ChatGPT, the OceanWay provider written to `config.toml` looks like this:
-
-```toml
-model_provider = "OceanWay"
-model = "gpt-5.4"
-model_reasoning_effort = "high"
-disable_response_storage = true
-
-[model_providers.OceanWay]
-name = "OceanWay"
-base_url = "https://ocean-way.top"
-wire_api = "responses"
-experimental_bearer_token = "user-api-key"
-requires_openai_auth = true
-```
-
-In that mode, `auth.json` keeps the ChatGPT login state and does not store the third-party key:
-
-```json
-{
-  "auth_mode": "chatgpt",
-  "OPENAI_API_KEY": null
-}
-```
-
-If no ChatGPT login is detected before configuration, the app uses the fallback API key mode. The API key is written to `auth.json` without removing other existing auth fields:
+The OceanWay provider written to `config.toml` looks like this:
 
 ```toml
 model_provider = "OceanWay"
@@ -87,7 +62,31 @@ requires_openai_auth = false
 http_headers = { "x-openai-actor-authorization" = "local-image-extension" }
 ```
 
-The non-empty actor authorization header lets Codex Desktop `0.143.0` and later register its local `image_gen` extension for a custom API Key provider. The API key remains the Bearer credential and is written to `auth.json` without removing other existing auth fields:
+`auth.json` keeps unrelated existing login fields and stores the provider key under the standard API-key field:
+
+```json
+{
+  "OPENAI_API_KEY": "user-api-key"
+}
+```
+
+The API key is written to `auth.json` without removing other existing auth fields:
+
+```toml
+model_provider = "OceanWay"
+model = "gpt-5.4"
+model_reasoning_effort = "high"
+disable_response_storage = true
+
+[model_providers.OceanWay]
+name = "OceanWay"
+base_url = "https://ocean-way.top"
+wire_api = "responses"
+requires_openai_auth = false
+http_headers = { "x-openai-actor-authorization" = "local-image-extension" }
+```
+
+The non-empty actor authorization header lets Codex Desktop `0.143.0` and later register its local `image_gen` extension for a custom API Key provider. Codex uses `OPENAI_API_KEY` as the Bearer credential and preserves other existing auth fields:
 
 ```json
 {

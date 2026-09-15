@@ -194,12 +194,16 @@ function renderSystemInfo(info) {
   const systemRelease = info.operatingSystemVersion || info.osVersion || "";
   systemVersion.textContent = [systemName, systemRelease].filter(Boolean).join(" ") || "未知";
   codexVersion.textContent = info.codexDesktopVersion || info.codexCliVersion || info.codexVersion || "未检测到";
-  codexStatus.textContent = info.codexRunning
+  codexStatus.textContent = info.runtimeDetectionError
+    ? "检测失败"
+    : info.codexRunning
     ? info.codexHost === "ChatGPT"
       ? "ChatGPT 内运行"
       : "正在运行"
-    : "未运行";
-  setDot(codexDot, info.codexRunning ? "success" : "muted");
+    : info.hostRunning ? "Codex 待启动" : "未运行";
+  codexStatus.title = info.runtimeDetectionError || (info.hostRunning && !info.codexRunning
+    ? "ChatGPT 已运行，尚未检测到内部 Codex 服务。请进入 Codex 并新建任务。" : "");
+  setDot(codexDot, info.runtimeDetectionError ? "warning" : info.codexRunning ? "success" : "muted");
 }
 
 function browserPreviewStatus() {
