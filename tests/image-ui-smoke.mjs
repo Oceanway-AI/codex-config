@@ -31,12 +31,16 @@ try {
   await page.locator('#image-prompt').fill('Simulation only: a red square');
   await page.locator('#image-count').fill('3');
   await page.locator('#start-image-test').click();
+  await expectText('#image-payment-detail', '请保持应用窗口开启');
+  await expectText('#image-payment-detail', '不支持关闭或重启应用后自动恢复任务');
+  await expectText('#image-payment-detail', '取消仅停止待发请求，已发送请求仍可能计费');
   assert.equal(await calls('test_image_api'), 0);
   await page.locator('#image-payment-dialog button[value="cancel"]').click();
   assert.equal(await calls('test_image_api'), 0);
   await page.locator('#start-image-test').click();
   await page.locator('#confirm-image-payment').click();
   await expectText('#image-job-summary', '执行中');
+  await expectText('#image-block-reason', '关闭或重启应用后不会自动恢复任务');
   assert.equal(await calls('test_image_api'), 1);
   assert.equal(await page.locator('#configure-button').isDisabled(), true);
   assert.equal(await page.locator('#repair-button').isDisabled(), true);

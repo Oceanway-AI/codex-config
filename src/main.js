@@ -745,7 +745,7 @@ function renderImageControls() {
   const model = $('#image-model').value.trim();
   const reason = imageBlockReason();
   const locked = imageController?.locked || imageAuxBusy;
-  $('#image-block-reason').textContent = reason || (imageController?.locked ? '图片任务运行中，配置与维护已锁定。关闭面板不会取消任务。' : '');
+  $('#image-block-reason').textContent = reason || (imageController?.locked ? '图片任务运行中，配置与维护已锁定。请保持应用窗口开启；关闭或重启应用后不会自动恢复任务。' : '');
   $('#image-config-evidence').textContent = previewLabel(currentStatus.directImageConfigured ? '已安装（非实测）' : '未安装');
   $('#image-rule-status').textContent = previewLabel(currentStatus.directImageConfigured
     ? '规则配置已安装；会话内规则生效与自然触发待确认。'
@@ -804,7 +804,7 @@ function renderImageJob({ job, pending, error }) {
     imageJobId = job.id;
     imageJobRevision = nextImageJobRevision;
   }
-  if (!pending && !error) imageMessage(job.status === 'running' ? '图片任务执行中，可取消尚未完成的请求。' : `图片任务${jobLabels[job.status]}。`);
+  if (!pending && !error) imageMessage(job.status === 'running' ? '图片任务执行中，请保持应用窗口开启。取消仅停止待发请求，已发送请求仍可能计费。' : `图片任务${jobLabels[job.status]}。`);
   $('#image-job-section').hidden = false;
   $('#image-job-summary').textContent = previewLabel(`${jobLabels[job.status]} · ${job.model} · ${job.mode === 'edit' ? '参考图' : '纯生成'} · 成功 ${job.completed}/${job.total} · 失败 ${job.failed} · 取消 ${job.cancelled}`);
   $('#image-job-progress').max = job.total || 1;
@@ -916,7 +916,7 @@ function requestImagePayment(retry = false) {
     const count = retry ? retryableImageCount(job) : request.count;
     if (!count) return;
     pendingImagePayment = { retry, request, revision: imageEvidence.revision };
-    $('#image-payment-detail').textContent = previewLabel(`${retry ? '仅重试失败或取消的' : '将请求'} ${count} 张图片，模型 ${retry ? job.model : request.model}，${(retry ? job.mode === 'edit' : request.referencePaths.length > 0) ? '参考图' : '纯生成'}模式。使用已保存的 Key 和 Base URL，由后端以 2 个并发任务处理。${retry ? '成功项不会重新生成。' : ''}此操作可能产生费用，取消不能撤回已发送请求或保证免单。是否继续？`);
+    $('#image-payment-detail').textContent = previewLabel(`${retry ? '仅重试失败或取消的' : '将请求'} ${count} 张图片，模型 ${retry ? job.model : request.model}，${(retry ? job.mode === 'edit' : request.referencePaths.length > 0) ? '参考图' : '纯生成'}模式。使用已保存的 Key 和 Base URL，由后端以 2 个并发任务处理。${retry ? '成功项不会重新生成。' : ''}此操作可能产生费用。请保持应用窗口开启；进度记录不支持关闭或重启应用后自动恢复任务。取消仅停止待发请求，已发送请求仍可能计费。是否继续？`);
     $('#image-payment-dialog').showModal();
   } catch (error) { imageMessage(error.message); }
 }
@@ -947,7 +947,7 @@ $('#confirm-image-payment').addEventListener('click', confirmImagePayment);
 $('#image-payment-dialog').addEventListener('close', () => { pendingImagePayment = null; });
 $('#retry-image-test').addEventListener('click', () => requestImagePayment(true));
 $('#cancel-image-test').addEventListener('click', async () => {
-  imageMessage('正在请求取消；已发送请求可能仍会计费，成功图片将保留。');
+  imageMessage('正在请求停止待发请求；已发送请求仍可能计费，成功图片将保留。请保持应用窗口开启。');
   await imageController.cancel();
 });
 window.addEventListener('pagehide', () => imageController.dispose());
