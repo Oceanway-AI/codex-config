@@ -1,5 +1,9 @@
 export const DEFAULT_IMAGE_MODEL = 'gpt-image-2';
 
+export function imageJobHasWarnings(job) {
+  return Boolean(job?.items?.some(item => item.warning || item.additionalPaths?.length));
+}
+
 export function buildImageRequest({ model, prompt, count, referencePaths = [], size = '1024x1024' }) {
   const total = count === '' || count == null ? 1 : Number(count);
   if (!Number.isSafeInteger(total) || total <= 0) throw new Error('图片数量必须为正整数。');

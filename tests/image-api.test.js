@@ -1,6 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildImageRequest, DEFAULT_IMAGE_MODEL, imageTestBlockReason, createImageEvidence, createImageJobController, retryableImageCount, safeImagePreview } from '../src/image-api.js';
+import { buildImageRequest, DEFAULT_IMAGE_MODEL, imageTestBlockReason, createImageEvidence, createImageJobController, retryableImageCount, safeImagePreview, imageJobHasWarnings } from '../src/image-api.js';
+
+test('anomalous successful responses retain warnings instead of proving clean acceptance', () => {
+  assert.equal(imageJobHasWarnings({ items: [{ status: 'succeeded', index: 1 }] }), false);
+  assert.equal(imageJobHasWarnings({ items: [{ status: 'succeeded', warning: 'extra output' }] }), true);
+  assert.equal(imageJobHasWarnings({ items: [{ status: 'succeeded', additionalPaths: ['2.png'] }] }), true);
+});
 
 const request = { model: DEFAULT_IMAGE_MODEL, prompt: ' A red square ', count: 1 };
 function makeJob(status = 'running', items = [{ index: 1, status: 'running' }]) {

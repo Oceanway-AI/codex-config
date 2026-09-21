@@ -1,7 +1,7 @@
 import { createConfigurationLog, redactLogMessage } from './configuration-log.js';
 import { runAutoConfiguration } from './auto-configure.js';
 import { validateBaseUrl } from './validation.js';
-import { buildImageRequest, createImageEvidence, createImageJobController, imageTestBlockReason, retryableImageCount, safeImagePreview } from './image-api.js';
+import { buildImageRequest, createImageEvidence, createImageJobController, imageTestBlockReason, retryableImageCount, safeImagePreview, imageJobHasWarnings } from './image-api.js';
 const DEFAULT_BASE_URL = "https://ocean-way.top";
 const invoke = window.__TAURI__?.core?.invoke;
 const simulated = !invoke || window.__IMAGE_API_SIMULATION__ === true;
@@ -840,7 +840,9 @@ function renderImageJob({ job, pending, error }) {
     title.textContent = previewLabel(`#${item.index} · ${itemLabels[item.status]}`);
     const detail = document.createElement('p');
     detail.textContent = previewLabel(redactLogMessage([
-      item.error, item.requestId ? `Request ID: ${item.requestId}` : '',
+      item.error, item.warning,
+      item.additionalPaths?.length ? `额外图片：${item.additionalPaths.join(' · ')}` : '',
+      item.requestId ? `Request ID: ${item.requestId}` : '',
       item.elapsedMs != null ? `${(item.elapsedMs / 1000).toFixed(1)}s` : '', item.path,
     ].filter(Boolean).join(' · '), [apiKeyInput.value.trim()]));
     row.append(preview, title, detail);
@@ -859,7 +861,7 @@ function renderImageJob({ job, pending, error }) {
   const evidenceKey = `${job.id}:${job.status}:${job.completed}:${job.failed}:${job.cancelled}`;
   if (!pending && job.status !== 'running' && evidenceKey !== lastRecordedImageJob) {
     lastRecordedImageJob = evidenceKey;
-    const state = job.status === 'completed' ? 'verified' : job.completed > 0 ? 'partial' : job.status === 'cancelled' ? 'cancelled' : 'failed';
+    const state = job.status === 'completed' && !imageJobHasWarnings(job) ? 'verified' : job.completed > 0 ? 'partial' : job.status === 'cancelled' ? 'cancelled' : 'failed';
     imageEvidence.record(job.model, job.mode, state, imageJobRevision);
     setStatus(`图片测试${jobLabels[job.status]}：成功 ${job.completed}/${job.total}，失败 ${job.failed}，取消 ${job.cancelled}。`, state === 'verified' ? 'success' : 'warning');
     renderImageControls();
