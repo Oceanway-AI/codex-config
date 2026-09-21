@@ -776,7 +776,7 @@ function renderImageReferences() {
   imageReferencePaths.forEach((path, index) => {
     const row = document.createElement('li');
     const name = document.createElement('span');
-    name.textContent = path.split(/[\\/]/).pop() || path;
+    name.textContent = `${index + 1}. ${path.split(/[\\/]/).pop() || path}`;
     name.title = path;
     const remove = document.createElement('button');
     remove.type = 'button';
@@ -899,7 +899,7 @@ async function pickImageReferences() {
   renderImageControls();
   try {
     const paths = await invoke('pick_reference_images');
-    imageReferencePaths = [...new Set([...imageReferencePaths, ...paths])];
+    imageReferencePaths = [...imageReferencePaths, ...paths];
   } catch (error) { imageMessage(`选择参考图失败：${error}`); }
   finally { imageAuxBusy = false; renderImageReferences(); }
 }

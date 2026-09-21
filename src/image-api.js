@@ -5,7 +5,7 @@ export function buildImageRequest({ model, prompt, count, referencePaths = [], s
   if (!Number.isSafeInteger(total) || total <= 0) throw new Error('图片数量必须为正整数。');
   if (!prompt?.trim()) throw new Error('请输入图片提示词。');
   if (!model?.trim()) throw new Error('请输入模型名称。');
-  return { model: model.trim(), prompt: prompt.trim(), count: total, referencePaths: [...new Set(referencePaths)], size };
+  return { model: model.trim(), prompt: prompt.trim(), count: total, referencePaths: [...referencePaths], size };
 }
 
 export function retryableImageCount(job) {

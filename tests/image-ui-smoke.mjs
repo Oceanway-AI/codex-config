@@ -59,6 +59,14 @@ try {
   assert.equal(await calls('open_image_result'), 1);
   await page.locator('#pick-image-references').click();
   await expectText('#image-mode', '2 张参考图');
+  await page.locator('#pick-image-references').click();
+  await expectText('#image-mode', '4 张参考图');
+  assert.deepEqual(await page.locator('#image-references li > span').allTextContents(), [
+    '1. reference-1.png', '2. reference-2.png', '3. reference-1.png', '4. reference-2.png',
+  ]);
+  await page.locator('#image-references button').nth(2).click();
+  await page.locator('#image-references button').nth(2).click();
+  await expectText('#image-mode', '2 张参考图');
   await page.locator('#image-count').fill('');
   await page.locator('#start-image-test').click();
   await expectText('#image-payment-detail', '1 张图片');

@@ -28,9 +28,19 @@ test('request defaults only unset counts and accepts counts above former small c
     assert.throws(() => buildImageRequest({ ...request, count }), /正整数/);
   }
   assert.deepEqual(buildImageRequest({ ...request, referencePaths: ['a.png', 'b.png', 'a.png'] }),
-    { model: 'gpt-image-2', prompt: 'A red square', count: 1, referencePaths: ['a.png', 'b.png'], size: '1024x1024' });
+    { model: 'gpt-image-2', prompt: 'A red square', count: 1, referencePaths: ['a.png', 'b.png', 'a.png'], size: '1024x1024' });
   assert.throws(() => buildImageRequest({ ...request, prompt: ' ' }), /提示词/);
   assert.throws(() => buildImageRequest({ ...request, model: '' }), /模型/);
+});
+
+test('reference paths preserve role order and duplicate entries without retaining the input array', () => {
+  const referencePaths = ['subject.png', 'style.png', 'subject.png', 'subject.png'];
+  const result = buildImageRequest({ ...request, referencePaths });
+  assert.deepEqual(result.referencePaths, referencePaths);
+  assert.notEqual(result.referencePaths, referencePaths);
+  referencePaths.reverse();
+  referencePaths.push('later.png');
+  assert.deepEqual(result.referencePaths, ['subject.png', 'style.png', 'subject.png', 'subject.png']);
 });
 
 test('size defaults to 1024x1024 without overriding explicit selections', () => {
