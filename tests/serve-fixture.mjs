@@ -6,12 +6,13 @@ import { resolve, sep } from 'node:path';
 const root = fileURLToPath(new URL('../src/', import.meta.url));
 createServer(async (req, res) => {
   try {
-    const pathname = new URL(req.url, 'http://127.0.0.1').pathname;
+    const url = new URL(req.url, 'http://127.0.0.1');
+    const pathname = url.pathname;
     if (pathname === '/favicon.ico') { res.writeHead(204).end(); return; }
     const path = pathname === '/__fixture.js' ? fileURLToPath(new URL('./ui-fixture.js', import.meta.url)) : resolve(root, '.' + (pathname === '/' ? '/index.html' : pathname));
     if (pathname !== '/__fixture.js' && !path.startsWith(root.endsWith(sep) ? root : root + sep)) throw Error('invalid path');
     let data = await readFile(path);
-    if (path.endsWith('index.html')) data = data.toString().replace('<head>', '<head><script src="/__fixture.js"></script>');
+    if (path.endsWith('index.html') && !url.searchParams.has('preview')) data = data.toString().replace('<head>', '<head><script src="/__fixture.js"></script>');
     res.setHeader('Content-Type', path.endsWith('.js') ? 'text/javascript' : path.endsWith('.css') ? 'text/css' : path.endsWith('.png') ? 'image/png' : 'text/html');
     res.end(data);
   } catch { res.writeHead(404).end('Not found'); }

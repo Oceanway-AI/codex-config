@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { runAutoConfiguration } from '../src/auto-configure.js';
-const ready = { configured:true,hasApiKey:true,imagegenCliConfigured:true };
+const ready = { configured:true,hasApiKey:true,directImageConfigured:true };
 test('resume checks saved configuration before restart without rewriting', async () => {
  for (const resumeFrom of ['checking', 'restarting']) {
   const calls=[];
@@ -23,7 +23,7 @@ test('one action writes, checks and restarts in order without confirmation', asy
  await runAutoConfiguration({values:{apiKey:'fake'},invoke:async name=>{
   calls.push(name);return name==='get_config_status'?ready:{restarted:true};
  },onStage:phase=>stages.push(phase),onConfigured:()=>{}});
- assert.deepEqual(calls,['configure_provider','get_config_status','restart_codex']);
+ assert.deepEqual(calls,['configure_provider','configure_direct_image_api','get_config_status','restart_codex']);
  assert.deepEqual(stages,['writing','checking','restarting','complete']);
 });
 test('write or readback failure stops restart and never announces completion', async () => {
@@ -42,4 +42,18 @@ test('restart failure is surfaced without retry or fake success',async()=>{
  },onStage:phase=>stages.push(phase),onConfigured:()=>{}}),/quit refused/);
  assert.equal(calls.filter(x=>x==='restart_codex').length,1);
  assert.ok(!stages.includes('complete'));
+});
+test('direct image sync failure stops readback and restart', async () => {
+ const calls = [];
+ await assert.rejects(runAutoConfiguration({ values:{}, invoke:async name=>{
+  calls.push(name);
+  if(name === 'configure_direct_image_api') throw new Error('sync failed');
+  return {};
+ }, onStage:()=>{}, onConfigured:()=>{} }), /sync failed/);
+ assert.deepEqual(calls, ['configure_provider', 'configure_direct_image_api']);
+});
+test('legacy CLI readiness cannot satisfy direct image readiness', async () => {
+ await assert.rejects(runAutoConfiguration({resumeFrom:'checking',values:{},invoke:async()=>({
+  configured:true,hasApiKey:true,imagegenCliConfigured:true,
+ }),onStage:()=>{},onConfigured:()=>{}}), /回读检查未通过/);
 });
