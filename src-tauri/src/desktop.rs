@@ -8,6 +8,7 @@ struct WindowsHost {
     version: Option<String>,
     running: bool,
     aumid: Option<String>,
+    ambiguous: bool,
 }
 
 #[cfg(target_os = "windows")]
@@ -42,7 +43,7 @@ $running=@($paths | Where-Object {$candidate=$_; $processes | Where-Object {$_.E
 $selected=if($running.Count){$running[0]}elseif($paths.Count){$paths[0]}else{$null}
 if($selected){
   $version=if($versions[$selected]){$versions[$selected]}else{(Get-Item -LiteralPath $selected).VersionInfo.ProductVersion}
-  @{path=$selected;version=$version;running=($running -contains $selected);aumid=$aumids[$selected]} | ConvertTo-Json -Compress
+  @{path=$selected;version=$version;running=($running -contains $selected);aumid=$aumids[$selected];ambiguous=(@($running | Select-Object -Unique).Count -gt 1)} | ConvertTo-Json -Compress
 }
 "#;
     let text = command_output("powershell", &["-NoProfile", "-NonInteractive", "-Command", script])?;
@@ -59,18 +60,21 @@ pub(super) fn runtime_info() -> (Option<String>, Option<String>, bool) {
 
 #[cfg(target_os = "windows")]
 pub(super) fn restart() -> Result<RestartCodexResult, String> {
+    use std::os::windows::process::CommandExt;
     let host = windows_host().ok_or("未检测到已确认的 Codex 桌面宿主，请手动重启；不会处理 CLI。")?;
+    if host.ambiguous { return Err("检测到多个正在运行的桌面宿主，请保存任务后手动重启。".into()); }
     let script = r#"
 $ErrorActionPreference='Stop'
 $path=$env:OCEANWAY_CODEX_HOST
-$processes=@(Get-Process | Where-Object {try {$_.Path -eq $path -and $_.MainWindowHandle -ne 0}catch{$false}})
+$session=(Get-Process -Id $PID).SessionId
+$processes=@(Get-Process | Where-Object {try {$_.SessionId -eq $session -and $_.Path -eq $path -and $_.MainWindowHandle -ne 0}catch{$false}})
 foreach($p in $processes){if(-not $p.CloseMainWindow()){throw '宿主拒绝退出，请保存任务后手动重启。'}}
 foreach($p in $processes){if(-not $p.WaitForExit(10000)){throw '宿主仍在运行，未强制结束，请保存任务后手动重启。'}}
 "#;
     if host.running {
         let output = Command::new("powershell")
             .args(["-NoProfile", "-NonInteractive", "-Command", script])
-            .env("OCEANWAY_CODEX_HOST", &host.path).output()
+            .env("OCEANWAY_CODEX_HOST", &host.path).creation_flags(0x08000000).output()
             .map_err(|_| "无法请求桌面宿主退出。")?;
         if !output.status.success() || windows_host().is_some_and(|h| h.running) {
             return Err("桌面宿主未退出；不会强制关闭任务，请手动重启。".into());
@@ -107,6 +111,7 @@ pub(super) async fn pick_reference_images() -> Result<Vec<String>, String> {
 fn pick_files() -> Result<Vec<String>, String> {
     #[cfg(target_os = "windows")]
     {
+        use std::os::windows::process::CommandExt;
         let script = r#"
 Add-Type -AssemblyName System.Windows.Forms
 [Console]::OutputEncoding=[System.Text.UTF8Encoding]::new()
@@ -119,7 +124,7 @@ if($dialog.ShowDialog() -eq 'OK'){ConvertTo-Json -InputObject @($dialog.FileName
 $dialog.Dispose()
 "#;
         let output = Command::new("powershell").args(["-NoProfile", "-STA", "-Command", script])
-            .output().map_err(|_| "无法打开系统图片选择器。".to_string())?;
+            .creation_flags(0x08000000).output().map_err(|_| "无法打开系统图片选择器。".to_string())?;
         if !output.status.success() { return Err("系统图片选择器失败。".into()); }
         return serde_json::from_slice(&output.stdout).map_err(|_| "无法读取选择的文件路径。".into());
     }

@@ -702,9 +702,22 @@ fn restore_defaults_internal() -> Result<OperationResult, String> {
             set_private_permissions(&auth_path)?;
         }
     } else {
+        let current = read_config_for_write(&config_path)?;
+        let active = read_root_string(&current, "model_provider").as_deref() == Some(PROVIDER_ID);
+        let token = read_provider_bearer_token(&current, PROVIDER_ID);
+        let auth_key = read_auth_api_key(&auth_path);
+        let base = read_provider_base_url(&current, PROVIDER_ID);
+        let matching_environment = has_matching_direct_http_environment(
+            &current, token.as_deref().or(auth_key.as_deref()), base.as_deref(),
+        );
+        if !direct_image_config::configured(&current) && !(active && matching_environment) {
+            return Err("没有恢复快照，也未找到可确认由本工具管理的配置；未删除认证或 provider。".into());
+        }
         remove_direct_http_environment_from_file(&config_path)?;
         remove_provider_from_config(&config_path, PROVIDER_ID)?;
-        remove_api_key_from_auth(&auth_path)?;
+        if active && token.is_none() && matching_environment {
+            remove_api_key_from_auth(&auth_path)?;
+        }
         set_private_permissions(&config_path)?;
         set_private_permissions(&auth_path)?;
     }
@@ -884,9 +897,9 @@ fn render_auth_json_content(
 }
 
 fn remove_provider_from_config(config_path: &Path, provider_id: &str) -> Result<(), String> {
-    let original = fs::read_to_string(config_path).unwrap_or_default();
+    let original = read_config_for_write(config_path)?;
     let rendered = remove_provider_config(&original, provider_id)?;
-    fs::write(config_path, rendered).map_err(|err| format!("无法写入 config.toml：{err}"))
+    write_private_atomic(config_path, rendered.as_bytes()).map_err(|err| format!("无法写入 config.toml：{err}"))
 }
 
 fn remove_api_key_from_auth(auth_path: &Path) -> Result<(), String> {

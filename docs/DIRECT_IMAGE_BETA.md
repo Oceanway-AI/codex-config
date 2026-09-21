@@ -34,4 +34,5 @@ Configuration alone must not POST to image endpoints. The user supplies and save
 - Model listing proves visibility only, not generation/edit entitlement.
 - The configuration app's native reference picker tests the HTTP interface; it does not prove Codex conversation attachments are accessible.
 - Paid generation, edits, multi-reference behavior and natural-language acceptance are user-triggered tests, not automatic installer actions.
+- Keep the configuration application open while a test is running. Results and a credential-free progress manifest are local files; this beta does not automatically resume paid jobs after restarting the application.
 - No mask editor or separate task-management service is included.

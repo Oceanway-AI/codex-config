@@ -68,7 +68,7 @@ jobs:
         run: npm test
 
       - name: Run Rust tests
-        run: cargo test
+        run: cargo test --locked
         working-directory: src-tauri
 
       - name: Upload resolved dependency lock
