@@ -592,8 +592,6 @@ fn invalid_response_count_base64_and_image_never_succeed_or_save() {
         json!({ "data": [{ "b64_json": STANDARD.encode(b"<html>bad</html>") }] }),
         json!({ "data": [{ "url": "http://127.0.0.1/private" }] }),
         json!({ "data": [{ "url": "https://127.0.0.1/private?signature=hidden" }] }),
-        json!({ "data": [{ "b64_json": STANDARD.encode(png(1, 1)), "url": "https://example.com/x" }] }),
-        json!({ "error": { "message": MOCK_KEY }, "data": [{ "b64_json": STANDARD.encode(png(1, 1)) }] }),
     ];
     for body in cases {
         let home = TempHome::new();
@@ -605,6 +603,147 @@ fn invalid_response_count_base64_and_image_never_succeed_or_save() {
         assert_eq!(error.request_id.as_deref(), Some("mock-request-1"));
         assert_eq!(fs::read_dir(&input.directory).unwrap().count(), 0);
         assert_eq!(mock.count(), 1);
+    }
+}
+
+#[test]
+fn valid_base64_wins_over_url_and_accompanying_error_does_not_discard_image() {
+    let home = TempHome::new();
+    let mock = Mock::new(|_, _| Reply::json(json!({
+        "error": { "message": format!("{MOCK_KEY} signature=withheld") },
+        "data": [{
+            "b64_json": STANDARD.encode(png(2, 2)),
+            "url": "https://127.0.0.1/never-download-this"
+        }]
+    })));
+    let (_, input) = input(&home, &mock, 1);
+    let result = execute(&input, 1, Instant::now()).unwrap();
+    assert!(result.path.is_file());
+    assert!(result.warning.as_ref().unwrap().contains("valid images were retained"));
+    assert!(!result.warning.as_ref().unwrap().contains(MOCK_KEY));
+    assert!(!result.warning.as_ref().unwrap().contains("signature"));
+    assert_eq!(mock.count(), 1);
+    let entry = json!({ "b64_json": STANDARD.encode(png(1, 1)), "url": "https://example.com/x" });
+    assert!(response_entry_with_download(&entry, Instant::now(), |_, _| {
+        panic!("valid base64 must not initiate a download")
+    }).is_ok());
+}
+
+#[test]
+fn invalid_base64_falls_back_to_a_clean_download_without_another_post() {
+    for encoded in ["!not-base64!".to_string(), STANDARD.encode(b"not an image")] {
+        let mock = Mock::new(|_, request| {
+            assert_eq!(request.method, "GET");
+            assert!(!request.headers.contains_key("authorization"));
+            Reply {
+                status: 200,
+                headers: vec![("Content-Type".into(), "image/png".into())],
+                body: png(2, 2),
+            }
+        });
+        let client = client_builder(Duration::from_secs(3)).build().unwrap();
+        let entry = json!({
+            "b64_json": encoded,
+            "url": format!("http://{}/mock-image", mock.address)
+        });
+        let bytes = response_entry_with_download(&entry, Instant::now(), |raw, _| {
+            // Only the local mock bypasses the production HTTPS/public-DNS policy.
+            download_from(&client, Url::parse(raw).unwrap(), &[mock.address])
+        }).unwrap();
+        assert_eq!(decode_image(&bytes).unwrap().0.width(), 2);
+        assert_eq!(mock.count(), 1);
+    }
+    let unsafe_entry = json!({
+        "b64_json": "!invalid!",
+        "url": "https://127.0.0.1/blocked?signature=hidden"
+    });
+    let error = response_entry_image(&unsafe_entry, Instant::now()).err().unwrap();
+    assert!(!error.message.contains("hidden"));
+}
+
+#[test]
+fn multiple_results_preserve_every_valid_image_and_never_retry_a_successful_index() {
+    let home = TempHome::new();
+    let mock = Mock::new(|_, _| Reply::json(json!({
+        "data": [
+            { "b64_json": "!invalid!" },
+            { "b64_json": STANDARD.encode(png(4, 4)) },
+            { "b64_json": STANDARD.encode(png(5, 5)) }
+        ]
+    })));
+    let state = ImageJobs::default();
+    let (id, input) = input(&home, &mock, 1);
+    let directory = input.directory.clone();
+    submit(&state.shared, id.clone(), input).unwrap();
+    let done = finished(&state, &id);
+    assert_eq!((done.completed, done.failed), (1, 0));
+    let item = &done.items[0];
+    assert_eq!(item.status, "succeeded");
+    assert!(item.warning.as_ref().unwrap().contains("provider returned 3 entries"));
+    assert!(item.warning.as_ref().unwrap().contains("Saved 2 valid image(s)"));
+    assert!(done.message.contains("response warnings"));
+    assert_eq!(Path::new(item.path.as_ref().unwrap()).file_name().unwrap(), "1.png");
+    assert_eq!(item.additional_paths.len(), 1);
+    let extra = Path::new(&item.additional_paths[0]);
+    assert_eq!(extra.file_name().unwrap(), "1-extra-3.png");
+    assert_eq!(decode_image(&fs::read(extra).unwrap()).unwrap().0.width(), 5);
+    let manifest: Value = serde_json::from_slice(&fs::read(directory.join("manifest.json")).unwrap()).unwrap();
+    assert_eq!(manifest["job"]["items"][0]["additionalPaths"][0], item.additional_paths[0]);
+    assert!(find_job_mut(&mut lock(&state.shared).unwrap(), &id).unwrap().retry().is_err());
+    assert_eq!(mock.count(), 1);
+}
+
+#[test]
+fn existing_extra_names_do_not_discard_images_or_overwrite_existing_files() {
+    let home = TempHome::new();
+    let mock = Mock::new(|_, _| Reply::json(json!({
+        "data": [
+            { "b64_json": STANDARD.encode(png(1, 1)) },
+            { "b64_json": STANDARD.encode(png(2, 2)) }
+        ]
+    })));
+    let (_, input) = input(&home, &mock, 1);
+    let extra = input.directory.join("1-extra-2.png");
+    fs::write(&extra, b"existing result").unwrap();
+    let result = execute(&input, 1, Instant::now()).unwrap();
+    assert!(result.path.is_file());
+    assert_eq!(result.additional_paths.len(), 1);
+    assert_ne!(Path::new(&result.additional_paths[0]), extra.as_path());
+    assert!(Path::new(&result.additional_paths[0]).is_file());
+    assert!(result.warning.as_ref().unwrap().contains("Saved 2 valid image(s)"));
+    assert_eq!(fs::read(extra).unwrap(), b"existing result");
+    assert_eq!(mock.count(), 1);
+}
+
+#[test]
+fn completed_jobs_release_reference_bytes_and_secrets_but_failed_jobs_keep_retry_inputs() {
+    for succeed in [true, false] {
+        let home = TempHome::new();
+        let mock = Mock::new(move |_, _| Reply::json(
+            if succeed { success() } else { json!({ "data": [] }) }
+        ));
+        let state = ImageJobs::default();
+        let (id, mut input) = input(&home, &mock, 1);
+        let bytes: Arc<[u8]> = png(2, 2).into();
+        let weak_bytes = Arc::downgrade(&bytes);
+        input.references.push(Reference { bytes, mime: "image/png", extension: "png" });
+        input.request.reference_paths.push("mock-reference.png".into());
+        submit(&state.shared, id.clone(), input).unwrap();
+        let done = finished(&state, &id);
+        assert_eq!(done.mode, "edit");
+        let registry = lock(&state.shared).unwrap();
+        let job = find_job(&registry, &id).unwrap();
+        if succeed {
+            assert!(job.input.references.is_empty());
+            assert!(job.input.provider.key.is_empty());
+            assert!(job.input.provider.config.is_empty());
+            assert!(weak_bytes.upgrade().is_none());
+            assert!(recorded_path(&job.input.directory, &done.items[0]).is_ok());
+        } else {
+            assert_eq!(job.input.references.len(), 1);
+            assert_eq!(job.input.provider.key, MOCK_KEY);
+            assert!(weak_bytes.upgrade().is_some());
+        }
     }
 }
 

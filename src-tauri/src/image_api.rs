@@ -81,6 +81,10 @@ pub struct ImageItem {
     pub request_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub elapsed_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub additional_paths: Vec<String>,
 }
 
 impl ImageItem {
@@ -93,6 +97,8 @@ impl ImageItem {
             error: None,
             request_id: None,
             elapsed_ms: None,
+            warning: None,
+            additional_paths: Vec::new(),
         }
     }
 }
@@ -113,6 +119,7 @@ pub struct ImageJob {
 }
 
 // Credentials and the config snapshot never implement Serialize or Debug.
+#[derive(Clone)]
 struct SavedProvider {
     home: PathBuf,
     config: String,
@@ -122,12 +129,14 @@ struct SavedProvider {
     local_mock: bool,
 }
 
+#[derive(Clone)]
 struct Reference {
     bytes: Arc<[u8]>,
     mime: &'static str,
     extension: &'static str,
 }
 
+#[derive(Clone)]
 struct Input {
     request: ImageTestRequest,
     provider: SavedProvider,
@@ -225,11 +234,15 @@ impl StoredJob {
             }
         }
         items.sort_by_key(|item| item.index);
+        let warning_count = self.items.values().filter(|item| item.warning.is_some()).count();
+        let response_warning = self.items.values().find_map(|item| item.warning.as_ref())
+            .map(|warning| format!(" {warning_count} index/indices have response warnings. {warning}"))
+            .unwrap_or_default();
         ImageJob {
             id: self.id.clone(),
             status: status.into(),
             model: self.input.request.model.clone(),
-            mode: if self.input.references.is_empty() { "generate" } else { "edit" }.into(),
+            mode: if self.input.request.reference_paths.is_empty() { "generate" } else { "edit" }.into(),
             total,
             completed: self.completed,
             failed: self.failed,
@@ -238,9 +251,10 @@ impl StoredJob {
             message: format!(
                 "{BILLING_NOTICE} Items include attempted indices and at most two queue previews; \
                  other indices are {}. Progress is saved to manifest.json; restarting the app \
-                 never automatically resumes POSTs. Recovery requires explicit user action.{}",
+                 never automatically resumes POSTs. Recovery requires explicit user action.{}{}",
                 if self.stopped { "cancelled" } else { "queued" },
-                self.persistence_error.as_ref().map(|error| format!(" {error}")).unwrap_or_default()
+                self.persistence_error.as_ref().map(|error| format!(" {error}")).unwrap_or_default(),
+                response_warning
             ),
         }
     }
@@ -469,10 +483,12 @@ fn worker(shared: Arc<Shared>) {
             execute(&input, index, started)
         })).unwrap_or_else(|_| Err(Failure::new("Image worker failed; billing may be unknown.")));
         let elapsed = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        drop(input);
         if let Ok(mut registry) = lock(&shared) {
             if let Some(job) = registry.jobs.get_mut(&id) {
                 finish_item(job, index, outcome, elapsed);
                 let _ = persist_or_stop(job);
+                release_completed_input(job);
             }
             shared.wake.notify_all();
         } else {
@@ -491,6 +507,8 @@ fn finish_item(job: &mut StoredJob, index: usize, outcome: Result<SavedResult, F
             item.path = Some(result.path.to_string_lossy().into_owned());
             item.preview_data_url = Some(result.preview);
             item.request_id = result.request_id;
+            item.warning = result.warning;
+            item.additional_paths = result.additional_paths;
             job.completed += 1;
         }
         Err(failure) => {
@@ -503,6 +521,17 @@ fn finish_item(job: &mut StoredJob, index: usize, outcome: Result<SavedResult, F
     job.active -= 1;
     if stop_job {
         job.cancel();
+    }
+}
+
+fn release_completed_input(job: &mut StoredJob) {
+    if job.active == 0 && job.completed == job.input.request.count {
+        // Arc references to image bytes are cheap to clone if a concurrent command
+        // still holds this input. That command releases its old snapshot on return.
+        let input = Arc::make_mut(&mut job.input);
+        input.references.clear();
+        input.provider.key.clear();
+        input.provider.config.clear();
     }
 }
 
@@ -632,7 +661,11 @@ pub async fn retry_image_test(
     tauri::async_runtime::spawn_blocking(move || {
         let input = {
             let registry = lock(&shared)?;
-            Arc::clone(&find_job(&registry, &job_id)?.input)
+            let job = find_job(&registry, &job_id)?;
+            if job.completed == job.input.request.count {
+                return Err("All image indices already succeeded; nothing to retry.".into());
+            }
+            Arc::clone(&job.input)
         };
         ensure_provider_unchanged(&input.provider)?;
         verify_directory(&input.directory)?;
@@ -944,6 +977,8 @@ struct SavedResult {
     path: PathBuf,
     preview: String,
     request_id: Option<String>,
+    warning: Option<String>,
+    additional_paths: Vec<String>,
 }
 
 fn client_builder(timeout: Duration) -> ClientBuilder {
@@ -1098,24 +1133,108 @@ fn execute(input: &Input, index: usize, started: Instant) -> Result<SavedResult,
         }
     }
     let (body, request_id) = post_image(input)?;
-    let result = (|| {
-        let bytes = response_image(&body, started)?;
-        let (decoded, format) = decode_image(&bytes)?;
+    save_response_images(input, index, &body, request_id, started)
+}
+
+fn save_image_bytes(input: &Input, index: usize, extra: Option<usize>, bytes: &[u8])
+    -> Result<(PathBuf, String), Failure>
+{
+    let (decoded, format) = decode_image(bytes)?;
+    let preview = if extra.is_none() {
         let mut thumbnail = Cursor::new(Vec::new());
         decoded.thumbnail(256, 256).write_to(&mut thumbnail, ImageFormat::Png)
             .map_err(|_| Failure::new("Could not encode the image thumbnail."))?;
-        let preview = format!("data:image/png;base64,{}", STANDARD.encode(thumbnail.into_inner()));
-        let (_, extension) = format_info(format);
-        verify_directory(&input.directory)?;
-        let path = input.directory.join(format!("{index}.{extension}"));
-        let mut file = OpenOptions::new().write(true).create_new(true).open(&path)
-            .map_err(|_| Failure::new("Could not create the output image without overwriting a file."))?;
-        if file.write_all(&bytes).and_then(|_| file.sync_all()).is_err() {
-            drop(file);
-            let _ = fs::remove_file(&path);
-            return Err(Failure::new("Could not persist the output image; billing may have occurred."));
+        format!("data:image/png;base64,{}", STANDARD.encode(thumbnail.into_inner()))
+    } else {
+        String::new()
+    };
+    let (_, extension) = format_info(format);
+    verify_directory(&input.directory)?;
+    let filename = match extra {
+        Some(position) => format!("{index}-extra-{position}.{extension}"),
+        None => format!("{index}.{extension}"),
+    };
+    let mut path = input.directory.join(filename);
+    let mut collisions = 0;
+    let mut file = loop {
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(file) => break file,
+            Err(error) => {
+                if let Some(position) = extra {
+                    if error.kind() == std::io::ErrorKind::AlreadyExists && collisions < 16 {
+                        collisions += 1;
+                        path = input.directory.join(format!(
+                            "{index}-extra-{position}-{}.{}",
+                            SEQUENCE.fetch_add(1, Ordering::Relaxed), extension,
+                        ));
+                        continue;
+                    }
+                }
+                return Err(Failure::new("Could not create the output image without overwriting a file."));
+            }
         }
-        Ok(SavedResult { path, preview, request_id: request_id.clone() })
+    };
+    if file.write_all(bytes).and_then(|_| file.sync_all()).is_err() {
+        drop(file);
+        let _ = fs::remove_file(&path);
+        return Err(Failure::new("Could not persist the output image; billing may have occurred."));
+    }
+    Ok((path, preview))
+}
+
+fn save_response_images(
+    input: &Input,
+    index: usize,
+    body: &Value,
+    request_id: Option<String>,
+    started: Instant,
+) -> Result<SavedResult, Failure> {
+    let result = (|| {
+        let data = body.get("data").and_then(Value::as_array)
+            .ok_or_else(|| Failure::new("Expected an image for n=1; data array is missing."))?;
+        let mut primary: Option<(PathBuf, String)> = None;
+        let mut additional_paths = Vec::new();
+        let mut unusable = 0usize;
+        let mut first_problem = None;
+        for (offset, entry) in data.iter().enumerate() {
+            let saved = response_entry_image(entry, started).and_then(|bytes| {
+                save_image_bytes(input, index, primary.as_ref().map(|_| offset + 1), &bytes)
+            });
+            match saved {
+                Ok((path, preview)) => {
+                    if primary.is_none() {
+                        primary = Some((path, preview));
+                    } else {
+                        additional_paths.push(path.to_string_lossy().into_owned());
+                    }
+                }
+                Err(failure) => {
+                    unusable += 1;
+                    if first_problem.is_none() {
+                        first_problem = Some(format!("Response item {}: {}", offset + 1, failure.message));
+                    }
+                }
+            }
+        }
+        let (path, preview) = primary.ok_or_else(|| Failure::new(format!(
+            "Expected one image for n=1; received {} entries but no image could be saved. {} \
+             Billing may have occurred. No automatic retry.",
+            data.len(), first_problem.as_deref().unwrap_or("The response contained no images.")
+        )))?;
+        let provider_error = body.get("error").is_some_and(|error| !error.is_null());
+        let warning = if data.len() != 1 || unusable > 0 || provider_error {
+            Some(format!(
+                "Expected one image for n=1; provider returned {} entries. Saved {} valid image(s); \
+                 {unusable} unusable entry/entries. Additional images are preserved as separate files. \
+                 No extra POST was sent and this successful index will not be retried.{}{}",
+                data.len(), 1 + additional_paths.len(),
+                first_problem.map(|problem| format!(" {problem}")).unwrap_or_default(),
+                if provider_error { " An accompanying provider error was withheld; valid images were retained." } else { "" }
+            ))
+        } else {
+            None
+        };
+        Ok(SavedResult { path, preview, request_id: request_id.clone(), warning, additional_paths })
     })();
     result.map_err(|mut failure: Failure| {
         failure.request_id = request_id;
@@ -1123,22 +1242,20 @@ fn execute(input: &Input, index: usize, started: Instant) -> Result<SavedResult,
     })
 }
 
-fn response_image(body: &Value, started: Instant) -> Result<Vec<u8>, Failure> {
-    if body.get("error").is_some_and(|error| !error.is_null()) {
-        return Err(Failure::new("Provider returned an error object; response text is withheld."));
-    }
-    let data = body.get("data").and_then(Value::as_array)
-        .ok_or_else(|| Failure::new("Expected exactly one image for n=1; data array is missing."))?;
-    if data.len() != 1 {
-        return Err(Failure::new(format!(
-            "Expected exactly one image for n=1; received {}. No image saved; billing may have occurred.",
-            data.len()
-        )));
-    }
-    let encoded = data[0].get("b64_json").and_then(Value::as_str).filter(|s| !s.is_empty());
-    let url = data[0].get("url").and_then(Value::as_str).filter(|s| !s.is_empty());
-    match (encoded, url) {
-        (Some(encoded), None) => {
+fn response_entry_image(entry: &Value, started: Instant) -> Result<Vec<u8>, Failure> {
+    response_entry_with_download(entry, started, download_image)
+}
+
+fn response_entry_with_download(
+    entry: &Value,
+    started: Instant,
+    download: impl FnOnce(&str, Instant) -> Result<Vec<u8>, Failure>,
+) -> Result<Vec<u8>, Failure> {
+    let encoded = entry.get("b64_json").and_then(Value::as_str).filter(|s| !s.is_empty());
+    let url = entry.get("url").and_then(Value::as_str).filter(|s| !s.is_empty());
+    let mut base64_error = None;
+    if let Some(encoded) = encoded {
+        let decoded = (|| {
             if encoded.len() > IMAGE_BYTES.div_ceil(3) * 4 {
                 return Err(Failure::new("Base64 image exceeds the 50 MiB limit."));
             }
@@ -1146,12 +1263,20 @@ fn response_image(body: &Value, started: Instant) -> Result<Vec<u8>, Failure> {
             if bytes.len() > IMAGE_BYTES {
                 return Err(Failure::new("Decoded image exceeds the 50 MiB limit."));
             }
-            Ok(bytes)
+            decode_image(&bytes)?;
+            Ok::<_, Failure>(bytes)
+        })();
+        match decoded {
+            Ok(bytes) => return Ok(bytes),
+            Err(error) => base64_error = Some(error),
         }
-        (None, Some(url)) => download_image(url, started),
-        (Some(_), Some(_)) => Err(Failure::new("Ambiguous image result: both URL and base64 were returned.")),
-        (None, None) => Err(Failure::new("Image result contains neither URL nor base64.")),
     }
+    if let Some(url) = url {
+        let bytes = download(url, started)?;
+        decode_image(&bytes)?;
+        return Ok(bytes);
+    }
+    Err(base64_error.unwrap_or_else(|| Failure::new("Image result contains neither usable URL nor base64.")))
 }
 
 fn public_ip(ip: IpAddr) -> bool {
