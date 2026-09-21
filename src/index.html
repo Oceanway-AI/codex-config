@@ -347,7 +347,7 @@
             <label>模型<input id="image-model" list="image-model-options" value="gpt-image-2" required /></label>
             <datalist id="image-model-options"></datalist>
             <label>数量<input id="image-count" type="number" min="1" step="1" value="1" inputmode="numeric" /></label>
-            <label>尺寸<select id="image-size"><option value="auto">自动</option><option value="1024x1024">1024 × 1024</option><option value="1536x1024">1536 × 1024</option><option value="1024x1536">1024 × 1536</option></select></label>
+            <label>尺寸<select id="image-size"><option value="auto">自动</option><option value="1024x1024" selected>1024 × 1024</option><option value="1536x1024">1536 × 1024</option><option value="1024x1536">1024 × 1536</option></select></label>
           </div>
           <label class="image-prompt-label">提示词<textarea id="image-prompt" rows="3" required placeholder="描述图片内容"></textarea></label>
           <div class="image-reference-heading">
@@ -367,7 +367,7 @@
             <strong id="image-job-summary" role="status" aria-live="polite"></strong>
             <div class="image-actions">
               <button id="cancel-image-test" type="button" class="copy-report-action">取消任务</button>
-              <button id="retry-image-test" type="button" class="copy-report-action">重试失败项（付费）…</button>
+              <button id="retry-image-test" type="button" class="copy-report-action">重试失败或取消项（付费）…</button>
             </div>
           </div>
           <progress id="image-job-progress" max="1" value="0" aria-label="图片任务进度"></progress>

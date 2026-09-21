@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildImageRequest, DEFAULT_IMAGE_MODEL, imageTestBlockReason, createImageEvidence, createImageJobController, safeImagePreview } from '../src/image-api.js';
+import { buildImageRequest, DEFAULT_IMAGE_MODEL, imageTestBlockReason, createImageEvidence, createImageJobController, retryableImageCount, safeImagePreview } from '../src/image-api.js';
 
 const request = { model: DEFAULT_IMAGE_MODEL, prompt: ' A red square ', count: 1 };
 function makeJob(status = 'running', items = [{ index: 0, status: 'running' }]) {
@@ -28,9 +28,28 @@ test('request defaults only unset counts and accepts counts above former small c
     assert.throws(() => buildImageRequest({ ...request, count }), /正整数/);
   }
   assert.deepEqual(buildImageRequest({ ...request, referencePaths: ['a.png', 'b.png', 'a.png'] }),
-    { model: 'gpt-image-2', prompt: 'A red square', count: 1, referencePaths: ['a.png', 'b.png'], size: 'auto' });
+    { model: 'gpt-image-2', prompt: 'A red square', count: 1, referencePaths: ['a.png', 'b.png'], size: '1024x1024' });
   assert.throws(() => buildImageRequest({ ...request, prompt: ' ' }), /提示词/);
   assert.throws(() => buildImageRequest({ ...request, model: '' }), /模型/);
+});
+
+test('size defaults to 1024x1024 without overriding explicit selections', () => {
+  assert.equal(buildImageRequest(request).size, '1024x1024');
+  assert.equal(buildImageRequest({ ...request, size: undefined }).size, '1024x1024');
+  for (const size of ['auto', '1536x1024', '1024x1536']) {
+    assert.equal(buildImageRequest({ ...request, size }).size, size);
+  }
+});
+
+test('retry count includes failed and cancelled slots without counting successes twice', () => {
+  assert.equal(retryableImageCount(null), 0);
+  assert.equal(retryableImageCount(makeJob('completed', [{ index: 0, status: 'succeeded' }])), 0);
+  const job = makeJob('partial', [
+    { index: 0, status: 'succeeded' }, { index: 1, status: 'failed' }, { index: 2, status: 'cancelled' },
+  ]);
+  assert.equal(retryableImageCount(job), 2);
+  assert.equal(retryableImageCount({ ...job, failed: 0, cancelled: 0 }), 2);
+  assert.equal(retryableImageCount({ ...job, items: [] }), 2);
 });
 
 test('saved config gate rejects dirty, missing config, maintenance and browser preview', () => {
@@ -130,6 +149,45 @@ test('cancel wins against a stale in-flight polling response', async () => {
   await poll;
   assert.equal(controller.job.status, 'cancelled');
   assert.equal(controller.locked, false);
+});
+
+test('explicit retry resumes purely cancelled jobs from aggregate or slot status and preserves successes', async () => {
+  const success = { index: 0, status: 'succeeded', path: 'saved.png', previewDataUrl: 'data:image/png;base64,AA==' };
+  for (const cancelledJob of [
+    makeJob('cancelled', [success, { index: 1, status: 'cancelled' }]),
+    { ...makeJob('cancelled', [success]), total: 2, cancelled: 1 },
+    { ...makeJob('cancelled', [success, { index: 1, status: 'cancelled' }]), cancelled: 0 },
+    makeJob('cancelled', [{ index: 0, status: 'cancelled' }]),
+  ]) {
+    const calls = [];
+    const { controller } = harness(async (command, args) => {
+      calls.push([command, args]);
+      return command === 'retry_image_test'
+        ? makeJob('running', [{ index: 0, status: 'queued' }, { index: 1, status: 'running' }])
+        : cancelledJob;
+    });
+    await controller.start(request);
+    assert.equal(calls.length, 1);
+    assert.equal(controller.locked, false);
+    await controller.retry();
+    assert.deepEqual(calls[1], ['retry_image_test', { jobId: 'job-1' }]);
+    assert.equal(controller.locked, true);
+    if (cancelledJob.completed) assert.deepEqual(controller.job.items[0], success);
+    await controller.retry();
+    assert.equal(calls.length, 2);
+    controller.dispose();
+  }
+});
+
+test('completed jobs with no missing slots cannot be retried', async () => {
+  const calls = [];
+  const { controller } = harness(async command => {
+    calls.push(command);
+    return makeJob('completed', [{ index: 0, status: 'succeeded', path: 'saved.png' }]);
+  });
+  await controller.start(request);
+  await controller.retry();
+  assert.deepEqual(calls, ['test_image_api']);
 });
 
 test('failed cancel retains lock and failed submission cannot pretend completion', async () => {

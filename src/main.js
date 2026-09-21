@@ -1,7 +1,7 @@
 import { createConfigurationLog, redactLogMessage } from './configuration-log.js';
 import { runAutoConfiguration } from './auto-configure.js';
 import { validateBaseUrl } from './validation.js';
-import { buildImageRequest, createImageEvidence, createImageJobController, imageTestBlockReason, safeImagePreview } from './image-api.js';
+import { buildImageRequest, createImageEvidence, createImageJobController, imageTestBlockReason, retryableImageCount, safeImagePreview } from './image-api.js';
 const DEFAULT_BASE_URL = "https://ocean-way.top";
 const invoke = window.__TAURI__?.core?.invoke;
 const simulated = !invoke || window.__IMAGE_API_SIMULATION__ === true;
@@ -761,9 +761,9 @@ function renderImageControls() {
   $('#start-image-test').disabled = $('#check-image-model').disabled = $('#pick-image-references').disabled = Boolean(reason || locked);
   $('#cancel-image-test').disabled = imageController?.job?.status !== 'running' || $('#cancel-image-test').dataset.pending === 'true';
   const job = imageController?.job;
-  $('#retry-image-test').hidden = !job?.items.some(item => item.status === 'failed');
+  $('#retry-image-test').hidden = !retryableImageCount(job);
   $('#retry-image-test').disabled = Boolean(reason || locked || imageJobRevision !== imageEvidence.revision);
-  $('#retry-image-test').title = imageJobRevision !== imageEvidence.revision ? '连接信息已修改，请发起新测试。' : '仅重试失败项，保留成功图片；将产生新的费用。';
+  $('#retry-image-test').title = imageJobRevision !== imageEvidence.revision ? '连接信息已修改，请发起新测试。' : '仅重试失败或取消项，保留成功图片；将产生新的费用。';
   for (const button of document.querySelectorAll('#image-references button')) button.disabled = Boolean(locked);
   $('#open-image-test').disabled = configuring || maintenanceRunning;
   $('#open-image-test').textContent = imageController?.locked ? '查看图片任务' : '测试图片 API';
@@ -913,10 +913,10 @@ function requestImagePayment(retry = false) {
     });
     const job = imageController.job;
     if (retry && (!job || imageJobRevision !== imageEvidence.revision)) return;
-    const count = retry ? job.items.filter(item => item.status === 'failed').length : request.count;
+    const count = retry ? retryableImageCount(job) : request.count;
     if (!count) return;
     pendingImagePayment = { retry, request, revision: imageEvidence.revision };
-    $('#image-payment-detail').textContent = previewLabel(`${retry ? '仅重试失败的' : '将请求'} ${count} 张图片，模型 ${retry ? job.model : request.model}，${(retry ? job.mode === 'edit' : request.referencePaths.length > 0) ? '参考图' : '纯生成'}模式。使用已保存的 Key 和 Base URL，由后端以 2 个并发任务处理。${retry ? '成功项不会重新生成。' : ''}此操作可能产生费用，取消不能撤回已发送请求或保证免单。是否继续？`);
+    $('#image-payment-detail').textContent = previewLabel(`${retry ? '仅重试失败或取消的' : '将请求'} ${count} 张图片，模型 ${retry ? job.model : request.model}，${(retry ? job.mode === 'edit' : request.referencePaths.length > 0) ? '参考图' : '纯生成'}模式。使用已保存的 Key 和 Base URL，由后端以 2 个并发任务处理。${retry ? '成功项不会重新生成。' : ''}此操作可能产生费用，取消不能撤回已发送请求或保证免单。是否继续？`);
     $('#image-payment-dialog').showModal();
   } catch (error) { imageMessage(error.message); }
 }

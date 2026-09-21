@@ -1,11 +1,20 @@
 export const DEFAULT_IMAGE_MODEL = 'gpt-image-2';
 
-export function buildImageRequest({ model, prompt, count, referencePaths = [], size = 'auto' }) {
+export function buildImageRequest({ model, prompt, count, referencePaths = [], size = '1024x1024' }) {
   const total = count === '' || count == null ? 1 : Number(count);
   if (!Number.isSafeInteger(total) || total <= 0) throw new Error('图片数量必须为正整数。');
   if (!prompt?.trim()) throw new Error('请输入图片提示词。');
   if (!model?.trim()) throw new Error('请输入模型名称。');
   return { model: model.trim(), prompt: prompt.trim(), count: total, referencePaths: [...new Set(referencePaths)], size };
+}
+
+export function retryableImageCount(job) {
+  if (!job) return 0;
+  const items = job.items || [];
+  return Math.max(
+    (job.failed || 0) + (job.cancelled || 0),
+    items.filter(item => item.status === 'failed' || item.status === 'cancelled').length,
+  );
 }
 
 export function imageTestBlockReason({ native, configured, dirty, busy }) {
@@ -53,7 +62,7 @@ export function createImageJobController({ invoke, onChange = () => {}, onError 
     if (!result?.id || !Array.isArray(result.items) || !['running', 'completed', 'partial', 'failed', 'cancelled'].includes(result.status)) {
       throw new Error('图片任务返回格式无效。');
     }
-    // A retry may only replace failed slots; keep successful outputs visible.
+    // Retries replace failed or cancelled slots; keep successful outputs visible.
     if (job?.id === result.id) {
       const successes = new Map(job.items.filter(item => item.status === 'succeeded').map(item => [item.index, item]));
       const returned = new Set(result.items.map(item => item.index));
@@ -97,7 +106,7 @@ export function createImageJobController({ invoke, onChange = () => {}, onError 
       return mutate('test_image_api', { request });
     },
     retry() {
-      if (this.locked || !job?.items.some(item => item.status === 'failed')) return;
+      if (this.locked || !retryableImageCount(job)) return;
       return mutate('retry_image_test', { jobId: job.id });
     },
     cancel() {

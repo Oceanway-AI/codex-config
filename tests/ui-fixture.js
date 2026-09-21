@@ -56,7 +56,7 @@
     }
     if (name === 'retry_image_test') {
       retried = true; ticks = 0; imageJob.status = 'running';
-      imageJob.items = imageJob.items.map(item => item.status === 'failed' ? { index: item.index, status: 'running' } : item);
+      imageJob.items = imageJob.items.map(item => ['failed', 'cancelled'].includes(item.status) ? { index: item.index, status: 'running' } : item);
       return imageCounts();
     }
     if (name === 'open_image_result') return {};

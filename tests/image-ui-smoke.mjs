@@ -16,6 +16,7 @@ try {
   await page.waitForTimeout(1200);
   assert.equal(await calls('test_image_api'), 0);
   await page.locator('#open-image-test').click();
+  assert.equal(await page.locator('#image-size').inputValue(), '1024x1024');
   assert.equal(await page.locator('#start-image-test').isDisabled(), true);
   await expectText('#image-rule-status', '自然触发待确认');
   await page.locator('#close-image-test').click();
@@ -66,9 +67,13 @@ try {
   await page.locator('#cancel-image-test').click();
   await expectText('#image-job-summary', '已取消');
   await expectText('#image-edit-evidence', '已取消');
-  await page.locator('#start-image-test').click();
+  assert.equal(await page.locator('#retry-image-test').isEnabled(), true);
+  await page.locator('#retry-image-test').click();
+  await expectText('#image-payment-detail', '仅重试失败或取消的 1 张图片');
+  assert.equal(await calls('retry_image_test'), 1);
   await page.locator('#confirm-image-payment').click();
   await expectText('#image-job-summary', '已完成');
+  assert.equal(await calls('retry_image_test'), 2);
   await expectText('#image-edit-evidence', '已实测通过');
   await expectText('#image-rule-status', '自然触发待确认');
   await page.locator('.image-dialog-body').evaluate(element => { element.scrollTop = 0; });
