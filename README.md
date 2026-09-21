@@ -7,13 +7,14 @@ This repository only contains the Rust/Tauri version. The old Python/PyQt packag
 ## What It Does
 
 - Writes the OceanWay provider to Codex config.
-- Uses a ChatGPT-login-preserving provider token when the user is already signed in, and falls back to an API Key mode compatible with the Codex Desktop local image tool when no ChatGPT login is detected.
-- Prepares the bundled `imagegen` skill's explicit CLI fallback by injecting `OPENAI_API_KEY` and `OPENAI_BASE_URL` into Codex tool subprocesses.
+- Preserves an existing ChatGPT login and uses a provider token, or API-key authentication when no login exists.
+- Installs versioned direct-image HTTP rules in `developer_instructions`, preserving the user's existing instructions. No imagegen skill, built-in image tool, dedicated image CLI, or MCP is required by this route.
+- Defaults to `gpt-image-2`, honors an explicit model and any requested image count, and supports original-byte reference images and subsequent edits.
 - Reuses the previously saved OceanWay credential when the API Key field is left empty, without returning the full secret to the frontend.
 - Uses `https://ocean-way.top` as the default Base URL.
 - Preserves existing non-OceanWay Codex settings and providers.
 - Creates a first-use backup before changing user config.
-- Provides one-click diagnostics for provider, credential, image compatibility, Codex version, network, process state, and backup state.
+- Separates rule configuration, model visibility, generation testing and reference-image testing. Only the explicit image-test action submits billable requests.
 - Copies a redacted support report that never includes complete API keys or bearer tokens.
 - Can repair the saved configuration and restart Codex Desktop after confirmation.
 - Offers an explicit, backed-up history visibility migration for users who need old local sessions to appear under the current provider.
@@ -84,10 +85,9 @@ name = "OceanWay"
 base_url = "https://ocean-way.top"
 wire_api = "responses"
 requires_openai_auth = false
-http_headers = { "x-openai-actor-authorization" = "local-image-extension" }
 ```
 
-The non-empty actor authorization header lets Codex Desktop `0.143.0` and later register its local `image_gen` extension for a custom API Key provider. The API key remains the Bearer credential and is written to `auth.json` without removing other existing auth fields:
+The app no longer adds local-image-extension headers. A legacy header is removed only when its value matches this tool's old managed value. API-key authentication preserves other existing auth fields:
 
 ```json
 {
@@ -95,11 +95,11 @@ The non-empty actor authorization header lets Codex Desktop `0.143.0` and later 
 }
 ```
 
-After configuration, fully quit and reopen Codex Desktop, then create a new task so the tool registry is rebuilt. The conversational model remains the configured GPT model; the local image extension calls the provider's image endpoint separately.
+After configuration, save ongoing work, restart Codex Desktop and create a new task. The conversational model is unchanged; it is instructed to call the provider's image endpoint through general HTTP tools. Saving rules does not prove that a particular desktop build has loaded them.
 
-## Imagegen CLI Fallback
+## Direct Image API (1.4.0-beta.1)
 
-Both authentication modes also receive the following user-level Codex configuration:
+Both authentication modes receive a versioned, marker-delimited `developer_instructions` block and the following tool-subprocess environment:
 
 ```toml
 [shell_environment_policy.set]
@@ -107,15 +107,17 @@ OPENAI_API_KEY = "user-api-key"
 OPENAI_BASE_URL = "https://ocean-way.top"
 ```
 
-This is a fallback for the bundled `imagegen` skill's official `scripts/image_gen.py` path. It does not replace the preferred built-in `image_gen` tool and does not modify the system skill. When the built-in tool is unavailable, the user must still explicitly choose the CLI fallback as required by the bundled skill.
+Rules read the current provider and credentials at runtime. They contain variable names, never the user's Key. Changing providers disables these OceanWay-specific rules rather than silently using an old endpoint. System skills and permission controls are not changed.
 
-The values are injected into commands launched by Codex, including the imagegen CLI. They are not installed as global operating-system environment variables. This keeps the setup cross-platform, makes a second configuration click idempotently update stale values, and allows `恢复默认` to restore the original file snapshot.
+Text-only generation uses `/images/generations`; references use multipart `/images/edits` with ordered `image[]` parts. A root URL receives `/v1`, an existing API prefix is retained. Original reference bytes are required. If a Codex attachment is visible but inaccessible as a file/byte stream, Codex must request a readable file instead of silently generating from a description.
 
-Existing users configured by an older release can reopen the app, switch to `运维工具`, and click `图片备用配置` → `同步`. The backend reuses the saved OceanWay credential without returning or displaying it in the UI.
+Requested N images are scheduled as N slots, with at most two requests in flight. The test panel conservatively uses one image per request until service batching is proven; this does not cap the total. Defaults: one image if count is omitted, 1024x1024 if size is omitted, no forced quality parameter. Successful results are retained; retry only resubmits missing slots after an explicit action. Timeout is ambiguous and is never automatically retried. Cancellation stops the queue but cannot undo provider work already submitted.
 
-Starting with v1.2.0, the main form also reuses that saved credential when its API Key field is left empty. Entering a new value replaces the saved OceanWay credential. `恢复 Codex 默认配置` restores the first-use snapshot, including removal of the imagegen fallback values written by this tool.
+`直接图片 API` can synchronize rules, inspect model visibility, and explicitly test a model/prompt/count with optional references. Generated test files are stored under `$CODEX_HOME/oceanway-image-tests/`; conversation rules save outputs under the current project's `output/images/`. The API accepts Base64 and public HTTPS URL outputs; download requests never receive the provider Key.
 
-Security note: any command launched by Codex can read values configured under `shell_environment_policy.set`. Only use trusted repositories and prompts while this fallback is enabled.
+Leaving the API Key field empty reuses the saved credential. Entering a new Key updates both authentication and the HTTP environment. The frontend and diagnostic reports never receive it. Commands launched by Codex can read the subprocess environment: use trusted repositories/tasks.
+
+This is a test-branch build, not a production release. Browser fixtures are simulations, never proof of live success. Desktop natural-language triggering, upload/paste/drop attachment access, and paid provider generation/edit tests require explicit user acceptance. See [beta acceptance checklist](docs/DIRECT_IMAGE_BETA.md).
 
 ## History Visibility Migration
 
@@ -143,7 +145,7 @@ When the user clicks restore, the app restores that original snapshot. This lets
 
 Restore also undoes recorded history visibility migrations by using the migration manifest. It only restores files and database rows that were changed by this tool, so sessions created after the migration are left alone. The app does not provide a default flow for migrating OceanWay-created sessions into OpenAI Official.
 
-If no snapshot exists, restore falls back to removing the OceanWay provider, `OPENAI_API_KEY`, and the two imagegen CLI environment entries written by this tool.
+If no snapshot exists, restore removes the OceanWay provider and managed instruction block. HTTP environment entries are removed only when they match the saved OceanWay credentials and endpoint.
 
 ## Development
 
@@ -171,7 +173,7 @@ cargo test
 Starting with v1.3.0, the main window is organized as a configuration workspace:
 
 - `问题诊断` runs read-only checks and can copy a redacted support report.
-- `运维工具` contains restart, repair, image fallback synchronization, history migration, backup-directory access, and restore.
+- `运维工具` contains restart, repair, direct-image rule synchronization/testing, history migration, backup-directory access, and restore.
 - `额度与权限` uses a backend response type ready for balance, plan, sync time, and per-model permission data. It intentionally returns `reserved` and empty values until the OceanWay customer account API is connected.
 
 ## Signed Auto Update

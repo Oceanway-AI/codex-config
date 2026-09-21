@@ -79,7 +79,7 @@ fn acceptance_real_write_repeat_restore_and_permissions() {
     .unwrap();
     let first = fs::read_to_string(&config).unwrap();
     assert!(first.contains("value = \"keep\""));
-    assert!(has_matching_imagegen_cli_environment(
+    assert!(has_matching_direct_http_environment(
         &first,
         Some("fake-test"),
         Some("https://example.invalid")
@@ -95,7 +95,7 @@ fn acceptance_real_write_repeat_restore_and_permissions() {
     )
     .unwrap();
     let repeated = fs::read_to_string(&config).unwrap();
-    assert!(has_matching_imagegen_cli_environment(
+    assert!(has_matching_direct_http_environment(
         &repeated,
         Some("fake-test"),
         Some("https://example.invalid")
@@ -211,4 +211,64 @@ fn acceptance_snapshot_secrets_have_private_permissions() {
             "snapshot retains world-readable source mode"
         );
     }
+}
+
+#[test]
+fn direct_rules_survive_reconfiguration_and_keep_user_instructions() {
+    let dir = fixture("direct-rules");
+    let path = dir.join("config.toml");
+    let original = "developer_instructions = '''User instructions\n[fake]\nmodel = \"not-a-root-model\"\n'''\nmodel = \"original\"\n[model_providers.OceanWay]\nhttp_headers = { other = \"keep\", x-openai-actor-authorization = \"local-image-extension\" }\n";
+    fs::write(&path, original).unwrap();
+    for key in ["fake-first", "fake-replaced", "fake-replaced"] {
+        write_config_toml(&path, PROVIDER_ID, "https://example.invalid/v1", "original",
+            None, ProviderAuthStrategy::ApiKey, Some(key)).unwrap();
+        let saved = fs::read_to_string(&path).unwrap();
+        assert!(direct_image_config::configured(&saved));
+        assert!(has_matching_direct_http_environment(&saved, Some(key), Some("https://example.invalid/v1")));
+        let instructions = read_root_string(&saved, "developer_instructions").unwrap();
+        assert!(instructions.starts_with("User instructions\n[fake]\nmodel = \"not-a-root-model\"\n"));
+        assert_eq!(instructions.matches("OCEANWAY:DIRECT-IMAGE-API:BEGIN").count(), 1);
+        assert!(!instructions.contains(key));
+        assert!(!saved.contains("local-image-extension"));
+        assert!(saved.contains("keep"));
+        assert_eq!(read_current_model_from_content(&saved).as_deref(), Some("original"));
+    }
+    assert!(restore_from_snapshot(&dir, &path, &dir.join("auth.json")).unwrap());
+    assert_eq!(fs::read_to_string(path).unwrap(), original);
+}
+
+#[test]
+fn sync_does_not_repair_broken_instruction_markers_by_overwriting_them() {
+    let dir = fixture("broken-rule-markers");
+    let path = dir.join("config.toml");
+    let original = "developer_instructions = '<!-- OCEANWAY:DIRECT-IMAGE-API:BEGIN -->'\n";
+    fs::write(&path, original).unwrap();
+    assert!(write_config_toml(&path, PROVIDER_ID, DEFAULT_BASE_URL, MODEL_FALLBACK,
+        None, ProviderAuthStrategy::ApiKey, Some("fake")).is_err());
+    assert_eq!(fs::read_to_string(path).unwrap(), original);
+}
+
+#[test]
+fn fallback_restore_preserves_nonmatching_http_environment() {
+    let dir = fixture("foreign-environment");
+    let path = dir.join("config.toml");
+    let original = "[model_providers.OceanWay]\nbase_url='https://old.invalid'\nexperimental_bearer_token='old-fake'\n[shell_environment_policy.set]\nOPENAI_BASE_URL='https://new.invalid'\nOPENAI_API_KEY='new-fake'\n";
+    fs::write(&path, original).unwrap();
+    remove_direct_http_environment_from_file(&path).unwrap();
+    assert_eq!(fs::read_to_string(path).unwrap(), original);
+}
+
+#[test]
+fn structured_reader_ignores_provider_names_inside_user_instructions() {
+    let original = "developer_instructions='''\nmodel_provider = \"OceanWay\"\n[model_providers.OceanWay]\nbase_url = \"https://wrong.invalid\"\n'''\nmodel_provider='other'\n[model_providers.OceanWay]\nbase_url='https://right.invalid'\n";
+    assert_eq!(read_root_string(original, "model_provider").as_deref(), Some("other"));
+    assert_eq!(read_provider_base_url(original, PROVIDER_ID).as_deref(), Some("https://right.invalid"));
+}
+
+#[test]
+fn new_provider_credential_does_not_leave_an_old_env_key_active() {
+    let original = "[model_providers.OceanWay]\nenv_key='OLD_PROVIDER_KEY'\n";
+    let next = merge_config(original, PROVIDER_ID, DEFAULT_BASE_URL, MODEL_FALLBACK,
+        None, ProviderAuthStrategy::ApiKey).unwrap();
+    assert!(read_provider_string(&next, PROVIDER_ID, "env_key").is_none());
 }

@@ -71,6 +71,13 @@ jobs:
         run: cargo test
         working-directory: src-tauri
 
+      - name: Upload resolved dependency lock
+        if: always() && matrix.platform == 'windows-x64'
+        uses: actions/upload-artifact@v6
+        with:
+          name: codex-config-resolved-lock
+          path: src-tauri/Cargo.lock
+
       - name: Build Tauri bundle
         run: npm exec tauri -- build ${{ matrix.bundle_args }}
 
