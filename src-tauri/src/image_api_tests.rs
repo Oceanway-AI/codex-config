@@ -133,6 +133,8 @@ impl Drop for Mock {
 }
 
 fn capture(stream: &mut TcpStream) -> Captured {
+    // The listener polls nonblocking; accepted connections must read complete HTTP bodies.
+    stream.set_nonblocking(false).unwrap();
     let mut bytes = Vec::new();
     let boundary = loop {
         let mut buffer = [0u8; 4096];
