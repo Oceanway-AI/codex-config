@@ -44,12 +44,16 @@ pub struct ImageTestRequest {
     pub count: usize,
     #[serde(default)]
     pub reference_paths: Vec<String>,
-    #[serde(default)]
+    #[serde(default = "default_size")]
     pub size: String,
 }
 
 fn default_model() -> String {
     "gpt-image-2".into()
+}
+
+fn default_size() -> String {
+    "1024x1024".into()
 }
 
 #[derive(Clone, Serialize)]
@@ -140,6 +144,7 @@ struct StoredJob {
     completed: usize,
     failed: usize,
     items: BTreeMap<usize, ImageItem>,
+    persistence_error: Option<String>,
 }
 
 impl StoredJob {
@@ -153,6 +158,7 @@ impl StoredJob {
             completed: 0,
             failed: 0,
             items: BTreeMap::new(),
+            persistence_error: None,
         }
     }
 
@@ -231,8 +237,10 @@ impl StoredJob {
             items,
             message: format!(
                 "{BILLING_NOTICE} Items include attempted indices and at most two queue previews; \
-                 other indices are {}.",
-                if self.stopped { "cancelled" } else { "queued" }
+                 other indices are {}. Progress is saved to manifest.json; restarting the app \
+                 never automatically resumes POSTs. Recovery requires explicit user action.{}",
+                if self.stopped { "cancelled" } else { "queued" },
+                self.persistence_error.as_ref().map(|error| format!(" {error}")).unwrap_or_default()
             ),
         }
     }
@@ -259,8 +267,106 @@ impl StoredJob {
         self.stopped = false;
         self.next = Some(1);
         self.skip_successes();
-        Ok(())
+        self.persistence_error = None;
+        persist_or_stop(self)
     }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct JobManifest {
+    schema_version: u32,
+    updated_at_ms: u64,
+    requires_explicit_resume: bool,
+    recovery_message: &'static str,
+    prompt: String,
+    model: String,
+    reference_paths: Vec<String>,
+    size: String,
+    count: usize,
+    output_directory: String,
+    job: ImageJob,
+}
+
+fn redact_manifest(value: &mut Value, key: &str) {
+    match value {
+        Value::String(text) if !key.is_empty() => *text = text.replace(key, "[REDACTED]"),
+        Value::Array(values) => {
+            for value in values {
+                redact_manifest(value, key);
+            }
+        }
+        Value::Object(values) => {
+            for value in values.values_mut() {
+                redact_manifest(value, key);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn persist_manifest(job: &StoredJob) -> Result<(), String> {
+    verify_directory(&job.input.directory)?;
+    let mut snapshot = job.snapshot();
+    for item in &mut snapshot.items {
+        item.preview_data_url = None;
+    }
+    let manifest = JobManifest {
+        schema_version: 1,
+        updated_at_ms: u64::try_from(
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis(),
+        ).unwrap_or(u64::MAX),
+        requires_explicit_resume: true,
+        recovery_message: "This is the last saved progress, not a resumed job. No POST is resumed \
+            automatically. Previously running indices may already have been billed. Review saved \
+            outputs and explicitly choose recovery before sending any further paid request.",
+        prompt: job.input.request.prompt.clone(),
+        model: job.input.request.model.clone(),
+        reference_paths: job.input.request.reference_paths.clone(),
+        size: job.input.request.size.clone(),
+        count: job.input.request.count,
+        output_directory: job.input.directory.to_string_lossy().into_owned(),
+        job: snapshot,
+    };
+    let mut manifest = serde_json::to_value(manifest)
+        .map_err(|_| "Could not serialize the image progress record.".to_string())?;
+    // Even a credential accidentally pasted into prompt/path/error text must not
+    // enter this disk record. The provider/config snapshot is never serialized.
+    redact_manifest(&mut manifest, &job.input.provider.key);
+    let temporary = job.input.directory.join(format!(
+        ".manifest-{}.tmp", SEQUENCE.fetch_add(1, Ordering::Relaxed),
+    ));
+    let mut file = OpenOptions::new().write(true).create_new(true).open(&temporary)
+        .map_err(|_| "Could not create the image progress record.".to_string())?;
+    let result = (|| {
+        serde_json::to_writer_pretty(&mut file, &manifest)
+            .map_err(|_| "Could not write the image progress record.".to_string())?;
+        file.write_all(b"\n").and_then(|_| file.sync_all())
+            .map_err(|_| "Could not flush the image progress record.".to_string())?;
+        drop(file);
+        // The old record survives a failed write; readers only see whole JSON.
+        fs::rename(&temporary, job.input.directory.join("manifest.json"))
+            .map_err(|_| "Could not replace the image progress record.".to_string())?;
+        #[cfg(unix)]
+        File::open(&job.input.directory).and_then(|directory| directory.sync_all())
+            .map_err(|_| "Could not flush the image progress directory.".to_string())?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
+fn persist_or_stop(job: &mut StoredJob) -> Result<(), String> {
+    if persist_manifest(job).is_err() {
+        let message = "Progress could not be persisted. Queued work stopped; in-flight requests \
+            may finish and may have been billed. Existing images are not deleted.".to_string();
+        job.persistence_error = Some(message.clone());
+        job.cancel();
+        return Err(message);
+    }
+    Ok(())
 }
 
 #[derive(Default)]
@@ -287,7 +393,10 @@ impl Drop for ImageJobs {
         if let Ok(mut registry) = self.shared.registry.lock() {
             registry.shutdown = true;
             for job in registry.jobs.values_mut() {
-                job.cancel();
+                if job.running() {
+                    job.cancel();
+                    let _ = persist_or_stop(job);
+                }
             }
             self.shared.wake.notify_all();
         }
@@ -337,6 +446,14 @@ fn worker(shared: Arc<Shared>) {
                 if let Some(id) = next {
                     let job = registry.jobs.get_mut(&id).expect("selected recorded job");
                     let index = job.claim().expect("selected queued index");
+                    if persist_or_stop(job).is_err() {
+                        job.active -= 1;
+                        let item = job.items.get_mut(&index).expect("claimed index");
+                        item.status = "cancelled".into();
+                        item.error = Some("Progress write failed; no request was sent for this index.".into());
+                        let _ = persist_manifest(job);
+                        continue;
+                    }
                     let input = Arc::clone(&job.input);
                     registry.last_job = Some(id.clone());
                     break (id, index, input);
@@ -354,29 +471,38 @@ fn worker(shared: Arc<Shared>) {
         let elapsed = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         if let Ok(mut registry) = lock(&shared) {
             if let Some(job) = registry.jobs.get_mut(&id) {
-                let item = job.items.get_mut(&index).expect("claimed index");
-                item.elapsed_ms = Some(elapsed);
-                match outcome {
-                    Ok(result) => {
-                        item.status = "succeeded".into();
-                        item.path = Some(result.path.to_string_lossy().into_owned());
-                        item.preview_data_url = Some(result.preview);
-                        item.request_id = result.request_id;
-                        job.completed += 1;
-                    }
-                    Err(failure) => {
-                        item.status = "failed".into();
-                        item.error = Some(failure.message);
-                        item.request_id = failure.request_id;
-                        job.failed += 1;
-                    }
-                }
-                job.active -= 1;
+                finish_item(job, index, outcome, elapsed);
+                let _ = persist_or_stop(job);
             }
             shared.wake.notify_all();
         } else {
             return;
         }
+    }
+}
+
+fn finish_item(job: &mut StoredJob, index: usize, outcome: Result<SavedResult, Failure>, elapsed: u64) {
+    let stop_job = outcome.as_ref().err().is_some_and(|failure| failure.stop_job);
+    let item = job.items.get_mut(&index).expect("claimed index");
+    item.elapsed_ms = Some(elapsed);
+    match outcome {
+        Ok(result) => {
+            item.status = "succeeded".into();
+            item.path = Some(result.path.to_string_lossy().into_owned());
+            item.preview_data_url = Some(result.preview);
+            item.request_id = result.request_id;
+            job.completed += 1;
+        }
+        Err(failure) => {
+            item.status = "failed".into();
+            item.error = Some(failure.message);
+            item.request_id = failure.request_id;
+            job.failed += 1;
+        }
+    }
+    job.active -= 1;
+    if stop_job {
+        job.cancel();
     }
 }
 
@@ -456,8 +582,9 @@ fn submit(shared: &Arc<Shared>, id: String, input: Input) -> Result<ImageJob, St
     if registry.jobs.contains_key(&id) {
         return Err("Image job already exists.".into());
     }
-    ensure_workers(shared, &mut registry)?;
     let job = StoredJob::new(id.clone(), input);
+    persist_manifest(&job)?;
+    ensure_workers(shared, &mut registry)?;
     let snapshot = job.snapshot();
     registry.jobs.insert(id, job);
     shared.wake.notify_all();
@@ -478,15 +605,19 @@ pub async fn cancel_image_test(
     job_id: String,
     state: State<'_, ImageJobs>,
 ) -> Result<ImageJob, String> {
-    let mut registry = lock(&state.shared)?;
-    let job = find_job_mut(&mut registry, &job_id)?;
-    // A terminal completed/partial/failed job is not retroactively cancelled.
-    if job.running() {
-        job.cancel();
-    }
-    let snapshot = job.snapshot();
-    state.shared.wake.notify_all();
-    Ok(snapshot)
+    let shared = Arc::clone(&state.shared);
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut registry = lock(&shared)?;
+        let job = find_job_mut(&mut registry, &job_id)?;
+        // A terminal completed/partial/failed job is not retroactively cancelled.
+        if job.running() {
+            job.cancel();
+            let _ = persist_or_stop(job);
+        }
+        let snapshot = job.snapshot();
+        shared.wake.notify_all();
+        Ok(snapshot)
+    }).await.map_err(|_| "Image cancellation task failed.".to_string())?
 }
 
 #[tauri::command]
@@ -555,7 +686,10 @@ fn validate_request(mut request: ImageTestRequest) -> Result<ImageTestRequest, S
         return Err("Prompt must be nonblank and at most 256 KiB.".into());
     }
     request.size = request.size.trim().into();
-    if !request.size.is_empty() && request.size != "auto" {
+    if request.size.is_empty() {
+        request.size = default_size();
+    }
+    if request.size != "auto" {
         let valid = request.size.split_once('x').is_some_and(|(w, h)| {
             matches!((w.parse::<u32>(), h.parse::<u32>()),
                 (Ok(w), Ok(h)) if w > 0 && h > 0 && w <= MAX_DIMENSION && h <= MAX_DIMENSION)
@@ -570,7 +704,8 @@ fn validate_request(mut request: ImageTestRequest) -> Result<ImageTestRequest, S
 fn normalize_api_base(base: &str) -> Result<String, String> {
     let base = base.trim().trim_end_matches('/');
     super::validate_base_url(base).map_err(|_| "Saved provider base URL is invalid.".to_string())?;
-    Ok(if base.ends_with("/v1") { base.into() } else { format!("{base}/v1") })
+    let url = Url::parse(base).map_err(|_| "Saved provider base URL is invalid.".to_string())?;
+    Ok(if url.path().trim_matches('/').is_empty() { format!("{base}/v1") } else { base.into() })
 }
 
 fn load_provider() -> Result<SavedProvider, String> {
@@ -768,11 +903,12 @@ fn recorded_path(directory: &Path, item: &ImageItem) -> Result<PathBuf, String> 
 struct Failure {
     message: String,
     request_id: Option<String>,
+    stop_job: bool,
 }
 
 impl Failure {
     fn new(message: impl Into<String>) -> Self {
-        Self { message: message.into(), request_id: None }
+        Self { message: message.into(), request_id: None, stop_job: false }
     }
 }
 
@@ -864,6 +1000,30 @@ fn json_response(response: Response, key: &str, limit: usize) -> Result<(Value, 
 }
 
 fn post_image(input: &Input) -> Result<(Value, Option<String>), Failure> {
+    post_image_with_guard(input, || {
+        #[cfg(test)]
+        if input.provider.local_mock {
+            return Ok(());
+        }
+        provider_guard_result(ensure_provider_unchanged(&input.provider))
+    })
+}
+
+fn provider_guard_result(result: Result<(), String>) -> Result<(), Failure> {
+    result.map_err(|message| Failure {
+        message: format!(
+            "Saved provider changed or is unavailable; no POST was sent for this index. \
+             Remaining queued work is cancelled. {message}"
+        ),
+        request_id: None,
+        stop_job: true,
+    })
+}
+
+fn post_image_with_guard(
+    input: &Input,
+    guard: impl FnOnce() -> Result<(), Failure>,
+) -> Result<(Value, Option<String>), Failure> {
     let client = provider_client(&input.provider)?;
     let request = &input.request;
     let editing = !input.references.is_empty();
@@ -894,6 +1054,9 @@ fn post_image(input: &Input) -> Result<(Value, Option<String>), Failure> {
         }
         builder.json(&body)
     };
+    // Build the body first, then re-read the active config/key immediately before
+    // every paid POST. Already in-flight requests retain their original snapshot.
+    guard()?;
     let response = builder.send().map_err(|error| network_failure(&error))?;
     json_response(response, &input.provider.key, JSON_BYTES)
 }

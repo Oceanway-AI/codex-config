@@ -246,7 +246,9 @@ fn retry_mock(state: &ImageJobs, id: &str) {
 fn normalization_validation_and_camel_case_contract() {
     assert_eq!(normalize_api_base(" https://example.com/// ").unwrap(), "https://example.com/v1");
     assert_eq!(normalize_api_base("https://example.com/api/v1///").unwrap(), "https://example.com/api/v1");
-    assert_eq!(normalize_api_base("https://example.com/api").unwrap(), "https://example.com/api/v1");
+    assert_eq!(normalize_api_base("https://example.com/api").unwrap(), "https://example.com/api");
+    assert_eq!(normalize_api_base("https://example.com/custom/prefix///").unwrap(), "https://example.com/custom/prefix");
+    assert_eq!(normalize_api_base("https://example.com/v1").unwrap(), "https://example.com/v1");
     for base in ["https://user:password@example.com", "https://example.com?q=1", "file:///tmp/x"] {
         assert!(normalize_api_base(base).is_err());
     }
@@ -259,6 +261,11 @@ fn normalization_validation_and_camel_case_contract() {
         "prompt": "test", "count": 1, "referencePaths": [], "size": ""
     })).unwrap();
     assert_eq!(parsed.model, "gpt-image-2");
+    assert_eq!(validate_request(parsed).unwrap().size, "1024x1024");
+    let omitted: ImageTestRequest = serde_json::from_value(json!({
+        "prompt": "test", "count": 1
+    })).unwrap();
+    assert_eq!(omitted.size, "1024x1024");
     let blank: ImageTestRequest = serde_json::from_value(json!({
         "model": "", "prompt": "test", "count": 1
     })).unwrap();
@@ -270,6 +277,130 @@ fn normalization_validation_and_camel_case_contract() {
     }
     let item = serde_json::to_value(ImageItem::new(1, "queued")).unwrap();
     assert_eq!(item, json!({ "index": 1, "status": "queued" }));
+}
+
+#[test]
+fn default_size_and_custom_prefix_reach_generation_and_edit_requests() {
+    let home = TempHome::new();
+    let mock = Mock::new(|_, _| Reply::json(success()));
+    let (_, mut input) = input(&home, &mock, 2);
+    input.provider.api_base = normalize_api_base(&format!("http://{}/custom/images-api/", mock.address)).unwrap();
+    input.request.size = " ".into();
+    input.request = validate_request(input.request).unwrap();
+    execute(&input, 1, Instant::now()).unwrap();
+    input.references.push(Reference {
+        bytes: png(1, 1).into(),
+        mime: "image/png",
+        extension: "png",
+    });
+    execute(&input, 2, Instant::now()).unwrap();
+    let captured = mock.requests.lock().unwrap();
+    assert_eq!(captured[0].path, "/custom/images-api/images/generations");
+    assert_eq!(serde_json::from_slice::<Value>(&captured[0].body).unwrap()["size"], "1024x1024");
+    assert_eq!(captured[1].path, "/custom/images-api/images/edits");
+    assert!(String::from_utf8_lossy(&captured[1].body).contains("name=\"size\"\r\n\r\n1024x1024\r\n"));
+}
+
+#[test]
+fn manifest_persists_progress_without_keys_or_thumbnails_and_does_not_auto_resume() {
+    let home = TempHome::new();
+    let mock = Mock::new(|_, _| Reply::json(success()));
+    let state = ImageJobs::default();
+    let (id, mut input) = input(&home, &mock, 2);
+    input.request.prompt = format!("An accidentally pasted {MOCK_KEY}");
+    input.request.reference_paths = vec![format!("mock-reference-{MOCK_KEY}.png")];
+    let directory = input.directory.clone();
+    submit(&state.shared, id.clone(), input).unwrap();
+    let done = finished(&state, &id);
+    assert_eq!(done.completed, 2);
+    drop(state);
+    let bytes = fs::read(directory.join("manifest.json")).unwrap();
+    let text = String::from_utf8(bytes.clone()).unwrap();
+    assert!(!text.contains(MOCK_KEY));
+    assert!(!text.contains("previewDataUrl"));
+    assert!(!text.contains("apiBase"));
+    assert!(!text.contains("\"config\""));
+    let manifest: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(manifest["schemaVersion"], 1);
+    assert_eq!(manifest["requiresExplicitResume"], true);
+    assert_eq!(manifest["count"], 2);
+    assert_eq!(manifest["model"], "gpt-image-2");
+    assert_eq!(manifest["size"], "1024x1024");
+    assert_eq!(manifest["prompt"], "An accidentally pasted [REDACTED]");
+    assert_eq!(manifest["referencePaths"][0], "mock-reference-[REDACTED].png");
+    assert_eq!(manifest["job"]["status"], "completed");
+    assert_eq!(manifest["job"]["completed"], 2);
+    assert_eq!(manifest["job"]["items"][0]["requestId"], "mock-request-1");
+    assert!(Path::new(manifest["job"]["items"][0]["path"].as_str().unwrap()).is_file());
+    assert_eq!(fs::read_dir(&directory).unwrap().count(), 3, "two images plus atomic manifest");
+    let reopened = ImageJobs::default();
+    assert!(lock(&reopened.shared).unwrap().jobs.is_empty());
+    assert_eq!(mock.count(), 2);
+}
+
+#[test]
+fn manifest_write_failure_prevents_submission_and_keeps_previous_record() {
+    let home = TempHome::new();
+    let mock = Mock::new(|_, _| panic!("failed manifest must prevent the POST"));
+    let state = ImageJobs::default();
+    let (id, input) = input(&home, &mock, 1);
+    let directory = input.directory.clone();
+    // A non-file destination makes the atomic rename fail on every platform.
+    fs::create_dir(directory.join("manifest.json")).unwrap();
+    fs::write(directory.join("manifest.json").join("previous"), b"preserve me").unwrap();
+    assert!(submit(&state.shared, id, input).is_err());
+    assert_eq!(mock.count(), 0);
+    assert!(lock(&state.shared).unwrap().jobs.is_empty());
+    assert_eq!(fs::read(directory.join("manifest.json").join("previous")).unwrap(), b"preserve me");
+    assert_eq!(fs::read_dir(&directory).unwrap().count(), 1, "failed temporary record was removed");
+}
+
+#[test]
+fn running_and_cancelled_progress_are_written_without_allocating_the_queue() {
+    let home = TempHome::new();
+    let mock = Mock::new(|_, _| panic!("state-only test must not POST"));
+    let (id, input) = input(&home, &mock, usize::MAX);
+    let mut job = StoredJob::new(id, input);
+    assert_eq!(job.claim(), Some(1));
+    persist_manifest(&job).unwrap();
+    let path = job.input.directory.join("manifest.json");
+    let running: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(running["job"]["items"][0]["status"], "running");
+    assert_eq!(running["job"]["items"].as_array().unwrap().len(), 3);
+    job.cancel();
+    persist_manifest(&job).unwrap();
+    let cancelled: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(cancelled["job"]["cancelled"].as_u64(), Some((usize::MAX - 1) as u64));
+    assert_eq!(cancelled["job"]["items"].as_array().unwrap().len(), 1);
+    assert_eq!(mock.count(), 0);
+}
+
+#[test]
+fn changed_provider_guard_prevents_post_stops_queue_and_preserves_success() {
+    let home = TempHome::new();
+    let mock = Mock::new(|_, _| Reply::json(success()));
+    let (id, input) = input(&home, &mock, 3);
+    let mut job = StoredJob::new(id, input);
+    let first = job.claim().unwrap();
+    let saved = execute(&job.input, first, Instant::now()).unwrap();
+    let first_path = saved.path.clone();
+    finish_item(&mut job, first, Ok(saved), 1);
+    let second = job.claim().unwrap();
+    let guard_error = post_image_with_guard(&job.input, || {
+        provider_guard_result(Err("Saved provider or credentials changed.".into()))
+    }).err().unwrap();
+    assert!(guard_error.stop_job);
+    assert!(guard_error.message.contains("no POST was sent"));
+    finish_item(&mut job, second, Err(guard_error), 1);
+    persist_manifest(&job).unwrap();
+    let snapshot = job.snapshot();
+    assert_eq!(snapshot.status, "cancelled");
+    assert_eq!((snapshot.completed, snapshot.failed, snapshot.cancelled), (1, 1, 1));
+    assert_eq!(snapshot.items[0].status, "succeeded");
+    assert!(first_path.is_file());
+    assert!(job.claim().is_none());
+    assert_eq!(mock.count(), 1);
+    assert!(provider_guard_result(Err("Saved config is unreadable.".into())).err().unwrap().stop_job);
 }
 
 #[test]
