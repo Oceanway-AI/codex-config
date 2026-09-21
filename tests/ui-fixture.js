@@ -18,8 +18,8 @@
     context.fillStyle = '#147653';
     context.font = '18px sans-serif';
     context.fillText('SIMULATION', 16, 72);
-    context.fillText(`#${item.index + 1}`, 65, 102);
-    return { index: item.index, status: 'succeeded', path: `simulation/image-${item.index + 1}.png`, previewDataUrl: canvas.toDataURL(), requestId: 'simulation-request', elapsedMs: 1000 };
+    context.fillText(`#${item.index}`, 65, 102);
+    return { index: item.index, status: 'succeeded', path: `simulation/image-${item.index}.png`, previewDataUrl: canvas.toDataURL(), requestId: 'simulation-request', elapsedMs: 1000 };
   };
   const calls = [];
   window.__TAURI__ = { core: { invoke: async (name, args) => {
@@ -39,12 +39,12 @@
     if (name === 'pick_reference_images') return ['C:\\simulation\\reference-1.png', 'C:\\simulation\\reference-2.png'];
     if (name === 'test_image_api') {
       ticks = 0; retried = false;
-      imageJob = { id: `simulation-${++serial}`, status: 'running', model: args.request.model, mode: args.request.referencePaths.length ? 'edit' : 'generate', total: args.request.count, items: Array.from({ length: args.request.count }, (_, index) => ({ index, status: index < 2 ? 'running' : 'queued' })), message: '模拟任务：不会发送网络请求或产生费用' };
+      imageJob = { id: `simulation-${++serial}`, status: 'running', model: args.request.model, mode: args.request.referencePaths.length ? 'edit' : 'generate', total: args.request.count, items: Array.from({ length: args.request.count }, (_, offset) => ({ index: offset + 1, status: offset < 2 ? 'running' : 'queued' })), message: '模拟任务：不会发送网络请求或产生费用' };
       return imageCounts();
     }
     if (name === 'get_image_test_status') {
       if (imageJob.status === 'running' && ++ticks >= 3) {
-        imageJob.items = imageJob.items.map(item => item.status === 'succeeded' || item.status === 'cancelled' ? item : !retried && item.index === 1 ? { index: 1, status: 'failed', error: '模拟失败，可显式重试' } : succeed(item));
+        imageJob.items = imageJob.items.map(item => item.status === 'succeeded' || item.status === 'cancelled' ? item : !retried && item.index === 2 ? { index: 2, status: 'failed', error: '模拟失败，可显式重试' } : succeed(item));
         imageJob.status = imageJob.items.some(item => item.status === 'failed') ? 'partial' : 'completed';
       }
       return imageCounts();
@@ -59,7 +59,11 @@
       imageJob.items = imageJob.items.map(item => ['failed', 'cancelled'].includes(item.status) ? { index: item.index, status: 'running' } : item);
       return imageCounts();
     }
-    if (name === 'open_image_result') return {};
+    if (name === 'open_image_result') {
+      if (!imageJob.items.some(item => item.index === args.index && item.status === 'succeeded')) throw new Error('模拟结果编号无效');
+      document.querySelector('#fixture-calls').dataset.openedIndex = String(args.index);
+      return {};
+    }
     return {};
   } } };
   document.addEventListener('DOMContentLoaded', () => {

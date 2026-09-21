@@ -830,14 +830,14 @@ function renderImageJob({ job, pending, error }) {
     if (source) {
       const image = document.createElement('img');
       image.src = source;
-      image.alt = previewLabel(`图片 ${item.index + 1}`);
+      image.alt = previewLabel(`图片 ${item.index}`);
       image.loading = 'lazy';
       preview.append(image);
     } else {
       preview.textContent = previewLabel(item.status === 'succeeded' ? '图片已保存' : itemLabels[item.status]);
     }
     const title = document.createElement('strong');
-    title.textContent = previewLabel(`#${item.index + 1} · ${itemLabels[item.status]}`);
+    title.textContent = previewLabel(`#${item.index} · ${itemLabels[item.status]}`);
     const detail = document.createElement('p');
     detail.textContent = previewLabel(redactLogMessage([
       item.error, item.requestId ? `Request ID: ${item.requestId}` : '',

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { buildImageRequest, DEFAULT_IMAGE_MODEL, imageTestBlockReason, createImageEvidence, createImageJobController, retryableImageCount, safeImagePreview } from '../src/image-api.js';
 
 const request = { model: DEFAULT_IMAGE_MODEL, prompt: ' A red square ', count: 1 };
-function makeJob(status = 'running', items = [{ index: 0, status: 'running' }]) {
+function makeJob(status = 'running', items = [{ index: 1, status: 'running' }]) {
   return { id: 'job-1', status, model: DEFAULT_IMAGE_MODEL, mode: 'generate', total: items.length,
     completed: items.filter(x => x.status === 'succeeded').length,
     failed: items.filter(x => x.status === 'failed').length,
@@ -53,9 +53,9 @@ test('size defaults to 1024x1024 without overriding explicit selections', () => 
 
 test('retry count includes failed and cancelled slots without counting successes twice', () => {
   assert.equal(retryableImageCount(null), 0);
-  assert.equal(retryableImageCount(makeJob('completed', [{ index: 0, status: 'succeeded' }])), 0);
+  assert.equal(retryableImageCount(makeJob('completed', [{ index: 1, status: 'succeeded' }])), 0);
   const job = makeJob('partial', [
-    { index: 0, status: 'succeeded' }, { index: 1, status: 'failed' }, { index: 2, status: 'cancelled' },
+    { index: 1, status: 'succeeded' }, { index: 2, status: 'failed' }, { index: 3, status: 'cancelled' },
   ]);
   assert.equal(retryableImageCount(job), 2);
   assert.equal(retryableImageCount({ ...job, failed: 0, cancelled: 0 }), 2);
@@ -113,7 +113,7 @@ test('poll errors preserve running state and schedule recovery; cancellation rem
   const { controller, errors, scheduled } = harness(async (command, args) => {
     calls.push([command, args]);
     if (command === 'get_image_test_status') throw new Error('offline');
-    return command === 'cancel_image_test' ? makeJob('cancelled', [{ index: 0, status: 'cancelled' }]) : makeJob();
+    return command === 'cancel_image_test' ? makeJob('cancelled', [{ index: 1, status: 'cancelled' }]) : makeJob();
   });
   await controller.start(request);
   await controller.poll();
@@ -128,12 +128,12 @@ test('poll errors preserve running state and schedule recovery; cancellation rem
 });
 
 test('retry requires explicit action, preserves successes and never resends original request', async () => {
-  const success = { index: 0, status: 'succeeded', path: 'saved.png', previewDataUrl: 'data:image/png;base64,AA==' };
-  const failed = { index: 1, status: 'failed', error: 'simulation failure' };
+  const success = { index: 1, status: 'succeeded', path: 'saved.png', previewDataUrl: 'data:image/png;base64,AA==' };
+  const failed = { index: 2, status: 'failed', error: 'simulation failure' };
   const calls = [];
   const { controller } = harness(async (command, args) => {
     calls.push([command, args]);
-    return command === 'retry_image_test' ? makeJob('running', [{ index: 0, status: 'queued' }, { index: 1, status: 'running' }]) : makeJob('partial', [success, failed]);
+    return command === 'retry_image_test' ? makeJob('running', [{ index: 1, status: 'queued' }, { index: 2, status: 'running' }]) : makeJob('partial', [success, failed]);
   });
   await controller.start(request);
   assert.equal(calls.length, 1);
@@ -142,6 +142,7 @@ test('retry requires explicit action, preserves successes and never resends orig
   assert.deepEqual(calls[1], ['retry_image_test', { jobId: 'job-1' }]);
   assert.deepEqual(controller.job.items[0], success);
   assert.equal(controller.job.items[1].status, 'running');
+  assert.deepEqual(controller.job.items.map(item => item.index), [1, 2]);
   controller.dispose();
 });
 
@@ -149,7 +150,7 @@ test('cancel wins against a stale in-flight polling response', async () => {
   let finishPoll;
   const { controller } = harness(async command => {
     if (command === 'get_image_test_status') return new Promise(resolve => { finishPoll = resolve; });
-    if (command === 'cancel_image_test') return makeJob('cancelled', [{ index: 0, status: 'cancelled' }]);
+    if (command === 'cancel_image_test') return makeJob('cancelled', [{ index: 1, status: 'cancelled' }]);
     return makeJob();
   });
   await controller.start(request);
@@ -162,18 +163,18 @@ test('cancel wins against a stale in-flight polling response', async () => {
 });
 
 test('explicit retry resumes purely cancelled jobs from aggregate or slot status and preserves successes', async () => {
-  const success = { index: 0, status: 'succeeded', path: 'saved.png', previewDataUrl: 'data:image/png;base64,AA==' };
+  const success = { index: 1, status: 'succeeded', path: 'saved.png', previewDataUrl: 'data:image/png;base64,AA==' };
   for (const cancelledJob of [
-    makeJob('cancelled', [success, { index: 1, status: 'cancelled' }]),
+    makeJob('cancelled', [success, { index: 2, status: 'cancelled' }]),
     { ...makeJob('cancelled', [success]), total: 2, cancelled: 1 },
-    { ...makeJob('cancelled', [success, { index: 1, status: 'cancelled' }]), cancelled: 0 },
-    makeJob('cancelled', [{ index: 0, status: 'cancelled' }]),
+    { ...makeJob('cancelled', [success, { index: 2, status: 'cancelled' }]), cancelled: 0 },
+    makeJob('cancelled', [{ index: 1, status: 'cancelled' }]),
   ]) {
     const calls = [];
     const { controller } = harness(async (command, args) => {
       calls.push([command, args]);
       return command === 'retry_image_test'
-        ? makeJob('running', [{ index: 0, status: 'queued' }, { index: 1, status: 'running' }])
+        ? makeJob('running', [{ index: 1, status: 'queued' }, { index: 2, status: 'running' }])
         : cancelledJob;
     });
     await controller.start(request);
@@ -193,7 +194,7 @@ test('completed jobs with no missing slots cannot be retried', async () => {
   const calls = [];
   const { controller } = harness(async command => {
     calls.push(command);
-    return makeJob('completed', [{ index: 0, status: 'succeeded', path: 'saved.png' }]);
+    return makeJob('completed', [{ index: 1, status: 'succeeded', path: 'saved.png' }]);
   });
   await controller.start(request);
   await controller.retry();

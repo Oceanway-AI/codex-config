@@ -49,6 +49,10 @@ try {
   await expectText('#image-job-summary', '部分完成');
   await expectText('#image-generate-evidence', '部分通过');
   assert.equal(await page.locator('#image-results li[data-kind="succeeded"]').count(), 2);
+  assert.deepEqual(await page.locator('#image-results li > strong').allTextContents(), [
+    '模拟预览：#1 · 成功', '模拟预览：#2 · 失败', '模拟预览：#3 · 成功',
+  ]);
+  assert.equal(await page.locator('#image-results img').first().getAttribute('alt'), '模拟预览：图片 1');
   const successfulPreview = await page.locator('#image-results img').first().getAttribute('src');
   await page.locator('#retry-image-test').click();
   assert.equal(await calls('retry_image_test'), 0);
@@ -61,6 +65,7 @@ try {
   assert.equal(await calls('retry_image_test'), 1);
   await page.locator('#image-results button').first().click();
   assert.equal(await calls('open_image_result'), 1);
+  await page.waitForFunction(() => document.querySelector('#fixture-calls').dataset.openedIndex === '1');
   await page.locator('#pick-image-references').click();
   await expectText('#image-mode', '2 张参考图');
   await page.locator('#pick-image-references').click();
