@@ -511,6 +511,7 @@ pub async fn check_image_capabilities(model: String) -> Result<ImageCapabilities
     tauri::async_runtime::spawn_blocking(move || {
         let model = validate_model(&model)?;
         let provider = load_provider()?;
+        ensure_no_credential_in_values([model.as_str()], &provider.key)?;
         Ok(probe_capabilities(&provider, model))
     }).await.map_err(|_| "Image capability task failed.".to_string())?
 }
@@ -567,6 +568,7 @@ pub async fn test_image_api(
     tauri::async_runtime::spawn_blocking(move || {
         let request = validate_request(request)?;
         let provider = load_provider()?;
+        ensure_inputs_do_not_contain_key(&request, &provider.key)?;
         let references = load_references(&request.reference_paths)?;
         let (id, directory) = create_directory(&provider.home)?;
         let input = Input { request, provider, references, directory };
@@ -575,6 +577,7 @@ pub async fn test_image_api(
 }
 
 fn submit(shared: &Arc<Shared>, id: String, input: Input) -> Result<ImageJob, String> {
+    ensure_inputs_do_not_contain_key(&input.request, &input.provider.key)?;
     let mut registry = lock(shared)?;
     if registry.shutdown {
         return Err("Image jobs are shutting down.".into());
@@ -675,6 +678,25 @@ fn validate_model(model: &str) -> Result<String, String> {
         return Err("Model must be a nonblank model identifier, not a URL or filesystem path.".into());
     }
     Ok(model.into())
+}
+
+fn ensure_no_credential_in_values<'a>(
+    values: impl IntoIterator<Item = &'a str>,
+    key: &str,
+) -> Result<(), String> {
+    let key = key.trim();
+    if !key.is_empty() && values.into_iter().any(|value| value.contains(key)) {
+        return Err("An image input contains the saved API credential. Remove it before continuing.".into());
+    }
+    Ok(())
+}
+
+fn ensure_inputs_do_not_contain_key(request: &ImageTestRequest, key: &str) -> Result<(), String> {
+    ensure_no_credential_in_values(
+        [request.model.as_str(), request.prompt.as_str(), request.size.as_str()]
+            .into_iter().chain(request.reference_paths.iter().map(String::as_str)),
+        key,
+    )
 }
 
 fn validate_request(mut request: ImageTestRequest) -> Result<ImageTestRequest, String> {

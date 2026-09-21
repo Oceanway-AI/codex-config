@@ -307,8 +307,8 @@ fn manifest_persists_progress_without_keys_or_thumbnails_and_does_not_auto_resum
     let mock = Mock::new(|_, _| Reply::json(success()));
     let state = ImageJobs::default();
     let (id, mut input) = input(&home, &mock, 2);
-    input.request.prompt = format!("An accidentally pasted {MOCK_KEY}");
-    input.request.reference_paths = vec![format!("mock-reference-{MOCK_KEY}.png")];
+    input.request.prompt = "A saved prompt".into();
+    input.request.reference_paths = vec!["mock-reference.png".into()];
     let directory = input.directory.clone();
     submit(&state.shared, id.clone(), input).unwrap();
     let done = finished(&state, &id);
@@ -326,8 +326,8 @@ fn manifest_persists_progress_without_keys_or_thumbnails_and_does_not_auto_resum
     assert_eq!(manifest["count"], 2);
     assert_eq!(manifest["model"], "gpt-image-2");
     assert_eq!(manifest["size"], "1024x1024");
-    assert_eq!(manifest["prompt"], "An accidentally pasted [REDACTED]");
-    assert_eq!(manifest["referencePaths"][0], "mock-reference-[REDACTED].png");
+    assert_eq!(manifest["prompt"], "A saved prompt");
+    assert_eq!(manifest["referencePaths"][0], "mock-reference.png");
     assert_eq!(manifest["job"]["status"], "completed");
     assert_eq!(manifest["job"]["completed"], 2);
     assert_eq!(manifest["job"]["items"][0]["requestId"], "mock-request-1");
@@ -336,6 +336,39 @@ fn manifest_persists_progress_without_keys_or_thumbnails_and_does_not_auto_resum
     let reopened = ImageJobs::default();
     assert!(lock(&reopened.shared).unwrap().jobs.is_empty());
     assert_eq!(mock.count(), 2);
+}
+
+#[test]
+fn credentials_in_inputs_are_rejected_before_manifest_or_http_and_redaction_is_defense_in_depth() {
+    let home = TempHome::new();
+    let mock = Mock::new(|_, _| panic!("credential-bearing inputs must not POST"));
+    let state = ImageJobs::default();
+    for field in ["model", "prompt", "referencePaths", "size"] {
+        let (id, mut input) = input(&home, &mock, 1);
+        match field {
+            "model" => input.request.model = MOCK_KEY.into(),
+            "prompt" => input.request.prompt = format!("accidental {MOCK_KEY} paste"),
+            "referencePaths" => input.request.reference_paths.push(format!("C:/test/{MOCK_KEY}.png")),
+            "size" => input.request.size = MOCK_KEY.into(),
+            _ => unreachable!(),
+        }
+        let directory = input.directory.clone();
+        let error = submit(&state.shared, id, input).err().unwrap();
+        assert!(!error.contains(MOCK_KEY));
+        assert_eq!(fs::read_dir(directory).unwrap().count(), 0);
+    }
+    assert!(ensure_no_credential_in_values([MOCK_KEY], MOCK_KEY).is_err());
+    assert!(lock(&state.shared).unwrap().jobs.is_empty());
+    assert_eq!(mock.count(), 0);
+    let (id, mut input) = input(&home, &mock, 1);
+    input.request.prompt = format!("accidental {MOCK_KEY} paste");
+    input.request.model = MOCK_KEY.into();
+    input.request.reference_paths = vec![format!("reference-{MOCK_KEY}.png")];
+    let job = StoredJob::new(id, input);
+    persist_manifest(&job).unwrap();
+    let text = fs::read_to_string(job.input.directory.join("manifest.json")).unwrap();
+    assert!(!text.contains(MOCK_KEY));
+    assert!(text.contains("[REDACTED]"));
 }
 
 #[test]
