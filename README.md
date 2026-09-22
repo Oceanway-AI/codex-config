@@ -7,6 +7,7 @@ This repository only contains the Rust/Tauri version. The old Python/PyQt packag
 ## What It Does
 
 - Writes the OceanWay provider to Codex config.
+- Keeps the home screen to Base URL, API Key and one-click configuration, with history migration and restore directly accessible. Diagnostics, image tests, logs and maintenance are optional tools under `高级`.
 - Preserves an existing ChatGPT login and uses a provider token, or API-key authentication when no login exists.
 - Installs versioned direct-image HTTP rules in `developer_instructions`, preserving the user's existing instructions. No imagegen skill, built-in image tool, dedicated image CLI, or MCP is required by this route.
 - Defaults to `gpt-image-2`, honors an explicit model and any requested image count, and supports original-byte reference images and subsequent edits.
@@ -97,7 +98,7 @@ The app no longer adds local-image-extension headers. A legacy header is removed
 
 After configuration, save ongoing work, restart Codex Desktop and create a new task. The conversational model is unchanged; it is instructed to call the provider's image endpoint through general HTTP tools. Saving rules does not prove that a particular desktop build has loaded them.
 
-## Direct Image API (1.4.0-beta.2)
+## Direct Image API (1.4.0-beta.3)
 
 Both authentication modes receive a versioned, marker-delimited `developer_instructions` block and the following tool-subprocess environment:
 
@@ -117,7 +118,7 @@ Requested N images are scheduled as N slots, with at most two requests in flight
 
 Leaving the API Key field empty reuses the saved credential. Entering a new Key updates both authentication and the HTTP environment. The frontend and diagnostic reports never receive it. Commands launched by Codex can read the subprocess environment: use trusted repositories/tasks.
 
-This is a test-branch build, not a production release. Browser fixtures are simulations, never proof of live success. Desktop natural-language triggering, upload/paste/drop attachment access, and paid provider generation/edit tests require explicit user acceptance. See [beta acceptance checklist](docs/DIRECT_IMAGE_BETA.md).
+This is a test-branch build, not a production release. Browser fixtures are simulations, never proof of live success. Isolated live tests produced 13 real images, including natural-language multiple-image generation, references and continuation edits. One representative desktop reference-image workflow remains to be accepted; this is not a regression test of every built-in upload method. See [beta acceptance checklist](docs/DIRECT_IMAGE_BETA.md).
 
 ## History Visibility Migration
 
@@ -168,13 +169,15 @@ cd src-tauri
 cargo test
 ```
 
-## Diagnostics and Account Access
+## Optional Advanced Tools
 
-Starting with v1.3.0, the main window is organized as a configuration workspace:
+In beta 3, `高级` opens the optional diagnostic and maintenance dialog:
 
 - `问题诊断` runs read-only checks and can copy a redacted support report.
-- `运维工具` contains restart, repair, direct-image rule synchronization/testing, history migration, backup-directory access, and restore.
-- `额度与权限` uses a backend response type ready for balance, plan, sync time, and per-model permission data. It intentionally returns `reserved` and empty values until the OceanWay customer account API is connected.
+- `运维工具` contains connection testing, restart, repair, direct-image rule synchronization, backup-directory access and update checks.
+- `配置日志` keeps the last 200 entries for this application session.
+- Image testing is separate from configuration and requires explicit payment confirmation.
+- History migration and restore remain on the home screen. The reserved account/quota backend has no home-screen controls or simulated live balance.
 
 ## Signed Auto Update
 

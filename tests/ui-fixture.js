@@ -1,7 +1,8 @@
 // This file is served ONLY by serve-fixture.mjs, never packaged with the app.
 (() => {
   window.__IMAGE_API_SIMULATION__ = true;
-  let saved = false, baseUrl = 'https://example.invalid';
+  let saved = new URL(location.href).searchParams.has('saved'), baseUrl = 'https://example.invalid';
+  const scenario = window.__UI_FIXTURE__ = { delay: 40, migration: 'needed', restart: true };
   let imageJob = null, ticks = 0, retried = false, serial = 0;
   const imageCounts = () => {
     imageJob.completed = imageJob.items.filter(item => item.status === 'succeeded').length;
@@ -26,13 +27,28 @@
     calls.push(name);
     const output = document.querySelector('#fixture-calls');
     if (output) output.textContent = calls.join(' → ');
-    await new Promise(resolve => setTimeout(resolve, 40));
+    await new Promise(resolve => setTimeout(resolve, scenario.delay));
     const failure = document.querySelector('#fixture-failure')?.value;
     if (failure === name) throw new Error('模拟故障 sk-fake-acceptance');
     if (name === 'configure_provider') { saved = true; baseUrl = args.baseUrl; return {}; }
     if (name === 'get_config_status') return { configured:saved, hasApiKey:saved, directImageConfigured:saved, baseUrl };
-    if (name === 'restart_codex') return { restarted:true };
-    if (name === 'restore_defaults') { saved=false; return {}; }
+    if (name === 'restart_codex') return { restarted: scenario.restart, message: scenario.restart ? '模拟重启' : '模拟：配置已保存，隔离环境不重启全局 Codex' };
+    if (name === 'restore_defaults') {
+      saved = false;
+      if (scenario.failRestoreReadback) document.querySelector('#fixture-failure').value = 'get_config_status';
+      return { historyMigrationRestore: { restoredBackups: 1, restoredSessionFiles: 2, sqliteRowsRestored: 2 } };
+    }
+    if (name === 'get_history_migration_status') return {
+      migrationSupported: saved && scenario.migration !== 'unsupported',
+      needsMigration: scenario.migration === 'needed',
+      rolloutFilesToUpdate: 2, sqliteRowsToUpdate: 2, encryptedContentFiles: 1,
+      providerCounts: [{ provider: 'OpenAI', files: 2 }],
+    };
+    if (name === 'migrate_history_visibility') {
+      scenario.migration = 'done';
+      return { changedSessionFiles: 2, sqliteRowsUpdated: 2 };
+    }
+    if (name === 'test_connection') return { ok: true, endpoint: `${args.baseUrl}/v1/models`, message: '模拟连接可用' };
     if (name === 'get_system_info') return { osName:'隔离测试', codexVersion:'模拟版本' };
     if (name === 'run_diagnostics') return { passed:1, checks:[{status:'pass',label:'模拟诊断',detail:'不进行网络请求'}] };
     if (name === 'check_image_capabilities') return { model: args.model, available: true, models: ['gpt-image-2', 'simulation-custom-model'], endpoint: `${baseUrl}/v1/models`, message: '模拟模型列表，不代表真实能力' };

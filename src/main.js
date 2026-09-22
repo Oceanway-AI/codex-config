@@ -54,10 +54,9 @@ const restartDialogDetail = $("#restart-dialog-detail");
 const confirmRestartButton = $("#confirm-restart-button");
 const updateButton = $("#update-button");
 const updateStatus = $("#update-status");
-const setupPanel = $(".setup-panel");
-const sideColumn = $(".side-column");
-const healthPanel = $(".health-panel");
-const desktopLayoutQuery = window.matchMedia("(min-width: 761px)");
+const advancedDialog = $("#advanced-dialog");
+const configurationProgress = $("#configuration-progress");
+const mutationControls = '#config-form input, #config-form button, #tools-panel button, [data-config-mutation], #configuration-recovery button, #update-button, #confirm-restore-button, #confirm-restart-button';
 
 let currentStatus = {
   configured: false,
@@ -84,28 +83,6 @@ let pendingImagePayment = null;
 let imageLockedControls = null;
 let lastRecordedImageJob = '';
 
-function syncColumnHeights() {
-  if (!desktopLayoutQuery.matches) {
-    sideColumn.style.removeProperty("height");
-    sideColumn.style.removeProperty("--control-panel-max-height");
-    return;
-  }
-
-  const setupHeight = Math.ceil(setupPanel.getBoundingClientRect().height);
-  const healthHeight = Math.ceil(healthPanel.getBoundingClientRect().height);
-  const columnGap = Number.parseFloat(getComputedStyle(sideColumn).gap) || 14;
-  const controlMaxHeight = Math.max(0, setupHeight - healthHeight - columnGap);
-  if (sideColumn.style.height !== `${setupHeight}px`) sideColumn.style.height = `${setupHeight}px`;
-  if (sideColumn.style.getPropertyValue('--control-panel-max-height') !== `${controlMaxHeight}px`) {
-    sideColumn.style.setProperty("--control-panel-max-height", `${controlMaxHeight}px`);
-  }
-}
-
-const layoutResizeObserver = new ResizeObserver(syncColumnHeights);
-layoutResizeObserver.observe(setupPanel);
-layoutResizeObserver.observe(healthPanel);
-desktopLayoutQuery.addEventListener("change", syncColumnHeights);
-
 function setDot(element, kind) {
   element.dataset.kind = kind || "muted";
 }
@@ -116,7 +93,10 @@ function setStatus(message, kind = "") {
   configurationLog?.append(message, kind || 'info');
   statusMessage.textContent = message;
   statusBox.dataset.kind = kind;
-  statusBox.hidden = !message;
+  statusBox.hidden = !message || configuring;
+  $('#advanced-status').textContent = message;
+  $('#advanced-status').dataset.kind = kind;
+  $('#advanced-status').hidden = !message;
 }
 
 function setButtonBusy(button, busy, busyText) {
@@ -159,9 +139,8 @@ function updateProgress(status) {
   if (configurationPhase !== 'idle') return;
   if (formDirty) return;
   activationState.textContent = previewLabel(status.configured ? '配置已保存' : '等待配置');
-  activationState.dataset.kind = 'warning';
-  nextStepTitle.textContent = '点击一次，自动完成配置与重启';
-  nextStepDetail.textContent = '请先保存 Codex / ChatGPT 中的任务。执行进度显示在右侧配置日志，不需要逐步确认。';
+  activationState.dataset.kind = status.configured ? 'success' : 'muted';
+  configurationProgress.hidden = true;
 }
 
 function renderConfigStatus(status) {
@@ -195,12 +174,12 @@ function renderConfigStatus(status) {
     ? "直连配置已安装；实际能力需单独测试。"
     : "尚未同步；完成主配置时会自动处理。");
 
-  topbarStateText.textContent = ready
-    ? "核心配置已就绪"
+  topbarStateText.textContent = formDirty ? "修改未保存" : ready
+    ? "配置已保存"
     : status.configured
       ? "图片能力待同步"
       : "等待完成配置";
-  setDot(topbarStateDot, ready ? "success" : "warning");
+  setDot(topbarStateDot, ready && !formDirty ? "success" : "warning");
   topbarStateText.textContent = previewLabel(topbarStateText.textContent);
   updateProgress(status);
   renderImageControls();
@@ -244,7 +223,7 @@ async function refreshStatus() {
         codexHost: "ChatGPT",
         codexRunning: true,
       });
-      return;
+      return true;
     }
 
     const [status, info] = await Promise.all([
@@ -253,6 +232,7 @@ async function refreshStatus() {
     ]);
     renderConfigStatus(status);
     renderSystemInfo(info);
+    return true;
   } catch (error) {
     serviceStatus.textContent = "读取失败";
     imageStatus.textContent = "未知";
@@ -260,6 +240,7 @@ async function refreshStatus() {
     [serviceDot, imageDot, codexDot, topbarStateDot].forEach((dot) => setDot(dot, "error"));
     topbarStateText.textContent = "本机状态读取失败";
     setStatus(`读取本机状态失败：${error}`, "error");
+    return false;
   } finally {
     refreshStatusButton.disabled = false;
   }
@@ -283,6 +264,7 @@ function renderConfigurationProgress(phase, blocked = false) {
 let blockedPhase = null;
 function resetConfigurationProgress() {
   configurationPhase = 'idle'; blockedPhase = null;
+  configurationProgress.hidden = true;
   $('#configuration-recovery').hidden = true;
   renderConfigurationProgress('idle');
   setStatus('');
@@ -293,7 +275,7 @@ async function runMaintenance(operation) {
   if (configuring || maintenanceRunning || imageController?.locked || imageAuxBusy) return;
   maintenanceRunning = true;
   renderImageControls();
-  const controls = [...document.querySelectorAll('#config-form input, #config-form button, #tools-panel button, #update-button')];
+  const controls = [...document.querySelectorAll(mutationControls)];
   const disabled = controls.map(control => control.disabled);
   controls.forEach(control => { control.disabled = true; });
   try { await operation(); } finally {
@@ -311,10 +293,10 @@ async function configureProvider(event, resumeFrom = 'writing') {
   renderImageControls();
   blockedPhase = null;
   $('#configuration-recovery').hidden = true;
-  setTab($('#logs-tab'));
+  configurationProgress.hidden = false;
   setButtonBusy(configureButton, true, '自动配置中…');
   apiKeyInput.disabled = baseUrlInput.disabled = true;
-  const actionButtons = [...document.querySelectorAll('#tools-panel button, #test-button, #refresh-status-button, #update-button')];
+  const actionButtons = [...document.querySelectorAll('#tools-panel button, [data-config-mutation], #configuration-recovery button, #refresh-status-button, #update-button, #confirm-restore-button, #confirm-restart-button')];
   const previousDisabled = actionButtons.map(button => button.disabled);
   actionButtons.forEach(button => { button.disabled = true; });
   const onStage = (phase, message) => {
@@ -323,7 +305,7 @@ async function configureProvider(event, resumeFrom = 'writing') {
     activationState.textContent = previewLabel(phase === 'complete' ? '配置完成' : '执行中');
     activationState.dataset.kind = phase === 'complete' ? 'success' : 'warning';
     nextStepTitle.textContent = previewLabel(message);
-    nextStepDetail.textContent = phase === 'complete' ? '无需继续确认。实际图片能力请在新任务使用时确认。' : '请稍候，详细进度见右侧配置日志。';
+    nextStepDetail.textContent = '';
     setStatus(message, phase === 'complete' ? 'success' : '');
   };
   try {
@@ -337,14 +319,18 @@ async function configureProvider(event, resumeFrom = 'writing') {
       formDirty = false; renderConfigStatus(status);
     }, resumeFrom });
     apiKeyInput.value = ''; apiKeyInput.type = 'password';
+    toggleKeyButton.title = '显示 API Key';
+    toggleKeyButton.setAttribute('aria-label', toggleKeyButton.title);
+    configurationProgress.hidden = true;
   } catch (error) {
     blockedPhase = configurationPhase;
     renderConfigurationProgress(blockedPhase, true);
     configurationPhase = 'failed';
-    activationState.textContent = '配置未完成'; activationState.dataset.kind = 'error';
-    nextStepTitle.textContent = `自动流程已停止：${redactLogMessage(String(error), [values.apiKey].filter(Boolean))}`;
+    activationState.textContent = blockedPhase === 'restarting' ? '已保存，待重启' : '配置未完成';
+    activationState.dataset.kind = blockedPhase === 'restarting' ? 'warning' : 'error';
+    nextStepTitle.textContent = previewLabel(redactLogMessage(String(error), [values.apiKey].filter(Boolean)));
     nextStepDetail.textContent = blockedPhase === 'restarting'
-      ? '请保存任务并手动退出 Codex / ChatGPT，再点击“重试重启并继续”。不会重复写入配置。'
+      ? '配置已保存。请保存任务后手动重启目标 Codex；隔离环境不会重启你正在使用的 Codex。重试不会重复写入。'
       : blockedPhase === 'checking'
         ? '请在问题诊断中检查或修复配置，再点击“重新检查并继续”。'
         : '请检查 Key、地址及配置目录权限，修改后点击“重试写入并继续”。';
@@ -353,6 +339,7 @@ async function configureProvider(event, resumeFrom = 'writing') {
     setStatus(String(error), 'error');
   } finally {
     configuring = false;
+    statusBox.hidden = !statusMessage.textContent || configurationPhase === 'failed';
     apiKeyInput.disabled = baseUrlInput.disabled = false;
     actionButtons.forEach((button, index) => { button.disabled = previousDisabled[index]; });
     setButtonBusy(configureButton, false);
@@ -467,7 +454,7 @@ async function copySupportReport() {
       await invoke("copy_support_report");
     } else {
       await navigator.clipboard?.writeText(
-        `模拟预览 OceanWay Codex Config v1.4.0-beta.2\n模拟诊断通过 ${lastDiagnosticReport.passed ?? lastDiagnosticReport.passedCount ?? 0} 项\n敏感凭据：已脱敏`,
+        `模拟预览 OceanWay Codex Config v1.4.0-beta.3\n模拟诊断通过 ${lastDiagnosticReport.passed ?? lastDiagnosticReport.passedCount ?? 0} 项\n敏感凭据：已脱敏`,
       );
     }
     setStatus("脱敏诊断报告已复制，不包含完整 API Key 或访问令牌。", "success");
@@ -543,6 +530,7 @@ function historyProviderCountText(providerCounts = []) {
 }
 
 async function refreshHistoryStatus() {
+  historyRowDetail.hidden = false;
   if (!invoke) {
     historyRowDetail.textContent = "模拟预览：未读取真实历史记录。";
     return;
@@ -629,19 +617,22 @@ async function restoreDefaults() {
         hasApiKey: false,
         directImageConfigured: false,
       });
-      setStatus("界面预览：默认配置恢复完成。", "success");
+      setStatus("界面预览：原配置恢复完成。", "success");
       return;
     }
     const result = await invoke("restore_defaults");
     apiKeyInput.value = "";
     formDirty = false;
     resetConfigurationProgress();
-    await refreshStatus();
+    const refreshed = await refreshStatus();
     const restored = result.historyMigrationRestore;
     const historyText = restored?.restoredBackups
       ? ` 同时撤销 ${restored.restoredSessionFiles} 个历史文件和 ${restored.sqliteRowsRestored} 行索引迁移。`
       : "";
-    setStatus(`已恢复默认配置。${historyText} 请重启 Codex。`, "success");
+    setStatus(refreshed
+      ? `已恢复原配置。${historyText} 请重启 Codex。`
+      : `已恢复原配置，但本机状态读取失败，尚未确认当前状态。${historyText} 请在高级中刷新状态。`,
+    refreshed ? "success" : "warning");
   } catch (error) {
     setStatus(`恢复失败：${error}`, "error");
   } finally {
@@ -651,15 +642,19 @@ async function restoreDefaults() {
 
 function setTab(button) {
   if (button.getAttribute('aria-selected') === 'true') return;
-  for (const tab of document.querySelectorAll(".tab-button")) {
+  for (const tab of advancedDialog.querySelectorAll(".tab-button")) {
     const active = tab === button;
     tab.classList.toggle("is-active", active);
     tab.setAttribute("aria-selected", String(active));
+    tab.tabIndex = active ? 0 : -1;
     const panel = document.getElementById(tab.getAttribute("aria-controls"));
     panel.hidden = !active;
   }
-  // Navigation only: history scanning is explicitly triggered by the migration action.
-  // ResizeObserver handles actual size changes without forcing layout on every tab click.
+}
+
+function openAdvanced(tab) {
+  if (tab) setTab(tab);
+  if (!advancedDialog.open) advancedDialog.showModal();
 }
 
 function toggleApiKeyVisibility() {
@@ -732,7 +727,7 @@ function imageBlockReason() {
 function syncImageLock() {
   const locked = imageController?.locked || imageAuxBusy;
   if (locked && !imageLockedControls) {
-    const controls = [...document.querySelectorAll('#config-form input, #config-form button, #tools-panel button, #configuration-recovery button, #update-button, #confirm-restore-button, #confirm-restart-button')];
+    const controls = [...document.querySelectorAll(mutationControls)];
     imageLockedControls = controls.map(control => [control, control.disabled]);
     controls.forEach(control => { control.disabled = true; });
   } else if (!locked && imageLockedControls) {
@@ -957,10 +952,15 @@ window.addEventListener('pagehide', () => imageController.dispose());
 configurationLog = createConfigurationLog({ $, getSecret: () => apiKeyInput.value.trim() });
 configForm.addEventListener("submit", configureProvider);
 $('#retry-configuration').addEventListener('click', event => configureProvider(event, blockedPhase || 'writing'));
-$('#configuration-diagnostics').addEventListener('click', () => setTab($('#diagnosis-tab')));
+$('#configuration-diagnostics').addEventListener('click', () => openAdvanced($('#diagnosis-tab')));
+$('#view-configuration-log').addEventListener('click', () => openAdvanced($('#logs-tab')));
+$('#open-advanced-button').addEventListener('click', () => openAdvanced());
+$('#close-advanced-button').addEventListener('click', () => advancedDialog.close());
 // Edited inputs describe a new configuration, so an interrupted run cannot skip writing them.
 for (const input of [apiKeyInput, baseUrlInput]) input.addEventListener('input', () => {
   formDirty = true;
+  topbarStateText.textContent = previewLabel('修改未保存');
+  setDot(topbarStateDot, 'warning');
   imageEvidence.invalidate();
   $('#image-capability-message').textContent = '';
   renderImageControls();
@@ -989,11 +989,19 @@ openDirButton.addEventListener("click", openConfigDirectory);
 restoreButton.addEventListener("click", openRestoreDialog);
 confirmRestoreButton.addEventListener("click", () => runMaintenance(restoreDefaults));
 updateButton.addEventListener("click", () => handleUpdate());
-for (const tab of document.querySelectorAll(".tab-button")) {
+const tabs = [...advancedDialog.querySelectorAll(".tab-button")];
+for (const [index, tab] of tabs.entries()) {
+  tab.tabIndex = tab.getAttribute('aria-selected') === 'true' ? 0 : -1;
   tab.addEventListener("click", () => setTab(tab));
+  tab.addEventListener('keydown', event => {
+    const next = { ArrowRight: (index + 1) % tabs.length, ArrowLeft: (index + tabs.length - 1) % tabs.length, Home: 0, End: tabs.length - 1 }[event.key];
+    if (next === undefined) return;
+    event.preventDefault();
+    setTab(tabs[next]);
+    tabs[next].focus();
+  });
 }
 
-syncColumnHeights();
 await refreshStatus();
 if (invoke) {
   window.setTimeout(() => handleUpdate({ silent: true }), 900);
