@@ -21,6 +21,8 @@ Explicitly authorized tests on September 22, 2026 used the installed beta with a
 - At test time, `gpt-5.4` returned an upstream 502 even on a minimal authenticated request; `gpt-5.6-sol` answered successfully. Model visibility alone does not establish service health.
 - `tests/isolated-live-session.mjs` is an opt-in harness for the actual installed application's native commands. Credentials enter via its private stdin channel, not arguments or source files. It deliberately calls configuration commands without the UI's restart action.
 - `tests/isolated-agent-session.mjs` starts a separate Codex app-server, not the currently running desktop. Its evidence must not be presented as desktop upload/paste/drop acceptance.
+- A custom `CODEX_HOME` is refused by automatic desktop restart unless it resolves to the normal home. Configuration remains saved; this prevents an isolated setup from closing the main desktop.
+- Initial natural-language testing attempted an imagegen skill read and guessed the normal configuration path. The approval gate cancelled that request before execution. The revised managed rules require runtime-home discovery before any configuration read and explicitly prohibit raw configuration/credential dumps.
 - Reports, test credentials, session logs and output images belong under ignored `dist/isolated-tests/`, never in Git. Stop private helper processes after testing.
 
 ## Explicit User Checks

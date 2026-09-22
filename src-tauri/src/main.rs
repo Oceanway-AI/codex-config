@@ -2631,7 +2631,21 @@ fn is_codex_running() -> bool {
         })
 }
 
+fn restart_home_is_default(active: &Path, default: &Path) -> bool {
+    match (fs::canonicalize(active), fs::canonicalize(default)) {
+        (Ok(active), Ok(default)) => active == default,
+        _ => false,
+    }
+}
+
 fn restart_codex_desktop() -> Result<RestartCodexResult, String> {
+    if env::var_os("CODEX_HOME").is_some() {
+        let active = codex_home()?;
+        let default = dirs::home_dir().map(|home| home.join(".codex"));
+        if !default.as_ref().is_some_and(|default| restart_home_is_default(&active, default)) {
+            return Err("配置已保存到自定义 CODEX_HOME。无法确认桌面宿主使用同一目录，已阻止自动重启，不会关闭正在运行的 Codex。".into());
+        }
+    }
     #[cfg(target_os = "macos")]
     {
         let process_list = macos_process_list().unwrap_or_default();
@@ -3246,6 +3260,19 @@ mod tests {
         assert_eq!(read_provider_bool(&rendered, PROVIDER_ID, "requires_openai_auth"), Some(true));
         assert!(!rendered.contains("local-image-extension"));
         assert!(!rendered.contains("experimental_bearer_token"));
+    }
+
+    #[test]
+    fn isolated_home_cannot_restart_default_desktop() {
+        let dir = unique_test_dir("restart-home-guard");
+        let normal = dir.join("normal");
+        let isolated = dir.join("isolated");
+        fs::create_dir_all(&normal).unwrap();
+        fs::create_dir_all(&isolated).unwrap();
+        assert!(restart_home_is_default(&normal, &normal));
+        assert!(!restart_home_is_default(&isolated, &normal));
+        assert!(!restart_home_is_default(&normal, &dir.join("missing")));
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
