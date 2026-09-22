@@ -2641,7 +2641,8 @@ fn restart_home_is_default(active: &Path, default: &Path) -> bool {
 fn restart_codex_desktop() -> Result<RestartCodexResult, String> {
     if env::var_os("CODEX_HOME").is_some() {
         let active = codex_home()?;
-        let default = dirs::home_dir().map(|home| home.join(".codex"));
+        let default = env::var_os("HOME").or_else(|| env::var_os("USERPROFILE"))
+            .map(|home| PathBuf::from(home).join(".codex"));
         if !default.as_ref().is_some_and(|default| restart_home_is_default(&active, default)) {
             return Err("配置已保存到自定义 CODEX_HOME。无法确认桌面宿主使用同一目录，已阻止自动重启，不会关闭正在运行的 Codex。".into());
         }
