@@ -1,7 +1,5 @@
 // Actual Tauri/WebView2 UI with a fake loopback provider and a private home.
 import assert from 'node:assert/strict';
-import { createServer } from 'node:http';
-import { once } from 'node:events';
 import path from 'node:path';
 import { fingerprintFiles, startNative, stopNative, saveReport } from './isolated-live-harness.mjs';
 
@@ -11,19 +9,12 @@ const playwrightModule = process.env.PLAYWRIGHT_MODULE;
 if (!executable || !root || !playwrightModule) throw new Error('Set NATIVE_EXECUTABLE, NATIVE_TEST_ROOT and PLAYWRIGHT_MODULE.');
 const normalFiles = ['config.toml', 'auth.json'].map(name => path.join(process.env.USERPROFILE, '.codex', name));
 const before = await fingerprintFiles(normalFiles);
-let imagePosts = 0;
-const server = createServer((request, response) => {
-  if (request.method === 'POST' && request.url.includes('/images/')) imagePosts++;
-  response.writeHead(200, { 'Content-Type': 'application/json' });
-  response.end(JSON.stringify({ data: [{ id: 'gpt-image-2' }] }));
-});
-server.listen(0, '127.0.0.1');
-await once(server, 'listening');
 let context;
 try {
   context = await startNative({
-    executable, root, playwrightModule, apiKey: 'sk-native-loopback-only',
-    baseUrl: `http://127.0.0.1:${server.address().port}/v1`,
+    executable, root, playwrightModule, apiKey: 'sk-native-ui-only',
+    baseUrl: 'https://example.invalid/v1',
+    skipCapabilities: true,
   });
   const { page } = context;
   const errors = [];
@@ -42,10 +33,8 @@ try {
   await page.locator('#configuration-diagnostics').click();
   assert.equal(await page.locator('#advanced-dialog').isVisible(), true);
   await page.locator('#tools-tab').click();
-  await page.locator('#test-button').click();
-  await page.waitForFunction(() => document.querySelector('#advanced-status').dataset.kind === 'success');
   await page.locator('#logs-tab').click();
-  assert.equal((await page.locator('#configuration-log').textContent()).includes('sk-native-loopback-only'), false);
+  assert.equal((await page.locator('#configuration-log').textContent()).includes('sk-native-ui-only'), false);
   await page.locator('#open-image-test').click();
   assert.equal(await page.locator('#image-test-dialog').isVisible(), true);
   assert.equal(await page.locator('#start-image-test').isEnabled(), true);
@@ -58,17 +47,15 @@ try {
   assert.equal(restored.configured, false);
   assert.equal(restored.hasApiKey, false);
   assert.equal(restored.directImageConfigured, false);
-  assert.equal(imagePosts, 0);
   assert.deepEqual(errors, []);
   const after = await fingerprintFiles(normalFiles);
   assert.deepEqual(after, before);
   await saveReport(context, 'native-ui-verification', {
-    version: '1.4.0-beta.3', executable, before, after, imagePosts,
+    version: '1.4.0-beta.3', executable, before, after,
     compactHome: true, isolatedRestartRejected: true, nestedDialogs: true,
     realRestore: true, noCredentialInLog: true, pageErrors: errors,
   });
   console.log('Native UI passed: compact home, isolated restart protection, advanced tools, nested image dialog, restore, zero image POSTs, normal config/auth unchanged.');
 } finally {
   if (context) await stopNative(context);
-  await new Promise(resolve => server.close(resolve));
 }

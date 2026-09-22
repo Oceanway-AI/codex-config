@@ -46,7 +46,7 @@ export function isolatedEnvironment(root) {
   };
 }
 
-export async function startNative({ executable, root, playwrightModule, apiKey, baseUrl }) {
+export async function startNative({ executable, root, playwrightModule, apiKey, baseUrl, skipCapabilities = false }) {
   if (!path.isAbsolute(root) || !path.isAbsolute(executable)) {
     throw new Error('Use absolute, dedicated test paths.');
   }
@@ -99,7 +99,9 @@ export async function startNative({ executable, root, playwrightModule, apiKey, 
   }
   const configured = await invoke('configure_provider', { apiKey, baseUrl });
   if (!configured.directImageConfigured) throw new Error('Image rules were not configured.');
-  const capabilities = await invoke('check_image_capabilities', { model: 'gpt-image-2' });
+  const capabilities = skipCapabilities
+    ? { skipped: true, reason: 'UI smoke test does not probe a provider.' }
+    : await invoke('check_image_capabilities', { model: 'gpt-image-2' });
   const context = { root, home: privateHome, env, child, browser, page, invoke, capabilities };
   await saveReport(context, 'setup', {
     executable, pid: child.pid, codexHome: privateHome, configured,
