@@ -467,7 +467,7 @@ async function copySupportReport() {
       await invoke("copy_support_report");
     } else {
       await navigator.clipboard?.writeText(
-        `模拟预览 OceanWay Codex Config v1.4.0-beta.1\n模拟诊断通过 ${lastDiagnosticReport.passed ?? lastDiagnosticReport.passedCount ?? 0} 项\n敏感凭据：已脱敏`,
+        `模拟预览 OceanWay Codex Config v1.4.0-beta.2\n模拟诊断通过 ${lastDiagnosticReport.passed ?? lastDiagnosticReport.passedCount ?? 0} 项\n敏感凭据：已脱敏`,
       );
     }
     setStatus("脱敏诊断报告已复制，不包含完整 API Key 或访问令牌。", "success");

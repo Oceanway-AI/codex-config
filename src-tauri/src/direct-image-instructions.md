@@ -1,5 +1,5 @@
 <!-- OCEANWAY:DIRECT-IMAGE-API:BEGIN -->
-Direct image API rules, version 1.4.0-beta.1.
+Direct image API rules, version 1.4.0-beta.2.
 
 When the user naturally asks you to create images, generate visual assets, make variations from reference images, or edit a previous result, use general-purpose HTTP execution tools to call the current provider's image API. The user need not name an API, model, skill, or command. Do not generate images for image analysis, discussion, or a prompt-only request. Do not use an imagegen skill, a built-in image generation tool, a dedicated image CLI, or a new MCP for this route. Respect higher-priority instructions and normal permission controls; if they prevent this route, explain the conflict instead of claiming success.
 

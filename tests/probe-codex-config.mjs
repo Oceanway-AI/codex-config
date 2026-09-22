@@ -10,11 +10,15 @@ import { crc32 } from 'node:zlib';
 
 const executable = process.argv[2];
 if (!executable) throw new Error('Pass the absolute path to a Codex executable.');
+const authMode = process.argv[3] || 'apiKey';
+assert.ok(['apiKey', 'providerToken', 'missingAuth'].includes(authMode), 'Unknown auth mode.');
+const fakeKey = 'fake-local-probe';
 const home = await fs.mkdtemp(path.join(os.tmpdir(), 'oceanway-codex-runtime-'));
 const workspace = path.join(home, 'workspace');
 await fs.mkdir(workspace);
 const rules = await fs.readFile(new URL('../src-tauri/src/direct-image-instructions.md', import.meta.url), 'utf8');
 const requests = [];
+const authorization = [];
 const server = http.createServer(async (req, res) => {
   const chunks = [];
   for await (const chunk of req) chunks.push(chunk);
@@ -30,6 +34,7 @@ const server = http.createServer(async (req, res) => {
   const decoded = encoding === 'zstd' ? zlib.zstdDecompressSync(bytes)
     : encoding === 'gzip' ? zlib.gunzipSync(bytes) : bytes;
   requests.push(JSON.parse(decoded.toString()));
+  authorization.push(req.headers.authorization === `Bearer ${fakeKey}`);
   res.writeHead(200, { 'Content-Type': 'text/event-stream' });
   const item = { type: 'message', id: 'msg_probe', role: 'assistant', status: 'completed',
     content: [{ type: 'output_text', text: 'Local transport probe complete.', annotations: [] }] };
@@ -55,10 +60,11 @@ const config = [
   'name = "Local test only"',
   `base_url = "http://127.0.0.1:${port}/v1"`,
   'wire_api = "responses"',
-  'requires_openai_auth = false',
-  'experimental_bearer_token = "fake-local-probe"',
+  `requires_openai_auth = ${authMode !== 'missingAuth'}`,
+  ...(authMode === 'providerToken' ? [`experimental_bearer_token = "${fakeKey}"`] : []),
 ].join('\n');
 await fs.writeFile(path.join(home, 'config.toml'), config);
+await fs.writeFile(path.join(home, 'auth.json'), JSON.stringify({ OPENAI_API_KEY: fakeKey }));
 const imagePath = path.join(workspace, 'reference.png');
 const imageBytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a8LsAAAAASUVORK5CYII=', 'base64');
 for (let offset = 8; offset < imageBytes.length;) {
@@ -82,6 +88,8 @@ try {
   const [code] = await once(child, 'exit');
   assert.equal(code, 0, stderr.slice(-3000));
   assert.ok(requests.length > 0, 'No local model request captured.');
+  assert.equal(authorization[0], authMode !== 'missingAuth',
+    'Codex did not send the expected Authorization header.');
   const serialized = JSON.stringify(requests[0]);
   assert.ok(serialized.includes('OCEANWAY:DIRECT-IMAGE-API:BEGIN'), 'User-level developer instructions missing.');
   assert.ok(requests[0].input.some(item => item.role === 'developer'
@@ -89,9 +97,12 @@ try {
   assert.ok(serialized.includes('input_image'), `Image was not included in model input: ${JSON.stringify(
     requests[0].input.filter(item => item.role === 'user')
   ).slice(-1500)} ${stderr.slice(-1000)}`);
+  assert.ok(serialized.includes(imagePath.replaceAll('\\', '\\\\')),
+    'The original readable reference path was not supplied to the model.');
   const report = {
     scope: 'Local Codex executable transport only, not desktop natural-language acceptance',
     instructionInjection: true, imageInModelInput: true,
+    authMode, expectedBearerHeader: authorization[0],
     originalImagePathInPrompt: serialized.includes(imagePath.replaceAll('\\', '\\\\')),
     modelRequests: requests.length, paidRequests: 0,
     codexHome: home,

@@ -1,6 +1,6 @@
 # Direct Image API Beta Acceptance
 
-Version: 1.4.0-beta.1. Branch: `codex/direct-image-api`.
+Version: 1.4.0-beta.2. Branch: `codex/direct-image-api`.
 
 This branch is for local user testing. It must not be merged or published as a production update before desktop and service acceptance.
 
@@ -10,7 +10,18 @@ This branch is for local user testing. It must not be merged or published as a p
 - `cargo test`: temporary-home configuration, preservation, rollback, image mock server, queue/partial failure/cancellation.
 - GitHub Actions: Windows and both macOS architectures; no local Rust/MSVC required by end users.
 - Download artifacts only from the run whose head SHA matches the test branch commit.
-- Optional `node tests/probe-codex-config.mjs <absolute-codex-executable>` runs against a loopback fake Responses server with an isolated temporary `CODEX_HOME`. On this workstation's `codex-cli 0.155.0-alpha.9`, it verified user-level rules in a developer message and a CLI reference image with both input bytes and a local path. This is not desktop upload/paste/drop or natural-language-routing acceptance.
+- Optional `node tests/probe-codex-config.mjs <absolute-codex-executable> <auth-mode>` runs against a loopback fake Responses server with an isolated temporary `CODEX_HOME`. Modes are `apiKey` (default), `providerToken`, and `missingAuth` (negative control). It asserts the actual Bearer header, user-level rules in a developer message, and a CLI reference image with both input bytes and the original local path. This is not desktop upload/paste/drop or natural-language-routing acceptance.
+
+## Isolated Live Verification
+
+Explicitly authorized tests on September 22, 2026 used the installed beta with a separate `CODEX_HOME`, workspace, process and WebView2 profile. The normal Codex configuration/authentication were fingerprinted without logging their contents; no desktop restart was invoked.
+
+- `gpt-image-2`: native generation 1/1, single-reference edit 1/1, and two-reference edits 2/2 returned real PNG files with request IDs and no response warnings.
+- A fresh API-key setup exposed a missing Authorization header on `/responses`. Beta 2 sets `requires_openai_auth = true` for the `auth.json` strategy. Loopback runtime probes reproduce the old failure and verify both supported authentication strategies.
+- At test time, `gpt-5.4` returned an upstream 502 even on a minimal authenticated request; `gpt-5.6-sol` answered successfully. Model visibility alone does not establish service health.
+- `tests/isolated-live-session.mjs` is an opt-in harness for the actual installed application's native commands. Credentials enter via its private stdin channel, not arguments or source files. It deliberately calls configuration commands without the UI's restart action.
+- `tests/isolated-agent-session.mjs` starts a separate Codex app-server, not the currently running desktop. Its evidence must not be presented as desktop upload/paste/drop acceptance.
+- Reports, test credentials, session logs and output images belong under ignored `dist/isolated-tests/`, never in Git. Stop private helper processes after testing.
 
 ## Explicit User Checks
 

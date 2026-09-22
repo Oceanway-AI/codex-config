@@ -84,7 +84,7 @@ disable_response_storage = true
 name = "OceanWay"
 base_url = "https://ocean-way.top"
 wire_api = "responses"
-requires_openai_auth = false
+requires_openai_auth = true
 ```
 
 The app no longer adds local-image-extension headers. A legacy header is removed only when its value matches this tool's old managed value. API-key authentication preserves other existing auth fields:
@@ -97,7 +97,7 @@ The app no longer adds local-image-extension headers. A legacy header is removed
 
 After configuration, save ongoing work, restart Codex Desktop and create a new task. The conversational model is unchanged; it is instructed to call the provider's image endpoint through general HTTP tools. Saving rules does not prove that a particular desktop build has loaded them.
 
-## Direct Image API (1.4.0-beta.1)
+## Direct Image API (1.4.0-beta.2)
 
 Both authentication modes receive a versioned, marker-delimited `developer_instructions` block and the following tool-subprocess environment:
 

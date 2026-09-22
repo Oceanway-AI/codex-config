@@ -1570,7 +1570,8 @@ fn merge_config(
     provider.remove("env_key_instructions");
     match auth_strategy {
         ProviderAuthStrategy::ApiKey => {
-            provider["requires_openai_auth"] = value(false);
+            // Codex only reads auth.json for this provider when auth is required.
+            provider["requires_openai_auth"] = value(true);
             provider.remove("experimental_bearer_token");
         }
         ProviderAuthStrategy::ChatGptBearerToken => {
@@ -1614,7 +1615,7 @@ fn render_provider_block(
     );
     match auth_strategy {
         ProviderAuthStrategy::ApiKey => {
-            rendered.push_str("requires_openai_auth = false\n");
+            rendered.push_str("requires_openai_auth = true\n");
         }
         ProviderAuthStrategy::ChatGptBearerToken => {
             if let Some(token) = bearer_token.filter(|token| !token.trim().is_empty()) {
@@ -2239,7 +2240,7 @@ fn run_diagnostics_in_home(codex_home: &Path) -> Result<DiagnosticReport, String
         provider_token.is_some()
             && read_provider_bool(&config, PROVIDER_ID, "requires_openai_auth") == Some(true)
     } else {
-        read_provider_bool(&config, PROVIDER_ID, "requires_openai_auth") == Some(false)
+        read_provider_bool(&config, PROVIDER_ID, "requires_openai_auth") == Some(true)
     };
     checks.push(diagnostic_check(
         "auth-mode",
@@ -3210,7 +3211,7 @@ mod tests {
         assert!(!rendered.contains("http://64.188.30.215:8080/v1"));
         assert!(rendered.contains("model_provider = \"OceanWay\""));
         assert!(rendered.contains("model_reasoning_effort = \"high\""));
-        assert!(rendered.contains("requires_openai_auth = false"));
+        assert_eq!(read_provider_bool(&rendered, PROVIDER_ID, "requires_openai_auth"), Some(true));
         assert!(!rendered.contains("local-image-extension"));
     }
 
@@ -3242,7 +3243,7 @@ mod tests {
             ProviderAuthStrategy::ApiKey,
         ).unwrap();
 
-        assert!(rendered.contains("requires_openai_auth = false"));
+        assert_eq!(read_provider_bool(&rendered, PROVIDER_ID, "requires_openai_auth"), Some(true));
         assert!(!rendered.contains("local-image-extension"));
         assert!(!rendered.contains("experimental_bearer_token"));
     }
