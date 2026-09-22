@@ -2631,22 +2631,17 @@ fn is_codex_running() -> bool {
         })
 }
 
-fn restart_home_is_default(active: &Path, default: &Path) -> bool {
-    match (fs::canonicalize(active), fs::canonicalize(default)) {
-        (Ok(active), Ok(default)) => active == default,
-        _ => false,
+fn ensure_desktop_restart_home(override_home: Option<&std::ffi::OsStr>) -> Result<(), String> {
+    // HOME/USERPROFILE can also be overridden by an isolated launcher. Neither
+    // proves which home the globally detected desktop process actually uses.
+    if override_home.is_some() {
+        return Err("配置已保存。当前启动环境显式设置了 CODEX_HOME，无法确认桌面宿主使用同一目录，已阻止自动重启，不会关闭正在运行的 Codex。".into());
     }
+    Ok(())
 }
 
 fn restart_codex_desktop() -> Result<RestartCodexResult, String> {
-    if env::var_os("CODEX_HOME").is_some() {
-        let active = codex_home()?;
-        let default = env::var_os("HOME").or_else(|| env::var_os("USERPROFILE"))
-            .map(|home| PathBuf::from(home).join(".codex"));
-        if !default.as_ref().is_some_and(|default| restart_home_is_default(&active, default)) {
-            return Err("配置已保存到自定义 CODEX_HOME。无法确认桌面宿主使用同一目录，已阻止自动重启，不会关闭正在运行的 Codex。".into());
-        }
-    }
+    ensure_desktop_restart_home(env::var_os("CODEX_HOME").as_deref())?;
     #[cfg(target_os = "macos")]
     {
         let process_list = macos_process_list().unwrap_or_default();
@@ -3265,15 +3260,11 @@ mod tests {
 
     #[test]
     fn isolated_home_cannot_restart_default_desktop() {
-        let dir = unique_test_dir("restart-home-guard");
-        let normal = dir.join("normal");
-        let isolated = dir.join("isolated");
-        fs::create_dir_all(&normal).unwrap();
-        fs::create_dir_all(&isolated).unwrap();
-        assert!(restart_home_is_default(&normal, &normal));
-        assert!(!restart_home_is_default(&isolated, &normal));
-        assert!(!restart_home_is_default(&normal, &dir.join("missing")));
-        fs::remove_dir_all(dir).unwrap();
+        use std::ffi::OsStr;
+        assert!(ensure_desktop_restart_home(None).is_ok());
+        assert!(ensure_desktop_restart_home(Some(OsStr::new("/private/.codex"))).is_err());
+        assert!(ensure_desktop_restart_home(Some(OsStr::new("/home/user/.codex"))).is_err());
+        assert!(ensure_desktop_restart_home(Some(OsStr::new(""))).is_err());
     }
 
     #[test]
