@@ -39,6 +39,23 @@ const BILLING_NOTICE: &str = "Each attempt sends n=1; batch support is unverifie
     Cancellation stops queued work; in-flight requests finish. Explicit retry may incur another charge.";
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
+/// True cancels submission. Called under the registry lock: keep it nonblocking
+/// and do not call back into ImageJobs. Never serialized into job manifests.
+pub type ImageSubmissionGuard = Arc<dyn Fn() -> bool + Send + Sync>;
+
+fn no_submission_guard() -> ImageSubmissionGuard {
+    Arc::new(|| false)
+}
+
+fn check_submission_guard(guard: &ImageSubmissionGuard) -> Result<(), Failure> {
+    let message = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| guard())) {
+        Ok(false) => return Ok(()),
+        Ok(true) => "Image submission cancelled before admission; no POST was sent for this index.",
+        Err(_) => "Image submission cancellation guard failed; no POST was sent for this index.",
+    };
+    Err(Failure { stop_job: true, ..Failure::not_sent(message) })
+}
+
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ImageTestRequest {
@@ -210,6 +227,7 @@ struct StoredJob {
     paused: bool,
     recovered: bool,
     revision: u64,
+    submission_guard: ImageSubmissionGuard,
     // The kernel lock lives as long as this registry entry, including while
     // cancellation drains admitted requests. It is never cloned or serialized.
     ownership: Mutex<Option<File>>,
@@ -238,6 +256,7 @@ impl StoredJob {
             paused: false,
             recovered: false,
             revision: 0,
+            submission_guard: no_submission_guard(),
             ownership: Mutex::new(None),
         }
     }
@@ -260,6 +279,10 @@ impl StoredJob {
     }
 
     fn claim(&mut self) -> Option<usize> {
+        if check_submission_guard(&self.submission_guard).is_err() {
+            self.cancel();
+            return None;
+        }
         self.expire_lease();
         if self.stopped || self.paused || self.recovered {
             return None;
@@ -385,7 +408,17 @@ impl StoredJob {
         self.next = Some(1);
         self.skip_successes();
         self.persistence_error = None;
-        persist_or_stop(self)
+        persist_or_stop(self)?;
+        self.check_submission().map_err(|failure| failure.message)
+    }
+
+    fn check_submission(&mut self) -> Result<(), Failure> {
+        if let Err(failure) = check_submission_guard(&self.submission_guard) {
+            self.cancel();
+            let _ = persist_or_stop(self);
+            return Err(failure);
+        }
+        Ok(())
     }
 
     fn renew_lease(&mut self) {
@@ -643,6 +676,11 @@ fn claim_task(shared: &Arc<Shared>) -> Option<(String, usize, Arc<Input>)> {
         return None;
     }
     for job in registry.jobs.values_mut() {
+        if !job.stopped && !job.recovered && (job.next.is_some() || job.active > 0)
+            && job.check_submission().is_err()
+        {
+            continue;
+        }
         if job.expire_lease() {
             let _ = persist_or_stop(job);
         }
@@ -653,7 +691,13 @@ fn claim_task(shared: &Arc<Shared>) -> Option<(String, usize, Arc<Input>)> {
         .or_else(|| registry.jobs.values().find(eligible))
         .map(|job| job.id.clone())?;
     let job = registry.jobs.get_mut(&id)?;
-    let index = job.claim()?;
+    let index = match job.claim() {
+        Some(index) => index,
+        None => {
+            let _ = persist_or_stop(job);
+            return None;
+        }
+    };
     if persist_or_stop(job).is_err() {
         job.active -= 1;
         let item = job.items.get_mut(&index)?;
@@ -776,6 +820,7 @@ fn authorize_post_with_loader(
     if shutdown || job.stopped || job.paused || job.recovered {
         return Err(Failure::not_sent("Image queue stopped before dispatch; no POST was sent for this index."));
     }
+    job.check_submission()?;
     // The body is fully built. Re-read this service's explicit home, never the
     // ambient CODEX_HOME. Cancellation and dispatch share this admission lock.
     let provider = load()?;
@@ -787,6 +832,7 @@ fn authorize_post_with_loader(
     if let Err(error) = persist_or_stop(job) {
         return Err(Failure::not_sent(error));
     }
+    job.check_submission()?;
     // A second read closes the disk-persistence preflight window. A cancellation
     // after this admission is in-flight; blocking send intentionally runs unlocked.
     let provider = load()?;
@@ -797,6 +843,7 @@ fn authorize_post_with_loader(
         return Err(Failure::not_sent("Image lease expired before dispatch; no POST was sent."));
     }
     Arc::make_mut(&mut job.input).provider = provider.clone();
+    job.check_submission()?;
     Ok(provider)
 }
 
@@ -891,7 +938,15 @@ fn submit(shared: &Arc<Shared>, id: String, input: Input) -> Result<ImageJob, St
     submit_leased(shared, id, input, false)
 }
 
+#[cfg(test)]
 fn submit_leased(shared: &Arc<Shared>, id: String, input: Input, leased: bool) -> Result<ImageJob, String> {
+    submit_guarded(shared, id, input, leased, no_submission_guard())
+}
+
+fn submit_guarded(
+    shared: &Arc<Shared>, id: String, input: Input, leased: bool, guard: ImageSubmissionGuard,
+) -> Result<ImageJob, String> {
+    check_submission_guard(&guard).map_err(|failure| failure.message)?;
     ensure_inputs_do_not_contain_key(&input.request, &input.provider.key)?;
     ensure_no_credential_in_values(
         [input.directory.to_string_lossy().as_ref(), input.provider.home.to_string_lossy().as_ref()],
@@ -909,11 +964,17 @@ fn submit_leased(shared: &Arc<Shared>, id: String, input: Input, leased: bool) -
     }
     registry.home = Some(input.provider.home.clone());
     let mut job = StoredJob::new(id.clone(), input);
+    job.submission_guard = guard;
     job.leased = leased;
     job.renew_lease();
+    check_submission_guard(&job.submission_guard).map_err(|failure| failure.message)?;
     persist_manifest(&job)?;
+    job.check_submission().map_err(|failure| failure.message)?;
     register_manifest(&job)?;
     ensure_workers(shared, &mut registry)?;
+    // Workers cannot claim this entry before publication under the registry lock.
+    // They retain the same guard for cancellation after this final check.
+    job.check_submission().map_err(|failure| failure.message)?;
     let snapshot = job.snapshot();
     registry.jobs.insert(id, job);
     shared.wake.notify_all();
@@ -957,16 +1018,37 @@ impl ImageJobs {
     pub fn start(&self, request: ImageTestRequest, workspace: Option<&Path>, leased: bool)
         -> Result<ImageJob, String>
     {
+        self.start_guarded(request, workspace, leased, no_submission_guard())
+    }
+
+    pub fn start_guarded(
+        &self, request: ImageTestRequest, workspace: Option<&Path>, leased: bool,
+        guard: ImageSubmissionGuard,
+    ) -> Result<ImageJob, String> {
+        self.start_with_loaders(request, workspace, leased, guard,
+            load_provider_in_home, load_references_in_home)
+    }
+
+    fn start_with_loaders(
+        &self, request: ImageTestRequest, workspace: Option<&Path>, leased: bool,
+        guard: ImageSubmissionGuard,
+        load_provider: impl FnOnce(&Path) -> Result<SavedProvider, String>,
+        load_references: impl FnOnce(&[String], &Path) -> Result<Vec<Reference>, String>,
+    ) -> Result<ImageJob, String> {
+        check_submission_guard(&guard).map_err(|failure| failure.message)?;
         let request = validate_request(request)?;
         let home = self.home()?;
-        let provider = load_provider_in_home(&home)?;
+        check_submission_guard(&guard).map_err(|failure| failure.message)?;
+        let provider = load_provider(&home)?;
         ensure_inputs_do_not_contain_key(&request, &provider.key)?;
-        let references = load_references_in_home(&request.reference_paths, &home)?;
+        check_submission_guard(&guard).map_err(|failure| failure.message)?;
+        let references = load_references(&request.reference_paths, &home)?;
+        check_submission_guard(&guard).map_err(|failure| failure.message)?;
         let (id, directory) = match workspace {
             Some(workspace) => create_workspace_directory(workspace)?,
             None => create_directory(&home)?,
         };
-        submit_leased(&self.shared, id, Input { request, provider, references, directory }, leased)
+        submit_guarded(&self.shared, id, Input { request, provider, references, directory }, leased, guard)
     }
 
     pub fn status(&self, id: &str) -> Result<ImageJob, String> {
@@ -1000,12 +1082,26 @@ impl ImageJobs {
     }
 
     pub fn retry(&self, id: &str) -> Result<ImageJob, String> {
-        self.retry_with_loader(id, load_provider_in_home)
+        self.retry_guarded(id, no_submission_guard())
     }
 
+    pub fn retry_guarded(&self, id: &str, guard: ImageSubmissionGuard) -> Result<ImageJob, String> {
+        self.retry_with_loaders(id, guard, load_provider_in_home, load_references_in_home)
+    }
+
+    #[cfg(test)]
     fn retry_with_loader(
         &self, id: &str, load: impl FnOnce(&Path) -> Result<SavedProvider, String>,
     ) -> Result<ImageJob, String> {
+        self.retry_with_loaders(id, no_submission_guard(), load, load_references_in_home)
+    }
+
+    fn retry_with_loaders(
+        &self, id: &str, guard: ImageSubmissionGuard,
+        load: impl FnOnce(&Path) -> Result<SavedProvider, String>,
+        load_references: impl FnOnce(&[String], &Path) -> Result<Vec<Reference>, String>,
+    ) -> Result<ImageJob, String> {
+        check_submission_guard(&guard).map_err(|failure| failure.message)?;
         let home = self.home()?;
         let (previous, hashes, revision) = {
             let registry = lock(&self.shared)?;
@@ -1020,12 +1116,15 @@ impl ImageJobs {
         };
         // Explicit retry is a new submission using the *current* saved credentials.
         // Reference content is immutable across retries, including duplicate roles.
+        check_submission_guard(&guard).map_err(|failure| failure.message)?;
         let provider = load(&home)?;
         if provider.home != home {
             return Err("Retry provider does not belong to this service's CODEX_HOME.".into());
         }
         ensure_inputs_do_not_contain_key(&previous.request, &provider.key)?;
-        let references = load_references_in_home(&previous.request.reference_paths, &home)?;
+        check_submission_guard(&guard).map_err(|failure| failure.message)?;
+        let references = load_references(&previous.request.reference_paths, &home)?;
+        check_submission_guard(&guard).map_err(|failure| failure.message)?;
         if references.iter().map(|reference| hash(&reference.bytes)).collect::<Vec<_>>() != hashes {
             return Err("Original reference hashes changed; create a new explicit image job.".into());
         }
@@ -1039,11 +1138,14 @@ impl ImageJobs {
         if job.revision != revision {
             return Err("Image job changed during retry preflight; no new request was queued.".into());
         }
+        check_submission_guard(&guard).map_err(|failure| failure.message)?;
         verify_saved_items(job);
         let mut input = (*previous).clone();
         input.provider = provider;
         input.references = references;
+        check_submission_guard(&guard).map_err(|failure| failure.message)?;
         job.input = Arc::new(input);
+        job.submission_guard = guard;
         job.retry()?;
         let snapshot = job.snapshot();
         worker_pool().wake.notify_all();

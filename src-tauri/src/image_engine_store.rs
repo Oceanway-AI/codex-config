@@ -83,7 +83,9 @@ struct EngineIndex {
     schema_version: u32,
     engine: String,
     codex_home: PathBuf,
-    jobs: BTreeMap<String, OwnedManifest>,
+    // Keep malformed historical entries intact when appending a new job. Each
+    // entry is validated separately during recovery, not as an all-or-nothing index.
+    jobs: BTreeMap<String, Value>,
 }
 
 fn index_directory(home: &Path, create: bool) -> Result<Option<PathBuf>, String> {
@@ -173,10 +175,11 @@ pub(super) fn register_manifest(job: &StoredJob) -> Result<(), String> {
     if index.jobs.contains_key(&job.id) {
         return Err("An owned image index entry already exists for this job.".into());
     }
-    index.jobs.insert(job.id.clone(), OwnedManifest {
+    let entry = serde_json::to_value(OwnedManifest {
         directory: job.input.directory.clone(),
         ownership_token: job.ownership_token.clone(),
-    });
+    }).map_err(|_| "Could not serialize the owned image index entry.".to_string())?;
+    index.jobs.insert(job.id.clone(), entry);
     write_index(&directory, &index)
 }
 
@@ -205,85 +208,102 @@ pub(super) fn recover_jobs(home: &Path) -> Result<BTreeMap<String, StoredJob>, S
         read_index(home, &directory)?
     };
     let mut jobs = BTreeMap::new();
+    let mut skipped = 0usize;
     for (id, entry) in index.jobs {
-        // Never even read a live owner's manifest. A process exit releases the
-        // kernel lock; the next recovery can then own and classify that record.
-        let Some(ownership) = try_job_ownership(home, &id)? else { continue };
-        validate_owned_directory(home, &id, &entry)?;
-        let manifest: JobManifest = serde_json::from_slice(
-            &read_regular(&entry.directory.join("manifest.json"), JSON_BYTES)?
-        ).map_err(|_| "Referenced image manifest is invalid; no jobs were resumed.".to_string())?;
-        if manifest.schema_version != 2 || manifest.engine != ENGINE_ID
-            || manifest.codex_home != home || manifest.ownership_token != entry.ownership_token
-            || manifest.job.id != id || Path::new(&manifest.output_directory) != entry.directory
-            || manifest.job.output_directory != manifest.output_directory
-            || manifest.job.total != manifest.count || manifest.job.model != manifest.model
-            || manifest.job.reference_paths != manifest.reference_paths
-            || manifest.job.reference_hashes.len() != manifest.reference_paths.len()
-        {
-            return Err("Referenced image manifest ownership/content mismatch; no jobs were resumed.".into());
+        match recover_owned_job(home, id, entry) {
+            Ok(Some(job)) => { jobs.insert(job.id.clone(), job); }
+            Ok(None) => {}
+            Err(_) => { skipped += 1; }
         }
-        let request = validate_request(ImageTestRequest {
-            model: manifest.model,
-            prompt: manifest.prompt,
-            prompts: manifest.prompts,
-            count: manifest.count,
-            reference_paths: manifest.reference_paths,
-            size: manifest.size,
-        })?;
-        let input = Input {
-            request,
-            provider: SavedProvider {
-                home: home.into(), config: String::new(), api_base: String::new(), key: String::new(),
-                #[cfg(test)]
-                local_mock: false,
-            },
-            references: Vec::new(),
-            directory: entry.directory,
-        };
-        let mut job = StoredJob::new(id.clone(), input);
-        job.ownership = Mutex::new(Some(ownership));
-        job.reference_hashes = manifest.job.reference_hashes;
-        job.ownership_token = manifest.ownership_token;
-        job.leased = manifest.leased;
-        job.persistence_error = manifest.job.persistence_error;
-        for mut item in manifest.job.items {
-            if item.index == 0 || item.index > manifest.count || job.items.contains_key(&item.index)
-                || !matches!(item.status.as_str(), "queued" | "paused" | "running" | "cancelled"
-                    | "failed" | "succeeded" | "uncertain" | "integrity_failed")
-            {
-                return Err("Invalid image slot in referenced manifest; no jobs were resumed.".into());
-            }
-            item.preview_data_url = None;
-            if item.status == "running" {
-                item.status = "uncertain".into();
-                item.error = Some("Process ended before this request's outcome was recorded. It may have \
-                    been billed. No automatic POST; explicit retry may incur another charge.".into());
-                preserve_unrecorded_output(&job.input.directory, &mut item);
-            } else if item.status == "queued" {
-                item.status = "paused".into();
-            }
-            if item.status == "succeeded" {
-                job.completed += 1;
-            } else if matches!(item.status.as_str(), "failed" | "uncertain" | "integrity_failed") {
-                job.failed += 1;
-            }
-            if item.status == "integrity_failed" {
-                item.retry_blocked = true;
-            }
-            job.items.insert(item.index, item);
-        }
-        verify_saved_items(&mut job);
-        job.skip_successes();
-        job.recovered = job.completed != job.input.request.count;
-        job.paused = job.recovered;
-        // Rewrite the recovery outcome, but never start workers or load a provider.
-        if let Err(error) = persist_manifest(&job) {
-            job.persistence_error = Some(format!("Recovery progress could not be persisted: {error}"));
-        }
-        jobs.insert(id, job);
+    }
+    if skipped > 0 {
+        // Stderr is safe for MCP framing. Never echo paths, prompts, credentials,
+        // malformed record content, or untrusted error details.
+        eprintln!("Image recovery skipped {skipped} invalid historical record(s). \
+            Their index entries and manifests were preserved; no requests were resumed.");
     }
     Ok(jobs)
+}
+
+fn recover_owned_job(home: &Path, id: String, entry: Value) -> Result<Option<StoredJob>, String> {
+    // Never even read a live owner's manifest. A process exit releases the
+    // kernel lock; the next recovery can then own and classify that record.
+    let Some(ownership) = try_job_ownership(home, &id)? else { return Ok(None) };
+    let entry: OwnedManifest = serde_json::from_value(entry)
+        .map_err(|_| "Invalid historical image index entry.".to_string())?;
+    validate_owned_directory(home, &id, &entry)?;
+    let manifest: JobManifest = serde_json::from_slice(
+        &read_regular(&entry.directory.join("manifest.json"), JSON_BYTES)?
+    ).map_err(|_| "Referenced image manifest is invalid; no jobs were resumed.".to_string())?;
+    if manifest.schema_version != 2 || manifest.engine != ENGINE_ID
+        || manifest.codex_home != home || manifest.ownership_token != entry.ownership_token
+        || manifest.job.id != id || Path::new(&manifest.output_directory) != entry.directory
+        || manifest.job.output_directory != manifest.output_directory
+        || manifest.job.total != manifest.count || manifest.job.model != manifest.model
+        || manifest.job.reference_paths != manifest.reference_paths
+        || manifest.job.reference_hashes.len() != manifest.reference_paths.len()
+    {
+        return Err("Referenced image manifest ownership/content mismatch; no jobs were resumed.".into());
+    }
+    let request = validate_request(ImageTestRequest {
+        model: manifest.model,
+        prompt: manifest.prompt,
+        prompts: manifest.prompts,
+        count: manifest.count,
+        reference_paths: manifest.reference_paths,
+        size: manifest.size,
+    })?;
+    let input = Input {
+        request,
+        provider: SavedProvider {
+            home: home.into(), config: String::new(), api_base: String::new(), key: String::new(),
+            #[cfg(test)]
+            local_mock: false,
+        },
+        references: Vec::new(),
+        directory: entry.directory,
+    };
+    let mut job = StoredJob::new(id, input);
+    job.ownership = Mutex::new(Some(ownership));
+    job.reference_hashes = manifest.job.reference_hashes;
+    job.ownership_token = manifest.ownership_token;
+    job.leased = manifest.leased;
+    job.persistence_error = manifest.job.persistence_error;
+    for mut item in manifest.job.items {
+        if item.index == 0 || item.index > manifest.count || job.items.contains_key(&item.index)
+            || !matches!(item.status.as_str(), "queued" | "paused" | "running" | "cancelled"
+                | "failed" | "succeeded" | "uncertain" | "integrity_failed")
+        {
+            return Err("Invalid image slot in referenced manifest; no jobs were resumed.".into());
+        }
+        item.preview_data_url = None;
+        if item.status == "running" {
+            item.status = "uncertain".into();
+            item.error = Some("Process ended before this request's outcome was recorded. It may have \
+                been billed. No automatic POST; explicit retry may incur another charge.".into());
+            preserve_unrecorded_output(&job.input.directory, &mut item);
+        } else if item.status == "queued" {
+            item.status = "paused".into();
+        }
+        if item.status == "succeeded" {
+            job.completed += 1;
+        } else if matches!(item.status.as_str(), "failed" | "uncertain" | "integrity_failed") {
+            job.failed += 1;
+        }
+        if item.status == "integrity_failed" {
+            item.retry_blocked = true;
+        }
+        job.items.insert(item.index, item);
+    }
+    verify_saved_items(&mut job);
+    job.skip_successes();
+    job.recovered = job.completed != job.input.request.count;
+    job.paused = job.recovered;
+    // Rewrite the recovery outcome, but never start workers or load a provider.
+    if let Err(error) = persist_manifest(&job) {
+        job.persistence_error = Some(format!("Recovery progress could not be persisted: {error}"));
+    }
+    Ok(Some(job))
 }
 
 fn valid_output_name(path: &Path, index: usize, primary: bool) -> bool {

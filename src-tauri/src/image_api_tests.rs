@@ -1329,6 +1329,8 @@ fn recovery_only_reads_index_referenced_owned_manifests() {
     let path = job.input.directory.join("manifest.json");
     let original = fs::read(&path).unwrap();
     drop(job);
+    let index_path = home.0.join("oceanway-image-jobs").join("index.json");
+    let original_index = fs::read(&index_path).unwrap();
     for (key, value) in [
         ("ownershipToken", json!("wrong owner")),
         ("codexHome", json!(home.0.join("another-home"))),
@@ -1338,8 +1340,12 @@ fn recovery_only_reads_index_referenced_owned_manifests() {
     ] {
         let mut manifest: Value = serde_json::from_slice(&original).unwrap();
         manifest[key] = value;
-        fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
-        assert!(ImageJobs::new(&home.0).is_err(), "{key}");
+        let invalid = serde_json::to_vec(&manifest).unwrap();
+        fs::write(&path, &invalid).unwrap();
+        let service = ImageJobs::new(&home.0).unwrap();
+        assert!(service.status(&id).is_err(), "{key}");
+        assert_eq!(fs::read(&path).unwrap(), invalid, "{key}");
+        assert_eq!(fs::read(&index_path).unwrap(), original_index, "{key}");
     }
     fs::write(&path, &original).unwrap();
     let recovered = ImageJobs::new(&home.0).unwrap();
@@ -1934,5 +1940,273 @@ fn independent_process_index_writers_preserve_every_new_job() {
     assert!(!recovered.has_active_requests());
     for id in index["jobs"].as_object().unwrap().keys() {
         assert_eq!(recovered.status(id).unwrap().status, "interrupted");
+    }
+}
+
+fn cancellation_guard(cancelled: &Arc<AtomicBool>) -> ImageSubmissionGuard {
+    let cancelled = Arc::clone(cancelled);
+    Arc::new(move || cancelled.load(Ordering::SeqCst))
+}
+
+#[test]
+fn start_cancellation_during_reference_preflight_never_publishes_or_posts() {
+    let home = TempHome::new();
+    let mock = Mock::new(|_, _| panic!("cancelled reference preflight must not POST"));
+    let (_, input) = input(&home, &mock, 3);
+    let provider = input.provider;
+    let source = home.0.join("reference.png");
+    fs::write(&source, png(3, 4)).unwrap();
+    let mut request = request(3);
+    request.reference_paths = vec![source.to_string_lossy().into_owned()];
+    let state = ImageJobs::new(&home.0).unwrap();
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let ready = Arc::new(Gate::default());
+    let resume = Arc::new(Gate::default());
+    let service = state.clone();
+    let guard = cancellation_guard(&cancelled);
+    let thread_ready = Arc::clone(&ready);
+    let thread_resume = Arc::clone(&resume);
+    let start = thread::spawn(move || service.start_with_loaders(
+        request, None, true, guard, |_| Ok(provider), |paths, home| {
+            let references = load_references_in_home(paths, home)?;
+            thread_ready.release();
+            thread_resume.wait();
+            Ok(references)
+        },
+    ));
+    ready.wait();
+    assert!(lock(&state.shared).unwrap().jobs.is_empty());
+    cancelled.store(true, Ordering::SeqCst);
+    resume.release();
+    assert!(start.join().unwrap().err().unwrap().contains("cancelled before admission"));
+    assert!(lock(&state.shared).unwrap().jobs.is_empty());
+    assert!(!state.has_active_requests());
+    assert_eq!(mock.count(), 0);
+}
+
+#[test]
+fn cancellation_after_index_persistence_but_before_publication_cannot_send() {
+    let _serial = WORKER_TEST.lock().unwrap();
+    let home = TempHome::new();
+    let mock = Mock::new(|_, _| panic!("cancelled unpublished job must not POST"));
+    let (id, input) = input(&home, &mock, 2);
+    let directory = input.directory.clone();
+    let index_path = home.0.join("oceanway-image-jobs").join("index.json");
+    let watched_id = id.clone();
+    let guard: ImageSubmissionGuard = Arc::new(move || {
+        fs::read(&index_path).ok().and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+            .is_some_and(|index| index["jobs"].get(watched_id.as_str()).is_some())
+    });
+    let state = ImageJobs::new(&home.0).unwrap();
+    let error = submit_guarded(&state.shared, id.clone(), input, true, guard).err().unwrap();
+    assert!(error.contains("cancelled before admission"));
+    assert!(lock(&state.shared).unwrap().jobs.is_empty());
+    let manifest = fs::read_to_string(directory.join("manifest.json")).unwrap();
+    assert!(!manifest.contains("submissionGuard"));
+    assert!(!manifest.contains("submission_guard"));
+    let recovered = ImageJobs::new(&home.0).unwrap();
+    assert_eq!(recovered.status(&id).unwrap().status, "interrupted");
+    assert!(!recovered.has_active_requests());
+    assert_eq!(lock(&recovered.shared).unwrap().workers, 0);
+    assert_eq!(mock.count(), 0);
+}
+
+#[test]
+fn authorize_checks_submission_guard_before_provider_and_after_manifest_preflight() {
+    for after_persistence in [false, true] {
+        let home = TempHome::new();
+        let mock = Mock::new(|_, _| panic!("cancelled authorization must not POST"));
+        let (id, input) = input(&home, &mock, 3);
+        let manifest = input.directory.join("manifest.json");
+        let provider = input.provider.clone();
+        let state = ImageJobs::default();
+        record_without_workers(&state, id.clone(), input, false);
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let guard: ImageSubmissionGuard = if after_persistence {
+            Arc::new(move || {
+                fs::read(&manifest).ok().and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+                    .is_some_and(|manifest| manifest["job"]["items"][0]["postStarted"] == true)
+            })
+        } else {
+            cancellation_guard(&cancelled)
+        };
+        let input = {
+            let mut registry = lock(&state.shared).unwrap();
+            let job = find_job_mut(&mut registry, &id).unwrap();
+            job.submission_guard = guard;
+            job.claim().unwrap();
+            Arc::clone(&job.input)
+        };
+        if !after_persistence {
+            cancelled.store(true, Ordering::SeqCst);
+        }
+        let mut provider_reads = 0;
+        let outcome = execute_with_guard(&input, 1, Instant::now(), || {
+            authorize_post_with_loader(&state.shared, &id, 1, &input, || {
+                provider_reads += 1;
+                Ok(provider.clone())
+            })
+        });
+        let failure = outcome.as_ref().err().unwrap();
+        assert!(failure.not_sent && failure.stop_job);
+        assert_eq!(provider_reads, if after_persistence { 1 } else { 0 });
+        {
+            let mut registry = lock(&state.shared).unwrap();
+            finish_item(find_job_mut(&mut registry, &id).unwrap(), 1, outcome, 1);
+        }
+        let status = state.status(&id).unwrap();
+        assert_eq!((status.completed, status.failed, status.cancelled), (0, 0, 3));
+        assert_eq!(mock.count(), 0);
+    }
+}
+
+#[test]
+fn queued_guard_is_retained_and_normal_response_detachment_or_explicit_retry_releases_it() {
+    let _serial = WORKER_TEST.lock().unwrap();
+    for detach in [false, true] {
+        let home = TempHome::new();
+        let gate = Arc::new(Gate::default());
+        let handler_gate = Arc::clone(&gate);
+        let mock = Mock::new(move |_, _| { handler_gate.wait(); Reply::json(success()) });
+        let (id, input) = input(&home, &mock, 5);
+        let provider = input.provider.clone();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let active = Arc::new(AtomicBool::new(true));
+        let request_cancelled = Arc::clone(&cancelled);
+        let request_active = Arc::clone(&active);
+        let guard: ImageSubmissionGuard = Arc::new(move ||
+            request_cancelled.load(Ordering::SeqCst) && request_active.load(Ordering::SeqCst));
+        let state = ImageJobs::default();
+        submit_guarded(&state.shared, id.clone(), input, false, guard).unwrap();
+        wait_until(|| mock.count() == 2);
+        if detach {
+            active.store(false, Ordering::SeqCst);
+        }
+        cancelled.store(true, Ordering::SeqCst);
+        gate.release();
+        let done = finished(&state, &id);
+        if detach {
+            assert_eq!(done.status, "completed");
+            assert_eq!(mock.count(), 5);
+        } else {
+            assert_eq!((done.completed, done.cancelled), (2, 3));
+            assert_eq!(mock.count(), 2);
+            state.retry_with_loader(&id, |_| Ok(provider)).unwrap();
+            assert_eq!(finished(&state, &id).completed, 5);
+            assert_eq!(mock.count(), 5, "explicit retry replaces the old submission guard");
+        }
+    }
+}
+
+#[test]
+fn retry_cancellation_during_reference_preflight_preserves_existing_output_and_queue() {
+    let home = TempHome::new();
+    let mock = Mock::new(|_, _| Reply::json(success()));
+    let (id, mut input) = input(&home, &mock, 2);
+    let source = home.0.join("reference.png");
+    fs::write(&source, png(3, 4)).unwrap();
+    input.request.reference_paths = vec![source.to_string_lossy().into_owned()];
+    input.references = load_references_in_home(&input.request.reference_paths, &home.0).unwrap();
+    let provider = input.provider.clone();
+    let directory = input.directory.clone();
+    let state = ImageJobs::default();
+    record_without_workers(&state, id.clone(), input, false);
+    let saved = {
+        let mut registry = lock(&state.shared).unwrap();
+        let job = find_job_mut(&mut registry, &id).unwrap();
+        let index = job.claim().unwrap();
+        let result = execute(&job.input, index, Instant::now()).unwrap();
+        let path = result.path.clone();
+        finish_item(job, index, Ok(result), 1);
+        job.cancel();
+        persist_or_stop(job).unwrap();
+        path
+    };
+    let manifest = fs::read(directory.join("manifest.json")).unwrap();
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let ready = Arc::new(Gate::default());
+    let resume = Arc::new(Gate::default());
+    let service = state.clone();
+    let retry_id = id.clone();
+    let guard = cancellation_guard(&cancelled);
+    let thread_ready = Arc::clone(&ready);
+    let thread_resume = Arc::clone(&resume);
+    let retry = thread::spawn(move || service.retry_with_loaders(
+        &retry_id, guard, |_| Ok(provider), |paths, home| {
+            let references = load_references_in_home(paths, home)?;
+            thread_ready.release();
+            thread_resume.wait();
+            Ok(references)
+        },
+    ));
+    ready.wait();
+    cancelled.store(true, Ordering::SeqCst);
+    resume.release();
+    assert!(retry.join().unwrap().err().unwrap().contains("cancelled before admission"));
+    assert_eq!(fs::read(directory.join("manifest.json")).unwrap(), manifest);
+    assert_eq!(fs::read(saved).unwrap(), png(320, 160));
+    assert_eq!(state.status(&id).unwrap().completed, 1);
+    assert_eq!(mock.count(), 1);
+}
+
+#[test]
+fn submission_guard_panics_fail_closed_without_poisoning_the_registry() {
+    let guard: ImageSubmissionGuard = Arc::new(|| panic!("test-only guard failure"));
+    let failure = check_submission_guard(&guard).err().unwrap();
+    assert!(failure.not_sent && failure.stop_job);
+    assert!(failure.message.contains("guard failed"));
+    assert!(!failure.message.contains("test-only guard failure"));
+}
+
+#[test]
+fn invalid_unrelated_history_is_preserved_and_does_not_block_new_jobs() {
+    let _serial = WORKER_TEST.lock().unwrap();
+    let home = TempHome::new();
+    let mock = Mock::new(|_, _| Reply::json(success()));
+    let mut history = Vec::new();
+    for _ in 0..5 {
+        let (id, input) = input(&home, &mock, 2);
+        let directory = input.directory.clone();
+        let job = StoredJob::new(id.clone(), input);
+        persist_manifest(&job).unwrap();
+        register_manifest(&job).unwrap();
+        history.push((id, directory));
+    }
+    fs::write(history[0].1.join("manifest.json"), b"invalid mock-only historical JSON").unwrap();
+    fs::remove_dir_all(&history[1].1).unwrap();
+    let foreign_path = history[2].1.join("manifest.json");
+    let mut foreign: Value = serde_json::from_slice(&fs::read(&foreign_path).unwrap()).unwrap();
+    foreign["ownershipToken"] = json!("not-the-recorded-owner");
+    fs::write(&foreign_path, serde_json::to_vec(&foreign).unwrap()).unwrap();
+    let index_path = home.0.join("oceanway-image-jobs").join("index.json");
+    let mut index: Value = serde_json::from_slice(&fs::read(&index_path).unwrap()).unwrap();
+    let malformed_entry = json!({ "unrecognized": MOCK_KEY });
+    index["jobs"][history[3].0.as_str()] = malformed_entry.clone();
+    fs::write(&index_path, serde_json::to_vec(&index).unwrap()).unwrap();
+    let index_before = fs::read(&index_path).unwrap();
+    let unchanged: Vec<_> = [0, 2, 3].into_iter().map(|position| {
+        let path = history[position].1.join("manifest.json");
+        let bytes = fs::read(&path).unwrap();
+        (path, bytes)
+    }).collect();
+    let service = ImageJobs::new(&home.0).unwrap();
+    assert_eq!(fs::read(&index_path).unwrap(), index_before);
+    assert_eq!(service.status(&history[4].0).unwrap().status, "interrupted");
+    for (id, _) in &history[..4] {
+        assert!(service.status(id).is_err());
+    }
+    assert!(!history[1].1.exists(), "recovery must not recreate a deleted output directory");
+    let (_, next_input) = input(&home, &mock, 1);
+    let next = service.start_with_loaders(
+        request(1), None, false, no_submission_guard(),
+        |_| Ok(next_input.provider), load_references_in_home,
+    ).unwrap();
+    assert_eq!(finished(&service, &next.id).completed, 1);
+    assert_eq!(mock.count(), 1, "only the newly authorized request was sent");
+    let index_after: Value = serde_json::from_slice(&fs::read(&index_path).unwrap()).unwrap();
+    assert_eq!(index_after["jobs"].as_object().unwrap().len(), 6);
+    assert_eq!(index_after["jobs"][history[3].0.as_str()], malformed_entry);
+    for (path, bytes) in unchanged {
+        assert_eq!(fs::read(path).unwrap(), bytes);
     }
 }
