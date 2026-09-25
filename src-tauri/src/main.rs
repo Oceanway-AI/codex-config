@@ -245,11 +245,18 @@ struct UpdateCheckResult {
 
 struct PendingUpdate(Mutex<Option<Update>>);
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, PartialEq, Eq)]
 struct RestoreSnapshotMeta {
     config_existed: bool,
     auth_existed: bool,
     created_at: String,
+}
+
+#[derive(PartialEq, Eq)]
+struct RestoreSnapshotContents {
+    meta: RestoreSnapshotMeta,
+    config: Option<Vec<u8>>,
+    auth: Option<Vec<u8>>,
 }
 
 #[derive(Default)]
@@ -741,6 +748,13 @@ fn restore_defaults_internal() -> Result<OperationResult, String> {
 }
 
 fn restore_defaults_in_home(codex_home: &Path) -> Result<OperationResult, String> {
+    restore_defaults_in_home_with_auth_remover(codex_home, remove_api_key_from_auth)
+}
+
+fn restore_defaults_in_home_with_auth_remover(
+    codex_home: &Path,
+    remove_auth_key: impl FnOnce(&Path) -> Result<(), String>,
+) -> Result<OperationResult, String> {
     let config_path = codex_home.join("config.toml");
     let auth_path = codex_home.join("auth.json");
     fs::create_dir_all(&codex_home).map_err(|err| format!("无法创建 Codex 目录：{err}"))?;
@@ -779,7 +793,7 @@ fn restore_defaults_in_home(codex_home: &Path) -> Result<OperationResult, String
         remove_direct_http_environment_from_file(&config_path)?;
         remove_provider_from_config(&config_path, PROVIDER_ID)?;
         if active && token.is_none() && (matching_environment || had_mcp) {
-            remove_api_key_from_auth(&auth_path)?;
+            remove_auth_key(&auth_path)?;
         }
         set_private_permissions(&config_path)?;
         set_private_permissions(&auth_path)?;
@@ -977,20 +991,29 @@ fn remove_provider_from_config(config_path: &Path, provider_id: &str) -> Result<
 }
 
 fn remove_api_key_from_auth(auth_path: &Path) -> Result<(), String> {
-    let content = fs::read_to_string(auth_path).unwrap_or_else(|_| "{}".to_string());
-    let mut value =
-        serde_json::from_str::<serde_json::Value>(&content).unwrap_or_else(|_| json!({}));
+    remove_api_key_from_auth_with_writer(auth_path, write_private_atomic)
+}
 
-    if let Some(object) = value.as_object_mut() {
-        object.remove(CODEX_AUTH_KEY);
-    } else {
-        value = json!({});
+fn remove_api_key_from_auth_with_writer(
+    auth_path: &Path,
+    write: impl FnOnce(&Path, &[u8]) -> std::io::Result<()>,
+) -> Result<(), String> {
+    let Some(content) = managed_files::text(auth_path)? else { return Ok(()); };
+    let mut parsed: Value = serde_json::from_str(&content)
+        .map_err(|_| "auth.json 格式损坏，未删除认证字段。")?;
+    let object = parsed.as_object_mut().ok_or("auth.json 必须是 JSON 对象，未删除认证字段。")?;
+    if object.remove(CODEX_AUTH_KEY).is_none() {
+        return Ok(());
     }
 
-    let rendered = serde_json::to_string_pretty(&value)
+    let rendered = serde_json::to_string_pretty(&parsed)
         .map_err(|err| format!("无法生成 auth.json：{err}"))?
         + "\n";
-    fs::write(auth_path, rendered).map_err(|err| format!("无法写入 auth.json：{err}"))
+    write(auth_path, rendered.as_bytes()).map_err(|_| "无法撤销 auth.json 中的 API Key。")?;
+    if managed_files::text(auth_path)?.as_deref() != Some(rendered.as_str()) {
+        return Err("auth.json 回读与写入内容不一致，请保留备份。".into());
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1023,36 +1046,129 @@ fn ensure_restore_snapshot(
     config_path: &Path,
     auth_path: &Path,
 ) -> Result<(), String> {
-    let snapshot_dir = codex_home.join(BACKUP_DIR_NAME);
-    let meta_path = snapshot_dir.join("meta.json");
-    if meta_path.exists() {
+    ensure_restore_snapshot_with_writer(codex_home, config_path, auth_path, write_private_atomic)
+}
+
+fn snapshot_directory_exists(path: &Path) -> Result<bool, String> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(_) => return Err("无法检查原始快照目录。".into()),
+    };
+    if !metadata.is_dir() || metadata.file_type().is_symlink()
+        || fs::canonicalize(path).ok().as_deref() != Some(path)
+    {
+        return Err("原始快照目录不能是链接或普通文件，未修改。".into());
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if metadata.file_attributes() & 0x400 != 0 {
+            return Err("原始快照目录不能是重解析点，未修改。".into());
+        }
+    }
+    Ok(true)
+}
+
+fn validate_snapshot_contents(config: Option<&[u8]>, auth: Option<&[u8]>) -> Result<(), String> {
+    if let Some(bytes) = config {
+        std::str::from_utf8(bytes).map_err(|_| "原始 config.toml 快照编码无效。")?
+            .parse::<DocumentMut>().map_err(|_| "原始 config.toml 快照损坏。")?;
+    }
+    if let Some(bytes) = auth {
+        let parsed: Value = serde_json::from_slice(bytes).map_err(|_| "原始 auth.json 快照损坏。")?;
+        if !parsed.is_object() { return Err("原始 auth.json 快照不是对象。".into()); }
+    }
+    Ok(())
+}
+
+fn read_restore_snapshot(snapshot_dir: &Path) -> Result<RestoreSnapshotContents, String> {
+    if !snapshot_directory_exists(snapshot_dir)? {
+        return Err("缺少原始快照目录。".into());
+    }
+    let text = managed_files::text(&snapshot_dir.join("meta.json"))?
+        .ok_or("原始快照不完整，已保留现有 originals；未继续配置或恢复。")?;
+    let meta: RestoreSnapshotMeta = serde_json::from_str(&text)
+        .map_err(|_| "原始快照元数据无效，已保留现有 originals。")?;
+    let config = managed_files::read_optional(&snapshot_dir.join("config.toml"))?;
+    let auth = managed_files::read_optional(&snapshot_dir.join("auth.json"))?;
+    if meta.config_existed != config.is_some() || meta.auth_existed != auth.is_some() {
+        return Err("原始快照文件与元数据不一致，已保留现有 originals。".into());
+    }
+    validate_snapshot_contents(config.as_deref(), auth.as_deref())?;
+    Ok(RestoreSnapshotContents { meta, config, auth })
+}
+
+fn ensure_restore_snapshot_with_writer(
+    codex_home: &Path,
+    config_path: &Path,
+    auth_path: &Path,
+    mut write: impl FnMut(&Path, &[u8]) -> std::io::Result<()>,
+) -> Result<(), String> {
+    let home = fs::canonicalize(codex_home).map_err(|_| "无法定位原始快照所属目录。")?;
+    let snapshot_dir = home.join(BACKUP_DIR_NAME);
+    if snapshot_directory_exists(&snapshot_dir)? {
+        read_restore_snapshot(&snapshot_dir)?;
         secure_snapshot_permissions(&snapshot_dir)?;
         return Ok(());
     }
 
-    fs::create_dir_all(&snapshot_dir)
-        .map_err(|err| format!("无法创建 OceanWay 备份目录：{err}"))?;
-    secure_snapshot_permissions(&snapshot_dir)?;
-
-    let meta = RestoreSnapshotMeta {
-        config_existed: config_path.exists(),
-        auth_existed: auth_path.exists(),
-        created_at: Local::now().to_rfc3339(),
+    let config = managed_files::read_optional(config_path)?;
+    let auth = managed_files::read_optional(auth_path)?;
+    validate_snapshot_contents(config.as_deref(), auth.as_deref())?;
+    let expected = RestoreSnapshotContents {
+        meta: RestoreSnapshotMeta {
+            config_existed: config.is_some(),
+            auth_existed: auth.is_some(),
+            created_at: Local::now().to_rfc3339(),
+        },
+        config,
+        auth,
     };
 
-    if meta.config_existed {
-        copy_private_new(config_path, &snapshot_dir.join("config.toml"))
-            .map_err(|err| format!("无法保存 config.toml 初始快照：{err}"))?;
+    // Only a complete validated directory becomes the immutable first snapshot.
+    // Failed private stages are retained; retries never reuse or delete them.
+    static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let stage = home.join(format!(".{BACKUP_DIR_NAME}.pending-{}-{}-{}",
+        process::id(), Local::now().timestamp_nanos_opt().unwrap_or_default(),
+        SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+    let mut builder = fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
     }
-    if meta.auth_existed {
-        copy_private_new(auth_path, &snapshot_dir.join("auth.json"))
-            .map_err(|err| format!("无法保存 auth.json 初始快照：{err}"))?;
+    builder.create(&stage).map_err(|_| "无法创建独立快照暂存目录。")?;
+    if !snapshot_directory_exists(&stage)? {
+        return Err("无法验证快照暂存目录。".into());
     }
-
-    let rendered = serde_json::to_string_pretty(&meta)
-        .map_err(|err| format!("无法生成 OceanWay 备份元数据：{err}"))?
-        + "\n";
-    fs::write(meta_path, rendered).map_err(|err| format!("无法写入 OceanWay 备份元数据：{err}"))
+    if let Some(bytes) = &expected.config {
+        write(&stage.join("config.toml"), bytes).map_err(|_| "无法暂存原始 config.toml 快照。")?;
+    }
+    if let Some(bytes) = &expected.auth {
+        write(&stage.join("auth.json"), bytes).map_err(|_| "无法暂存原始 auth.json 快照。")?;
+    }
+    let rendered = serde_json::to_vec_pretty(&expected.meta).map_err(|_| "无法生成原始快照元数据。")?;
+    write(&stage.join("meta.json"), &rendered).map_err(|_| "无法暂存原始快照元数据。")?;
+    if read_restore_snapshot(&stage)? != expected {
+        return Err("暂存快照回读不一致，未提交。".into());
+    }
+    if managed_files::read_optional(config_path)? != expected.config
+        || managed_files::read_optional(auth_path)? != expected.auth
+    {
+        return Err("创建快照期间配置或认证发生变化，未提交，请重试。".into());
+    }
+    #[cfg(unix)]
+    fs::File::open(&stage).and_then(|file| file.sync_all())
+        .map_err(|_| "无法同步快照暂存目录，未提交。")?;
+    if snapshot_directory_exists(&snapshot_dir)? {
+        return Err("原始快照目录已出现，未覆盖，请重试。".into());
+    }
+    fs::rename(&stage, &snapshot_dir).map_err(|_| "无法提交完整原始快照，请重试。")?;
+    #[cfg(unix)]
+    fs::File::open(&home).and_then(|file| file.sync_all())
+        .map_err(|_| "原始快照已提交，但无法同步父目录，请重试校验。")?;
+    Ok(())
 }
 
 fn restore_from_snapshot(
@@ -1060,30 +1176,18 @@ fn restore_from_snapshot(
     config_path: &Path,
     auth_path: &Path,
 ) -> Result<bool, String> {
-    let snapshot_dir = codex_home.join(BACKUP_DIR_NAME);
-    let meta_path = snapshot_dir.join("meta.json");
-    if !meta_path.exists() {
+    let home = fs::canonicalize(codex_home).map_err(|_| "无法定位原始快照所属目录。")?;
+    let snapshot_dir = home.join(BACKUP_DIR_NAME);
+    if !snapshot_directory_exists(&snapshot_dir)? {
         return Ok(false);
     }
 
-    let meta_content = managed_files::text(&meta_path)?.ok_or("缺少恢复快照元数据。")?;
-    let meta = serde_json::from_str::<RestoreSnapshotMeta>(&meta_content)
-        .map_err(|err| format!("OceanWay 备份元数据无效：{err}"))?;
-
+    let snapshot = read_restore_snapshot(&snapshot_dir)?;
     let current = read_config_for_write(config_path)?;
-    let original = if meta.config_existed {
-        managed_files::text(&snapshot_dir.join("config.toml"))?
-            .ok_or("无法读取原始 config.toml 快照。")?
-    } else { String::new() };
-    let restored = preserve_independent_settings(&original, &current)?;
-    let original_auth = if meta.auth_existed {
-        let bytes = managed_files::read_optional(&snapshot_dir.join("auth.json"))?
-            .ok_or("无法读取原始 auth.json 快照。")?;
-        let parsed: Value = serde_json::from_slice(&bytes).map_err(|_| "原始 auth.json 快照损坏。")?;
-        if !parsed.is_object() { return Err("原始 auth.json 快照不是对象。".into()); }
-        Some(bytes)
-    } else { None };
-    if meta.config_existed || !restored.trim().is_empty() {
+    let original = std::str::from_utf8(snapshot.config.as_deref().unwrap_or_default())
+        .map_err(|_| "原始 config.toml 快照编码无效。")?;
+    let restored = preserve_independent_settings(original, &current)?;
+    if snapshot.meta.config_existed || !restored.trim().is_empty() {
         write_private_atomic(config_path, restored.as_bytes())
             .map_err(|_| "无法恢复 config.toml 初始快照。")?;
         verify_config_write(config_path, &restored)?;
@@ -1091,7 +1195,7 @@ fn restore_from_snapshot(
         fs::remove_file(config_path).map_err(|err| format!("无法删除新建的 config.toml：{err}"))?;
     }
 
-    if let Some(bytes) = original_auth {
+    if let Some(bytes) = snapshot.auth {
         write_private_atomic(auth_path, &bytes)
             .map_err(|err| format!("无法恢复 auth.json 初始快照：{err}"))?;
     } else if auth_path.exists() {
@@ -1099,7 +1203,7 @@ fn restore_from_snapshot(
     }
 
     // Keep the consumed snapshot for recovery, outside the active snapshot name.
-    let archive = codex_home.join(format!("{BACKUP_DIR_NAME}-restored-{}",
+    let archive = home.join(format!("{BACKUP_DIR_NAME}-restored-{}",
         Local::now().timestamp_nanos_opt().unwrap_or_default()));
     fs::rename(snapshot_dir, archive).map_err(|_| "无法归档已恢复快照。")?;
     Ok(true)
