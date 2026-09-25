@@ -29,15 +29,16 @@ function json(response, status, value, requestId) {
 }
 
 export async function startImageDesktopFixture({
-  imageBytes, textBaseUrl, textKey, allowTextProxy = false,
+  imageBytes, textBaseUrl, textKey, textModels = [], allowTextProxy = false,
 }) {
   if (!Buffer.isBuffer(imageBytes) || !imageBytes.length) {
     throw new Error('Supply a known fixture PNG; fixture outputs are not real generation.');
   }
   const upstream = allowTextProxy ? new URL(textBaseUrl) : null;
   if (upstream && (upstream.protocol !== 'https:' || upstream.username || upstream.password
-      || upstream.search || upstream.hash || !textKey)) {
-    throw new Error('The explicit text-only upstream must be HTTPS with a separate key.');
+      || upstream.search || upstream.hash || !textKey || !textModels.length
+      || textModels.some(model => typeof model !== 'string' || !model || /image|banana/i.test(model)))) {
+    throw new Error('The text-only upstream requires HTTPS, a separate key and explicit text models.');
   }
   const audit = [];
   const waiting = new Set();
@@ -110,7 +111,26 @@ export async function startImageDesktopFixture({
         json(response, 405, { error: { message: 'Unsupported text proxy method.' } });
         return;
       }
-      // Never proxy /images or caller-supplied destinations. Keep the real key
+      if (request.method === 'POST') {
+        let payload;
+        try { payload = JSON.parse(bytes.toString('utf8')); } catch {
+          json(response, 400, { error: { message: 'Text proxy requires uncompressed JSON.' } });
+          return;
+        }
+        const localTool = tool => tool && (
+          ['function', 'custom'].includes(tool.type)
+          || (tool.type === 'namespace' && Array.isArray(tool.tools) && tool.tools.every(localTool)));
+        if (!textModels.includes(payload.model)
+            || (payload.tools !== undefined && (!Array.isArray(payload.tools) || !payload.tools.every(localTool)))
+            || (payload.modalities !== undefined && (!Array.isArray(payload.modalities)
+              || payload.modalities.some(value => value !== 'text')))
+            || (typeof payload.tool_choice === 'object' && payload.tool_choice !== null
+              && !localTool(payload.tool_choice))) {
+          json(response, 400, { error: { message: 'Only explicit text models and local function tools may be proxied.' } });
+          return;
+        }
+      }
+      // Never proxy hosted tools, /images or caller-supplied destinations. Keep the real key
       // private to this explicitly enabled test helper, not in Codex/MCP inputs.
       const destination = new URL(`${upstream.href.replace(/\/$/, '')}/${route}`);
       const controller = new AbortController();

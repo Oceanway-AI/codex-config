@@ -1,7 +1,7 @@
 use super::*;
 #[cfg(target_os = "macos")]
 #[test]
-fn language_exit_check_detects_either_host_or_backend_and_fails_closed() {
+fn restart_exit_check_detects_either_host_or_backend_and_fails_closed() {
     for command in [
         "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT",
         "/Applications/ChatGPT.app/Contents/Resources/codex app-server",
@@ -291,7 +291,7 @@ fn acceptance_snapshot_secrets_have_private_permissions() {
 }
 
 #[test]
-fn restore_preserves_later_mcp_user_rules_language_and_outputs() {
+fn restore_preserves_later_mcp_user_rules_desktop_preferences_and_outputs() {
     let dir = fixture("restore-independent");
     fs::write(dir.join("config.toml"), "model='original'\n").unwrap();
     fs::write(dir.join("AGENTS.md"), "Existing rules").unwrap();
@@ -300,7 +300,7 @@ fn restore_preserves_later_mcp_user_rules_language_and_outputs() {
     let mut current = read_config_for_write(&path).unwrap().parse::<DocumentMut>().unwrap();
     current["developer_instructions"] = value("Later developer rules");
     current["desktop"] = Item::Table(Table::new());
-    current["desktop"]["localeOverride"] = value("zh-CN");
+    current["desktop"]["fontSize"] = value(17);
     current["mcp_servers"]["other"] = Item::Table(Table::new());
     current["mcp_servers"]["other"]["command"] = value("keep-user-tool");
     fs::write(&path, current.to_string()).unwrap();
@@ -314,7 +314,8 @@ fn restore_preserves_later_mcp_user_rules_language_and_outputs() {
     let restored = read_config_for_write(&path).unwrap();
     assert_eq!(read_root_string(&restored, "model").as_deref(), Some("original"));
     assert!(restored.contains("keep-user-tool"));
-    assert!(restored.contains("zh-CN"));
+    let parsed = restored.parse::<DocumentMut>().unwrap();
+    assert_eq!(parsed["desktop"]["fontSize"].as_integer(), Some(17));
     assert!(restored.contains("Later developer rules"));
     assert!(!restored.contains("oceanway_images"));
     assert_eq!(fs::read_to_string(dir.join("AGENTS.md")).unwrap(), "Existing rules\nLater rules");

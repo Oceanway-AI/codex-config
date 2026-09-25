@@ -12,7 +12,6 @@ const $ = (selector) => document.querySelector(selector);
 const configForm = $("#config-form");
 const apiKeyInput = $("#api-key");
 const baseUrlInput = $("#base-url");
-const chineseInterfaceInput = $("#chinese-interface");
 const toggleKeyButton = $("#toggle-key-button");
 const configureButton = $("#configure-button");
 const testButton = $("#test-button");
@@ -128,7 +127,7 @@ function readFormValues() {
     apiKeyInput.focus();
     return null;
   }
-  return { apiKey, baseUrl, chineseInterface: chineseInterfaceInput.checked };
+  return { apiKey, baseUrl };
 }
 
 function authStrategyText(strategy) {
@@ -160,8 +159,6 @@ function renderConfigStatus(status) {
   $('#mcp-handshake-status').textContent = previewLabel(mcp?.toolsAvailable
     ? '图片工具握手通过，真实生图未因此判定通过。'
     : mcp?.message || '工具握手未检查');
-  const language = status.languageStatus;
-  $('#language-status').textContent = previewLabel(language?.message || '中文界面尚未应用');
 
   savedKeyState.hidden = !status.hasApiKey;
   savedKeyState.lastChild.textContent = previewLabel('Key 已保存');
@@ -235,9 +232,8 @@ const statusRefresh = createStatusRefresh({
       }];
     }
     return Promise.all([
-      Promise.all([invoke("get_config_status"), invoke("get_image_mcp_status"),
-        invoke("get_language_status").catch(() => ({ error: true, message: '语言状态读取失败，尚未确认。' }))])
-        .then(([status, imageMcpStatus, languageStatus]) => ({ ...status, imageMcpStatus, languageStatus })),
+      Promise.all([invoke("get_config_status"), invoke("get_image_mcp_status")])
+        .then(([status, imageMcpStatus]) => ({ ...status, imageMcpStatus })),
       invoke("get_system_info"),
     ]);
   },
@@ -266,7 +262,7 @@ async function refreshStatus({ allowDuringMutation = false } = {}) {
 }
 
 function renderConfigurationProgress(phase, blocked = false) {
-  const phases = ['writing', 'checking', 'language', 'restarting', 'complete'];
+  const phases = ['writing', 'checking', 'restarting', 'complete'];
   const current = phases.indexOf(phase);
   document.querySelectorAll('.setup-progress li').forEach((step, index) => {
     const done = index < current || phase === 'complete';
@@ -317,7 +313,7 @@ async function configureProvider(event, resumeFrom = 'writing') {
   $('#configuration-recovery').hidden = true;
   configurationProgress.hidden = false;
   setButtonBusy(configureButton, true, '自动配置中…');
-  apiKeyInput.disabled = baseUrlInput.disabled = chineseInterfaceInput.disabled = true;
+  apiKeyInput.disabled = baseUrlInput.disabled = true;
   const actionButtons = [...document.querySelectorAll('#tools-panel button, [data-config-mutation], #configuration-recovery button, #refresh-status-button, #update-button, #confirm-restore-button, #confirm-restart-button')];
   const previousDisabled = actionButtons.map(button => button.disabled);
   actionButtons.forEach(button => { button.disabled = true; });
@@ -335,7 +331,6 @@ async function configureProvider(event, resumeFrom = 'writing') {
       if (command === 'get_config_status') return { ...browserPreviewStatus(), baseUrl: values.baseUrl };
       if (command === 'restart_codex') return { restarted: true };
       if (command === 'check_image_mcp') return { toolsAvailable: true, message: '模拟工具握手，非真实验证' };
-      if (command === 'get_language_status') return { applied: false, verified: false, message: '模拟预览不读取语言设置' };
       return {};
     });
     if (!invoke) setStatus('界面预览：下面仅模拟流程，不写入文件、不重启应用。');
@@ -356,16 +351,16 @@ async function configureProvider(event, resumeFrom = 'writing') {
     nextStepTitle.textContent = previewLabel(redactLogMessage(String(error), [values.apiKey].filter(Boolean)));
     nextStepDetail.textContent = blockedPhase === 'restarting'
       ? '配置已保存。请保存任务后手动重启目标 Codex；隔离环境不会重启你正在使用的 Codex。重试不会重复写入。'
-        : ['checking', 'language'].includes(blockedPhase)
+        : blockedPhase === 'checking'
         ? '请在问题诊断中检查或修复配置，再点击“重新检查并继续”。'
         : '请检查 Key、地址及配置目录权限，修改后点击“重试写入并继续”。';
-    $('#retry-configuration').textContent = { writing: '重试写入并继续', checking: '重新检查并继续', language: '重试语言设置', restarting: '重试重启并继续' }[blockedPhase];
+    $('#retry-configuration').textContent = { writing: '重试写入并继续', checking: '重新检查并继续', restarting: '重试重启并继续' }[blockedPhase];
     $('#configuration-recovery').hidden = false;
     setStatus(String(error), 'error');
   } finally {
     configuring = false;
     statusBox.hidden = !statusMessage.textContent || configurationPhase === 'failed';
-    apiKeyInput.disabled = baseUrlInput.disabled = chineseInterfaceInput.disabled = false;
+    apiKeyInput.disabled = baseUrlInput.disabled = false;
     actionButtons.forEach((button, index) => { button.disabled = previousDisabled[index]; });
     statusRefresh.setMutationActive(false);
     setButtonBusy(configureButton, false);
@@ -658,7 +653,7 @@ async function restoreDefaults() {
       ? ` 同时撤销 ${restored.restoredSessionFiles} 个历史文件和 ${restored.sqliteRowsRestored} 行索引迁移。`
       : "";
     setStatus(refreshed
-      ? `已恢复原配置，语言设置保留。${historyText} 请重启 Codex。`
+      ? `已恢复原配置。${historyText} 请重启 Codex。`
       : `已恢复原配置，但本机状态读取失败，尚未确认当前状态。${historyText} 请在高级中刷新状态。`,
     refreshed ? "success" : "warning");
   } catch (error) {
@@ -666,20 +661,6 @@ async function restoreDefaults() {
   } finally {
     setButtonBusy(restoreButton, false);
   }
-}
-
-async function restoreOriginalLanguage() {
-  if (!window.confirm('将恢复本工具应用中文前的语言并重启 Codex。请先保存正在进行的任务。')) return;
-  if (!invoke) { setStatus('模拟预览：未修改真实语言或重启。'); return; }
-  try {
-    const result = await invoke('restore_language');
-    if (result.pending) {
-      const restart = await invoke('restart_codex');
-      if (!restart.restarted) throw new Error(restart.message);
-    }
-    await refreshStatus({ allowDuringMutation: true });
-    setStatus('语言恢复操作已完成，请确认 Codex 界面；供应商与会话未更改。', 'success');
-  } catch (error) { setStatus(`语言恢复未完成：${error}`, 'error'); }
 }
 
 function setTab(button) {
@@ -1030,7 +1011,6 @@ migrateHistoryButton.addEventListener("click", () => runMaintenance(migrateHisto
 openDirButton.addEventListener("click", openConfigDirectory);
 restoreButton.addEventListener("click", openRestoreDialog);
 confirmRestoreButton.addEventListener("click", () => runMaintenance(restoreDefaults));
-$('#restore-language-button').addEventListener('click', () => runMaintenance(restoreOriginalLanguage));
 updateButton.addEventListener("click", () => handleUpdate());
 const tabs = [...advancedDialog.querySelectorAll(".tab-button")];
 for (const [index, tab] of tabs.entries()) {

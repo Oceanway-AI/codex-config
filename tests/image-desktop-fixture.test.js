@@ -52,3 +52,39 @@ test('desktop fixture rejects unsafe text upstream configuration before listenin
     await assert.rejects(startImageDesktopFixture({ imageBytes, textBaseUrl, textKey: 'fake', allowTextProxy: true }));
   }
 });
+
+test('text proxy rejects hosted image and remote tools without any upstream request', async t => {
+  const originalFetch = globalThis.fetch;
+  let upstreamCalls = 0;
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    if (String(url).startsWith('https://example.invalid/')) {
+      upstreamCalls += 1;
+      return new Response('{"output":[]}', { headers: { 'content-type': 'application/json' } });
+    }
+    return originalFetch(url, options);
+  });
+  const fixture = await startImageDesktopFixture({ imageBytes, textBaseUrl: 'https://example.invalid/v1',
+    textKey: 'fake-upstream', textModels: ['test-text'], allowTextProxy: true });
+  try {
+    for (const payload of [
+      { tools: [{ type: 'image_generation' }] },
+      { tools: [{ type: 'mcp', server_url: 'https://example.invalid' }] },
+      { tools: [{ type: 'namespace', tools: [{ type: 'image_generation' }] }] },
+      { tool_choice: { type: 'image_generation' } },
+      { modalities: ['text', 'image'] },
+      { model: 'gpt-image-2' },
+      { tools: {} },
+    ]) {
+      const response = await fetch(`${fixture.baseUrl}/responses`, { method: 'POST', headers,
+        body: JSON.stringify({ model: 'test-text', ...payload }) });
+      assert.equal(response.status, 400);
+    }
+    assert.equal(upstreamCalls, 0);
+    assert.equal(fixture.audit.length, 0);
+    const response = await fetch(`${fixture.baseUrl}/responses`, { method: 'POST', headers,
+      body: JSON.stringify({ model: 'test-text', input: 'Test',
+        tools: [{ type: 'namespace', tools: [{ type: 'function', name: 'generate_images' }] }] }) });
+    assert.equal(response.status, 200);
+    assert.equal(upstreamCalls, 1);
+  } finally { await fixture.close(); }
+});

@@ -25,7 +25,6 @@ mod agent_rules;
 mod managed_files;
 mod mcp_config;
 mod mcp_stdio;
-mod language;
 mod image_api;
 mod reference_picker;
 use image_api::ImageJobs;
@@ -631,25 +630,6 @@ async fn check_image_mcp() -> Result<mcp_config::McpStatus, String> {
     mcp_stdio::check(&codex_home()?).await
 }
 
-#[tauri::command]
-fn get_language_status() -> Result<language::LanguageStatus, String> {
-    language::status(&codex_home()?)
-}
-
-#[tauri::command]
-async fn configure_language(enabled: bool) -> Result<language::LanguageStatus, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let home = codex_home()?;
-        let info = collect_system_info(&home);
-        language::prepare(&home, enabled, info.codex_desktop_version.as_deref())
-    }).await.map_err(|_| "语言配置任务异常。".to_string())?
-}
-
-#[tauri::command]
-fn restore_language() -> Result<language::LanguageStatus, String> {
-    language::prepare_restore(&codex_home()?)
-}
-
 fn configure_provider_in_home(
     codex_home: &Path, api_key: String, base_url: String,
 ) -> Result<OperationResult, String> {
@@ -1214,18 +1194,12 @@ fn preserve_independent_settings(original: &str, current: &str) -> Result<String
     let cleaned = direct_image_config::remove(current)?;
     let active = cleaned.parse::<DocumentMut>().map_err(|_| "当前配置损坏。")?;
     // Provider/auth restoration keeps the established snapshot semantics. MCP and
-    // user instructions are independent and may have been edited after that snapshot.
-    for key in ["mcp_servers", "developer_instructions"] {
+    // user instructions and desktop preferences may have changed independently.
+    for key in ["mcp_servers", "developer_instructions", "desktop"] {
         match active.get(key) {
             Some(item) => { restored[key] = item.clone(); }
             None => { restored.remove(key); }
         }
-    }
-    if let Some(locale) = active.get("desktop").and_then(|table| table.get("localeOverride")) {
-        let desktop = ensure_table(restored.as_table_mut(), "desktop")?;
-        desktop["localeOverride"] = locale.clone();
-    } else if let Some(desktop) = restored.get_mut("desktop").and_then(Item::as_table_like_mut) {
-        desktop.remove("localeOverride");
     }
     if restored.to_string() == original { return Ok(original.to_string()); }
     Ok(restored.to_string())
@@ -2501,7 +2475,7 @@ fn run_diagnostics_in_home(codex_home: &Path) -> Result<DiagnosticReport, String
         .or(system.codex_cli_version.as_deref());
     let version_status = "warning";
     let version_detail = match version_value {
-        Some(version) => format!("检测到 Codex {version}；请在新任务验证 MCP、参考图和中文界面，版本号不代表已通过。"),
+        Some(version) => format!("检测到 Codex {version}；请在新任务验证 MCP、参考图和多图生成，版本号不代表已通过。"),
         None => "未检测到 Codex 版本，请确认 Codex Desktop 或 CLI 已安装。".to_string(),
     };
     checks.push(diagnostic_check(
@@ -2901,9 +2875,8 @@ fn restart_codex_desktop() -> Result<RestartCodexResult, String> {
         }
 
         if macos_target_present(macos_process_list().as_deref(), host)? {
-            return Err("无法确认旧桌面及后端完全退出，未写入语言。".into());
+            return Err("无法确认旧桌面及后端完全退出，未重新启动。".into());
         }
-        language::apply_pending_checked(&codex_home()?, macos_codex_version(host).as_deref())?;
         let opened = Command::new("open")
             .arg(&app_path)
             .status()
@@ -3080,16 +3053,6 @@ fn main() {
         if let Err(error) = result { eprintln!("{error}"); process::exit(1); }
         return;
     }
-    if args.as_slice() == ["--apply-pending-language"] {
-        if let Err(error) = codex_home().and_then(|home| language::apply_pending_checked(
-            &home, env::var("OCEANWAY_LANGUAGE_HOST_VERSION").ok().as_deref(),
-        )) {
-            eprintln!("{error}");
-            process::exit(1);
-        }
-        return;
-    }
-
     let gui_only = args.len() == 1 && args[0] == "--gui";
 
     if !args.is_empty() && !gui_only {
@@ -3117,9 +3080,6 @@ fn run_gui() {
             image_api::open_image_result,
             get_image_mcp_status,
             check_image_mcp,
-            get_language_status,
-            configure_language,
-            restore_language,
             reference_picker::pick_reference_images,
             check_for_updates,
             copy_support_report,

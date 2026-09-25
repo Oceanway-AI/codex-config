@@ -204,8 +204,6 @@ pub fn restart() -> Result<super::RestartCodexResult, String> {
         let path = host.path.ok_or("无法确认桌面可执行文件，请手动打开应用后重试。")?;
         json!({"isolated":false,"path":path})
     };
-    target["configurationApp"] = json!(std::env::current_exe()
-        .map_err(|_| "无法定位语言配置程序。")?.to_string_lossy());
     let serialized = serde_json::to_string(&target).map_err(|_| "无法建立重启目标。")?;
     let script = format!("$target = '{}' | ConvertFrom-Json\n{}", serialized.replace('\'', "''"),
         include_str!("restart_windows.ps1"));

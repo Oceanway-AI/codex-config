@@ -8,7 +8,7 @@ This repository only contains the Rust/Tauri version. The old Python/PyQt packag
 
 - Writes the OceanWay provider to Codex config.
 - Uses the stable API Key provider mode required by current Codex Desktop releases, while preserving unrelated existing login fields.
-- Installs managed direct-image HTTP instructions for Codex, without an imagegen dependency, dedicated image CLI, or added MCP server.
+- Deploys a native image MCP and three short routing rules, without an imagegen dependency, dedicated image CLI, or user-installed runtime.
 - Reuses the previously saved OceanWay credential when the API Key field is left empty, without returning the full secret to the frontend.
 - Uses `https://ocean-way.top` as the default Base URL.
 - Preserves existing non-OceanWay Codex settings and providers.
@@ -85,8 +85,6 @@ The server reads the saved current provider and credential for each submission. 
 
 One-click configuration includes atomic saves, readback and a non-billing MCP handshake, then restarts Codex. Start a new task to discover the tools. Saved rules, tool discovery and `/models` visibility do not establish successful natural-language generation. The optional image-test panel makes paid requests only when explicitly submitted and shares the same image engine.
 
-Chinese UI is checked by default. For the source-verified 26.917 desktop family, the adapter stages only `[desktop].localeOverride = "zh-CN"` and saves it after the confirmed host exits, before its normal launch. It never patches installed resources, feature flags, or chat text. Unsupported versions are reported; saving this preference is not proof that localized UI is active. Language changes have a separate ownership receipt and restore action.
-
 Windows restart binds process identity, excludes explicitly isolated instances, waits for old processes to exit and a new visible window to appear. A visible save dialog stops restart. Custom `CODEX_HOME` blocks automatic restart unless the dedicated acceptance harness explicitly binds an isolated desktop; it never falls back to the normal desktop.
 
 ## History Visibility Migration
@@ -111,11 +109,11 @@ On first configuration, the app stores a snapshot in:
 ~/.codex/oceanway-ai-backup/
 ```
 
-Restore returns provider and authentication to that original snapshot, removes owned image MCP/routing rules, and preserves other MCP entries, user instructions and the current language. Sessions and generated images are never removed. Other configuration retains the established snapshot semantics. "Restore original language" independently reverts only the language value still owned by this tool and refuses to overwrite a later manual choice.
+Restore returns provider and authentication to that original snapshot, removes owned image MCP/routing rules, and preserves other MCP entries, user instructions and desktop preferences. Sessions and generated images are never removed. Other configuration retains the established snapshot semantics.
 
 Restore also undoes recorded history visibility migrations by using the migration manifest. It only restores files and database rows that were changed by this tool, so sessions created after the migration are left alone. The app does not provide a default flow for migrating OceanWay-created sessions into OpenAI Official.
 
-Consumed restore snapshots are archived locally instead of deleted. If no snapshot exists, restore only removes configuration it can identify as tool-managed; it does not guess ownership of unrelated credentials.
+First snapshots are staged, validated and committed as a complete directory. Invalid or incomplete old snapshots stop configuration and restoration without overwriting their contents. Failed staging directories are retained for inspection and do not prevent a later attempt. Consumed restore snapshots are archived locally instead of deleted. If no snapshot exists, restore only removes configuration it can identify as tool-managed; it does not guess ownership of unrelated credentials or replace malformed authentication data.
 
 ## Development
 

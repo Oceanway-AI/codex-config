@@ -96,18 +96,6 @@ foreach ($p in $old) {
 foreach ($p in $old) {
     if (!$p.WaitForExit(8000)) { throw 'Old desktop/backend did not exit; not relaunching' }
 }
-if ($target.isolated) { $env:CODEX_HOME = $target.codexHome }
-if (!(Test-Path -LiteralPath $target.configurationApp -PathType Leaf)) {
-    throw 'Language configuration helper is unavailable; not relaunching'
-}
-$env:OCEANWAY_LANGUAGE_HOST_VERSION = Get-DesktopVersion $target.path
-$language = Start-Process -FilePath $target.configurationApp -ArgumentList '--apply-pending-language' -WindowStyle Hidden -PassThru
-if (!$language.WaitForExit(10000)) {
-    if (!$language.HasExited) { $language.Kill() }
-    if (!$language.WaitForExit(3000)) { throw 'Language writer did not exit; retry is blocked' }
-    throw 'Language configuration did not finish; not relaunching'
-}
-if ($language.ExitCode -ne 0) { throw 'Language setting could not be saved; configuration remains available' }
 if ($target.isolated) {
     $env:CODEX_HOME = $target.codexHome
     $env:CODEX_ELECTRON_USER_DATA_PATH = $target.userData

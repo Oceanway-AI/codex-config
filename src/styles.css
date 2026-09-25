@@ -96,9 +96,7 @@ button { overflow-wrap: anywhere; }
 .activation-state[data-kind="success"] { color: var(--success); }
 .activation-state[data-kind="warning"] { color: var(--warning); }
 .activation-state[data-kind="error"] { color: var(--danger); }
-.setup-progress { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; margin: 12px 0; padding: 0; list-style: none; }
-.language-choice { display: flex; align-items: center; gap: 8px; width: fit-content; margin-top: 12px; font-size: 12px; color: var(--ink); }
-.language-choice input { width: 16px; height: 16px; margin: 0; accent-color: var(--blue); }
+.setup-progress { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin: 12px 0; padding: 0; list-style: none; }
 .setup-progress li { display: flex; align-items: flex-start; gap: 6px; min-width: 0; }
 .setup-progress li > span { display: grid; width: 22px; height: 22px; place-items: center; flex-shrink: 0; border: 1px solid var(--line); border-radius: 50%; color: var(--muted); font-size: 11px; }
 .setup-progress strong, .setup-progress small { display: block; font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
