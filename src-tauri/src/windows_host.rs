@@ -33,11 +33,13 @@ fn powershell(script: &str) -> Result<String, String> {
         thread,
         time::{Duration, Instant},
     };
-    // EncodedCommand preserves Unicode paths and avoids shell interpolation.
+    // Keep the Windows command line bounded. The full script (including long
+    // profile paths) is UTF-8 on stdin, not expanded into -EncodedCommand.
     use base64::{engine::general_purpose::STANDARD, Engine};
     let script = format!("$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);\n{}\n{script}",
         include_str!("windows_process_helpers.ps1"));
-    let bytes: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    let bootstrap = "[Console]::InputEncoding=[Text.UTF8Encoding]::new($false); & ([ScriptBlock]::Create([Console]::In.ReadToEnd()))";
+    let bytes: Vec<u8> = bootstrap.encode_utf16().flat_map(u16::to_le_bytes).collect();
     let mut child = Command::new("powershell.exe")
         .args([
             "-NoProfile",
@@ -46,6 +48,7 @@ fn powershell(script: &str) -> Result<String, String> {
             &STANDARD.encode(bytes),
         ])
         .creation_flags(0x08000000)
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -64,6 +67,15 @@ fn powershell(script: &str) -> Result<String, String> {
         let _ = stderr.read_to_string(&mut text);
         text
     });
+    let mut input = child.stdin.take().ok_or("无法发送 Windows 操作脚本。")?;
+    use std::io::Write;
+    if input.write_all(script.as_bytes()).is_err() {
+        drop(input);
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err("无法发送 Windows 操作脚本，操作未完成。".into());
+    }
+    drop(input);
     let start = Instant::now();
     loop {
         if let Some(status) = child
@@ -232,6 +244,12 @@ mod tests {
             let check = format!("$tokens=$null; $errors=$null; $null=[System.Management.Automation.Language.Parser]::ParseInput('{}',[ref]$tokens,[ref]$errors); if($errors.Count){{throw 'Syntax error'}}; 'ok'", source.replace('\'', "''"));
             assert_eq!(powershell(&check).unwrap().trim(), "ok");
         }
+    }
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn long_unicode_scripts_do_not_exceed_the_windows_command_line_limit() {
+        let script = format!("# {}\n'长路径测试成功'", "x".repeat(40_000));
+        assert_eq!(powershell(&script).unwrap().trim(), "长路径测试成功");
     }
     #[cfg(target_os = "windows")]
     #[test]
