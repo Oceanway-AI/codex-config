@@ -609,6 +609,12 @@ fn configure_provider_internal(
     api_key: String,
     base_url: String,
 ) -> Result<OperationResult, String> {
+    configure_provider_in_home(&codex_home()?, api_key, base_url)
+}
+
+fn configure_provider_in_home(
+    codex_home: &Path, api_key: String, base_url: String,
+) -> Result<OperationResult, String> {
     let base_url = base_url.trim();
 
     let base_url = if base_url.is_empty() {
@@ -619,12 +625,10 @@ fn configure_provider_internal(
 
     validate_base_url(base_url)?;
 
-    let codex_home = codex_home()?;
     let api_key = resolve_api_key_in_home(&codex_home, &api_key)?;
     let config_path = codex_home.join("config.toml");
     let auth_path = codex_home.join("auth.json");
     fs::create_dir_all(&codex_home).map_err(|err| format!("无法创建 Codex 目录：{err}"))?;
-    ensure_restore_snapshot(&codex_home, &config_path, &auth_path)?;
     let auth_strategy = choose_provider_auth_strategy(&auth_path);
 
     let old_auth = if auth_path.exists() {
@@ -633,7 +637,19 @@ fn configure_provider_internal(
         None
     };
 
-    let auth_backup_path = write_auth_json(&auth_path, &api_key, auth_strategy)?;
+    // Validate all user-owned inputs before creating the first restore snapshot.
+    read_config_for_write(&config_path)?;
+    let original_auth = old_auth.as_deref().unwrap_or(b"{}");
+    render_auth_json_content(
+        std::str::from_utf8(original_auth).map_err(|_| "auth.json 编码无效，未写入。")?,
+        &api_key, auth_strategy,
+    )?;
+    agent_rules::prepare(codex_home)?;
+    ensure_restore_snapshot(codex_home, &config_path, &auth_path)?;
+    let auth_backup_path = match write_auth_json(&auth_path, &api_key, auth_strategy) {
+        Ok(path) => path,
+        Err(error) => { rollback_auth(&auth_path, old_auth); return Err(error); }
+    };
     let model = read_current_model(&config_path).unwrap_or_else(|| MODEL_FALLBACK.to_string());
     let provider_token = if auth_strategy == ProviderAuthStrategy::ChatGptBearerToken {
         Some(api_key.as_str())
@@ -692,22 +708,31 @@ async fn restore_defaults() -> Result<OperationResult, String> {
 }
 
 fn restore_defaults_internal() -> Result<OperationResult, String> {
-    let codex_home = codex_home()?;
+    restore_defaults_in_home(&codex_home()?)
+}
+
+fn restore_defaults_in_home(codex_home: &Path) -> Result<OperationResult, String> {
     let config_path = codex_home.join("config.toml");
     let auth_path = codex_home.join("auth.json");
     fs::create_dir_all(&codex_home).map_err(|err| format!("无法创建 Codex 目录：{err}"))?;
+    agent_rules::validate_restore(codex_home)?;
+    let originals = ["config.toml", "auth.json", "AGENTS.md", "AGENTS.override.md"]
+        .iter().map(|name| {
+            let path = codex_home.join(name);
+            let bytes = match fs::read(&path) {
+                Ok(bytes) => Some(bytes),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                Err(_) => return Err("无法建立恢复事务，未改动当前配置。".to_string()),
+            };
+            Ok((path, bytes))
+        }).collect::<Result<Vec<_>, String>>()?;
 
     let config_backup_path = backup_file(&config_path)?;
     let auth_backup_path = backup_file(&auth_path)?;
 
-    if restore_from_snapshot(&codex_home, &config_path, &auth_path)? {
-        if config_path.exists() {
-            set_private_permissions(&config_path)?;
-        }
-        if auth_path.exists() {
-            set_private_permissions(&auth_path)?;
-        }
-    } else {
+    let restoration = (|| -> Result<(), String> {
+      agent_rules::restore(codex_home)?;
+      if !restore_from_snapshot(&codex_home, &config_path, &auth_path)? {
         let current = read_config_for_write(&config_path)?;
         let active = read_root_string(&current, "model_provider").as_deref() == Some(PROVIDER_ID);
         let token = read_provider_bearer_token(&current, PROVIDER_ID);
@@ -726,8 +751,22 @@ fn restore_defaults_internal() -> Result<OperationResult, String> {
         }
         set_private_permissions(&config_path)?;
         set_private_permissions(&auth_path)?;
+      }
+      Ok(())
+    })();
+    if let Err(error) = restoration {
+        let mut failed = Vec::new();
+        for (path, bytes) in originals {
+            let result = match bytes {
+                Some(bytes) => write_private_atomic(&path, &bytes),
+                None => fs::remove_file(&path).or_else(|e|
+                    if e.kind() == std::io::ErrorKind::NotFound { Ok(()) } else { Err(e) }),
+            };
+            if result.is_err() { failed.push(display_path(&path)); }
+        }
+        return Err(if failed.is_empty() { format!("{error} 已回滚到恢复前配置。") }
+            else { format!("{error} 回滚失败，请保留备份：{}", failed.join(", ")) });
     }
-    agent_rules::restore(&codex_home)?;
     let history_migration_restore = restore_history_migrations_lossy(&codex_home);
 
     Ok(OperationResult {
@@ -1006,20 +1045,27 @@ fn restore_from_snapshot(
         .map_err(|err| format!("OceanWay 备份元数据无效：{err}"))?;
 
     if meta.config_existed {
-        fs::copy(snapshot_dir.join("config.toml"), config_path)
+        let bytes = fs::read(snapshot_dir.join("config.toml"))
+            .map_err(|_| "无法读取原始 config.toml 快照。")?;
+        write_private_atomic(config_path, &bytes)
             .map_err(|err| format!("无法恢复 config.toml 初始快照：{err}"))?;
     } else if config_path.exists() {
         fs::remove_file(config_path).map_err(|err| format!("无法删除新建的 config.toml：{err}"))?;
     }
 
     if meta.auth_existed {
-        fs::copy(snapshot_dir.join("auth.json"), auth_path)
+        let bytes = fs::read(snapshot_dir.join("auth.json"))
+            .map_err(|_| "无法读取原始 auth.json 快照。")?;
+        write_private_atomic(auth_path, &bytes)
             .map_err(|err| format!("无法恢复 auth.json 初始快照：{err}"))?;
     } else if auth_path.exists() {
         fs::remove_file(auth_path).map_err(|err| format!("无法删除新建的 auth.json：{err}"))?;
     }
 
-    fs::remove_dir_all(snapshot_dir).map_err(|err| format!("无法删除 OceanWay 备份目录：{err}"))?;
+    // Keep the consumed snapshot for recovery, outside the active snapshot name.
+    let archive = codex_home.join(format!("{BACKUP_DIR_NAME}-restored-{}",
+        Local::now().timestamp_nanos_opt().unwrap_or_default()));
+    fs::rename(snapshot_dir, archive).map_err(|_| "无法归档已恢复快照。")?;
     Ok(true)
 }
 

@@ -84,7 +84,14 @@ $forced = $false
 # Close-to-tray is not exit. The UI warned the user to save before this action.
 # Kill only retained, exact-generation application handles, never names or /T.
 foreach ($p in $old) {
-    if (!$p.HasExited) { $p.Kill(); $forced = $true }
+    if (!$p.HasExited) {
+        try { $p.Kill(); $forced = $true }
+        catch {
+            # Windows can report access denied when a child exits between the
+            # status check and TerminateProcess. Only accept a confirmed exit.
+            if (!$p.WaitForExit(1500)) { throw "Cannot stop verified application PID $($p.Id)" }
+        }
+    }
 }
 foreach ($p in $old) {
     if (!$p.WaitForExit(8000)) { throw 'Old desktop/backend did not exit; not relaunching' }
@@ -114,7 +121,7 @@ do {
         $target.started = $launched.StartTime.ToUniversalTime().Ticks.ToString()
         $staging = $target.manifest + '.next'
         [IO.File]::WriteAllText($staging, ($target | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
-        [IO.File]::Replace($staging, $target.manifest, $null)
+        [IO.File]::Replace($staging, $target.manifest, ($target.manifest + '.previous'))
         $manifestUpdated = $true
     }
     $ids = @([uint32]$new.ProcessId)

@@ -115,6 +115,13 @@ pub(super) fn restore(home: &Path) -> Result<(), String> {
     Ok(())
 }
 
+pub(super) fn validate_restore(home: &Path) -> Result<(), String> {
+    for name in NAMES {
+        if let Some(content) = read(&home.join(name))? { strip(&content)?; }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

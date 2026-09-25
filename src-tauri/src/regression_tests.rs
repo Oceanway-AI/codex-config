@@ -37,6 +37,38 @@ fn broken_agent_rules_do_not_write_config_or_auth() {
 }
 
 #[test]
+fn logged_in_user_full_configuration_repeat_key_rotation_and_restore() {
+    let dir = fixture("existing-login-full");
+    let original_config = "model='gpt-5.6-sol'\ndeveloper_instructions='Keep my developer rules'\n";
+    let original_auth = r#"{"auth_mode":"chatgpt","OPENAI_API_KEY":null,"tokens":{"access_token":"fake-original"}}"#;
+    fs::write(dir.join("config.toml"), original_config).unwrap();
+    fs::write(dir.join("auth.json"), original_auth).unwrap();
+    fs::write(dir.join("AGENTS.override.md"), "Original user rules").unwrap();
+    for key in ["fake-first", "fake-first", "fake-rotated"] {
+        let result = configure_provider_in_home(&dir, key.into(), "https://example.invalid/v1".into()).unwrap();
+        assert!(result.direct_image_configured);
+        assert_eq!(read_auth_api_key(&dir.join("auth.json")).as_deref(), Some(key));
+        let config = fs::read_to_string(dir.join("config.toml")).unwrap();
+        assert!(direct_image_config::configured(&config));
+        assert!(agent_rules::configured(&dir));
+        assert_eq!(config.matches("OCEANWAY:DIRECT-IMAGE-API:BEGIN").count(), 1);
+        assert!(read_root_string(&config, "developer_instructions").unwrap().contains("Keep my developer rules"));
+    }
+    let good_config = fs::read(dir.join("config.toml")).unwrap();
+    let good_auth = fs::read(dir.join("auth.json")).unwrap();
+    let good_agents = fs::read(dir.join("AGENTS.override.md")).unwrap();
+    fs::write(dir.join("AGENTS.override.md"), "<!-- OCEANWAY:DIRECT-IMAGE-API:BEGIN -->").unwrap();
+    assert!(restore_defaults_in_home(&dir).is_err());
+    assert_eq!(fs::read(dir.join("config.toml")).unwrap(), good_config);
+    assert_eq!(fs::read(dir.join("auth.json")).unwrap(), good_auth);
+    fs::write(dir.join("AGENTS.override.md"), good_agents).unwrap();
+    restore_defaults_in_home(&dir).unwrap();
+    assert_eq!(fs::read_to_string(dir.join("config.toml")).unwrap(), original_config);
+    assert_eq!(fs::read_to_string(dir.join("auth.json")).unwrap(), original_auth);
+    assert_eq!(fs::read_to_string(dir.join("AGENTS.override.md")).unwrap(), "Original user rules");
+}
+
+#[test]
 fn corrupt_config_is_never_replaced() {
     for bytes in [vec![0xff, 0xfe], b"[broken".to_vec()] {
         let dir = fixture("corrupt-config");
