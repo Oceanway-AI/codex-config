@@ -1,0 +1,815 @@
+{
+  "executable": "D:\\AI-Workspace\\worktrees\\codex-config-sync-image\\dist\\build-139ceb8\\codex-config.exe",
+  "executableSha256": "0f2dcbda04168c59c53bb7cd0b24237aed4bee852e0564105700f8b76d21a328",
+  "fixtureSha256": "31a5213777c4e570a40c12a08e6031e36e2f7f5f2c5dd89c882570a83c3862f4",
+  "fixtureImageSha256": "9b8cf6ff9214c93c092861c087e4418fcb454a9bf0e992927fd88b8248948cf2",
+  "node": "v24.15.0",
+  "startedAt": "2026-09-25T16:34:47.200Z",
+  "network": "numeric loopback only; text proxy disabled",
+  "acceptance": "packaged stdio MCP; CLI setup only, not desktop UI acceptance",
+  "tests": [
+    {
+      "name": "CLI mock setup and packaged MCP discovery send no image POST",
+      "status": "pass",
+      "durationMs": 732,
+      "evidence": {
+        "imagePosts": 0,
+        "toolCount": 4
+      }
+    },
+    {
+      "name": "seven distinct prompts retain exact count and slot-to-request mapping",
+      "status": "pass",
+      "durationMs": 357,
+      "evidence": {
+        "jobId": "image-33500-1790354087966121100-0",
+        "completed": 7,
+        "imagePosts": 7
+      }
+    },
+    {
+      "name": "ordered duplicate attachments preserve original bytes and hashes",
+      "status": "pass",
+      "durationMs": 164,
+      "evidence": {
+        "jobId": "image-33500-1790354088330352400-25",
+        "imagePosts": 2,
+        "orderedReferenceHashes": [
+          "e758ba6aee712b163f66d2269d5c60e7beeca48055dc4578d463a8942607cafd",
+          "129f59ef8d417fa4a6b0f73e5659f175528b6c3d85f81e7b9a367a9de69261bb",
+          "e758ba6aee712b163f66d2269d5c60e7beeca48055dc4578d463a8942607cafd"
+        ]
+      }
+    },
+    {
+      "name": "partial failure retries only failed slots and preserves successful files",
+      "status": "pass",
+      "durationMs": 655,
+      "evidence": {
+        "jobId": "image-33500-1790354088486754100-35",
+        "initialCompleted": 3,
+        "initialFailed": 2,
+        "explicitRetryPosts": 2
+      }
+    },
+    {
+      "name": "live ownership lock prevents another MCP process from mutating the manifest",
+      "status": "pass",
+      "durationMs": 352,
+      "evidence": {
+        "jobId": "image-33500-1790354089141357700-61",
+        "manifestUnchangedByObserver": true,
+        "admittedSaved": 2,
+        "queuedCancelled": 7
+      }
+    },
+    {
+      "name": "stdin EOF cancels queued work and waits for admitted outputs to save",
+      "status": "pass",
+      "durationMs": 1039,
+      "evidence": {
+        "jobId": "image-33500-1790354089495303800-72",
+        "admittedSaved": 2,
+        "queuedCancelled": 4,
+        "recoveryPosts": 0
+      }
+    },
+    {
+      "name": "killed-process recovery records uncertain slots without automatic POST",
+      "status": "pass",
+      "durationMs": 1108,
+      "evidence": {
+        "jobId": "image-23504-1790354090532795000-10",
+        "retainedSuccesses": 3,
+        "uncertainSlots": 2,
+        "recoveryPosts": 0,
+        "explicitRetryPosts": 2
+      }
+    },
+    {
+      "name": "count mismatch returns warnings and retains additional outputs",
+      "status": "pass",
+      "durationMs": 83,
+      "evidence": {
+        "jobId": "image-50012-1790354091640506400-19",
+        "imagePosts": 1,
+        "savedOutputs": 2,
+        "status": "completed_with_warnings"
+      }
+    }
+  ],
+  "processes": [
+    {
+      "role": "mock-only CLI setup",
+      "pid": 46992,
+      "exited": true,
+      "code": 0,
+      "signal": null,
+      "forced": false
+    },
+    {
+      "role": "initial MCP session",
+      "pid": 33500,
+      "exited": true,
+      "code": 0,
+      "signal": null,
+      "forced": false
+    },
+    {
+      "role": "concurrent readback session",
+      "pid": 60560,
+      "exited": true,
+      "code": 0,
+      "signal": null,
+      "forced": false
+    },
+    {
+      "role": "after clean EOF recovery",
+      "pid": 23504,
+      "exited": true,
+      "code": null,
+      "signal": "SIGKILL",
+      "forced": true
+    },
+    {
+      "role": "after forced process recovery",
+      "pid": 50012,
+      "exited": true,
+      "code": 0,
+      "signal": null,
+      "forced": false
+    }
+  ],
+  "jobs": [
+    {
+      "id": "image-33500-1790354087966121100-0",
+      "status": "completed",
+      "total": 7,
+      "completed": 7,
+      "failed": 0,
+      "cancelled": 0,
+      "outcomeUnknown": 0,
+      "outputs": [
+        {
+          "index": 1,
+          "path": "C:\\Users\\admin\\AppData\\Local\\Temp\\oceanway-packaged-images-r2cjsD\\workspace\\output\\images\\image-33500-1790354087966121100-0\\1.png",
+          "sha256": "9b8cf6ff9214c93c092861c087e4418fcb454a9bf0e992927fd88b8248948cf2",
+          "requestId": "ow-local-fixture-1"
+        },
+        {
+          "index": 2,
+          "path": "C:\\Users\\admin\\AppData\\Local\\Temp\\oceanway-packaged-images-r2cjsD\\workspace\\output\\images\\image-33500-1790354087966121100-0\\2.png",
+          "sha256": "9b8cf6ff9214c93c092861c087e4418fcb454a9bf0e992927fd88b8248948cf2",
+          "requestId": "ow-local-fixture-2"
+        },
+        {
+          "index": 3,
+          "path": "C:\\Users\\admin\\AppData\\Local\\Temp\\oceanway-packaged-images-r2cjsD\\workspace\\output\\images\\image-33500-1790354087966121100-0\\3.png",
+          "sha256": "9b8cf6ff9214c93c092861c087e4418fcb454a9bf0e992927fd88b8248948cf2",
+          "requestId": "ow-local-fixture-3"
+        },
+        {
+          "index": 4,
+          "path": "C:\\Users\\admin\\AppData\\Local\\Temp\\oceanway-packaged-images-r2cjsD\\workspace\\output\\images\\image-33500-1790354087966121100-0\\4.png",
+          "sha256": "9b8cf6ff9214c93c092861c087e4418fcb454a9bf0e992927fd88b8248948cf2",
+          "requestId": "ow-local-fixture-4"
+        },
+        {
+          "index": 5,
+          "path": "C:\\Users\\admin\\AppData\\Local\\Temp\\oceanway-packaged-images-r2cjsD\\workspace\\output\\images\\image-33500-1790354087966121100-0\\5.png",
+          "sha256": "9b8cf6ff9214c93c092861c087e4418fcb454a9bf0e992927fd88b8248948cf2",
+          "requestId": "ow-local-fixture-5"
+        },
+        {
+          "index": 6,
+          "path": "C:\\Users\\admin\\AppData\\Local\\Temp\\oceanway-packaged-images-r2cjsD\\workspace\\output\\images\\image-33500-1790354087966121100-0\\6.png",
+          "sha256": "9b8cf6ff9214c93c092861c087e4418fcb454a9bf0e992927fd88b8248948cf2",
+          "requestId": "ow-local-fixture-6"
+        },
+        {
+          "index": 7,
+          "path": "C:\\Users\\admin\\AppData\\Local\\Temp\\oceanway-packaged-images-r2cjsD\\workspace\\output\\images\\image-33500-1790354087966121100-0\\7.png",
+          "sha256": "9b8cf6ff9214c93c092861c087e4418fcb454a9bf0e992927fd88b8248948cf2",
+          "requestId": "ow-local-fixture-7"
+        }
+      ]
+    },
+    {
+      "id": "image-33500-1790354088330352400-25",
+      "status": "completed",
+      "total": 2,
+      "completed": 2,
+      "failed": 0,
+      "cancelled": 0,
+      "outcomeUnknown": 0,
+      "outputs": [
+        {
+          "index": 1,
+          "path": "C:\\Users\\admin\\AppData\\Local\\Temp\\oceanway-packaged-images-r2cjsD\\workspace\\output\\images\\image-33500-1790354088330352400-25\\1.png",
+          "sha256": "9b8cf6ff9214c93c092861c087e4418fcb454a9bf0e992927fd88b8248948cf2",
+          "requestId": "ow-local-fixture-8"
+        },
+        {
+          "index": 2,
+          "path": "C:\\Users\\admin\\AppData\\Local\\Temp\\oceanway-packaged-images-r2cjsD\\workspace\\output\\images\\image-33500-1790354088330352400-25\\2.png",
+          "sha256": "9b8cf6ff9214c93c092861c087e4418fcb454a9bf0e992927fd88b8248948cf2",
+          "requestId": "ow-local-fixture-9"
+        }
+      ]
+    },
+    {
+      "id": "image-33500-1790354088486754100-35",
+      "status": "partial",
+      "total": 5,
+      "completed": 3,
+      "failed": 2,
+      "cancelled": 0,
+      "outcomeUnknown": 0,
+      "outputs": [
+        {
+          "index": 1,
+          "path": "C:\\Users\\admin\\AppData\\Local\\Temp\\oceanway-packaged-images-r2cjsD\\workspace\\output\\images\\image-33500-1790354088486754100-35\\1.png",
+          "sha256": "9b8cf6ff9214c93c092861c087e4418fcb454a9bf0e992927fd88b8248948cf2",
+          "requestId": "ow-local-fixture-10"
+        },
+        {
+          "index": 3,
+          "path": "C:\\Users\\admin\\AppData\\Local\\Temp\\oceanway-packaged-images-r2cjsD\\workspace\\output\\images\\image-33500-1790354088486754100-35\\3.png",
+          "sha256": "9b8cf6ff9214c93c092861c087e4418fcb454a9bf0e992927fd88b8248948cf2",
+          "requestId": "ow-local-fixture-12"
+        },
+        {
+          "index": 5,
+          "path": "C:\\Users\\admin\\AppData\\Local\\Temp\\oceanway-packaged-images-r2cjsD\\workspace\\output\\images\\image-33500-1790354088486754100-35\\5.png",
+          "sha256": "9b8cf6ff9214c93c092861c087e4418fcb454a9bf0e992927fd88b8248948cf2",
+          "requestId": "ow-local-fixture-14"
+        }
+      ]
+    },
+    {
+      "id": "image-33500-1790354088486754100-35",
+      "status": "completed",
+      "total": 5,
+      "completed": 5,
+      "failed": 0,
+      "cancelled": 0,
+      "outcomeUnknown": 0,
+      "outputs": [
+        {
+          "index": 1,
+          "path": "C:\\Users\\admin\\AppData\\Local\\Temp\\oceanway-packaged-images-r2cjsD\\workspace\\output\\images\\image-33500-1790354088486754100-35\\1.png",
+          "sha256": "9b8cf6ff9214c93c092861c087e4418fcb454a9bf0e992927fd88b8248948cf2",
+          "requestId": "ow-local-fixture-10"
+        },
+        {
+          "index": 2,
+          "path": "C:\\Users\\admin\\AppData\\Local\\Temp\\oceanway-packaged-images-r2cjsD\\workspace\\output\\images\\image-33500-1790354088486754100-35\\2.png",
+          "sha256": "9b8cf6ff9214c93c092861c087e4418fcb454a9bf0e992927fd88b8248948cf2",
+          "requestId": "ow-local-fixture-15"
+        },
+        {
+          "index": 3,
+          "path": "C:\\Users\\admin\\AppData\\Local\\Temp\\oceanway-packaged-images-r2cjsD\\workspace\\output\\images\\image-33500-1790354088486754100-35\\3.png",
+          "sha256": "9b8cf6ff9214c93c092861c087e4418fcb454a9bf0e992927fd88b8248948cf2",
+          "requestId": "ow-local-fixture-12"
+        },
+        {
+          "index": 4,
+          "path": "C:\\Users\\admin\\AppData\\Local\\Temp\\oceanway-packaged-images-r2cjsD\\workspace\\output\\images\\image-33500-1790354088486754100-35\\4.png",
+          "sha256": "9b8cf6ff9214c93c092861c087e4418fcb454a9bf0e992927fd88b8248948cf2",
+          "requestId": "ow-local-fixture-16"
+        },
+        {
+          "index": 5,
+          "path": "C:\\Users\\admin\\AppData\\Local\\Temp\\oceanway-packaged-images-r2cjsD\\workspace\\output\\images\\image-33500-1790354088486754100-35\\5.png",
+          "sha256": "9b8cf6ff9214c93c092861c087e4418fcb454a9bf0e992927fd88b8248948cf2",
+          "requestId": "ow-local-fixture-14"
+        }
+      ]
+    },
+    {
+      "id": "image-33500-1790354089141357700-61",
+      "status": "cancelled",
+      "total": 9,
+      "completed": 2,
+      "failed": 0,
+      "cancelled": 7,
+      "outcomeUnknown": 0,
+      "outputs": [
+        {
+          "index": 1,
+          "path": "C:\\Users\\admin\\AppData\\Local\\Temp\\oceanway-packaged-images-r2cjsD\\workspace\\output\\images\\image-33500-1790354089141357700-61\\1.png",
+          "sha256": "9b8cf6ff9214c93c092861c087e4418fcb454a9bf0e992927fd88b8248948cf2",
+          "requestId": "ow-local-fixture-17"
+        },
+        {
+          "index": 2,
+          "path": "C:\\Users\\admin\\AppData\\Local\\Temp\\oceanway-packaged-images-r2cjsD\\workspace\\output\\images\\image-33500-1790354089141357700-61\\2.png",
+          "sha256": "9b8cf6ff9214c93c092861c087e4418fcb454a9bf0e992927fd88b8248948cf2",
+          "requestId": "ow-local-fixture-18"
+        }
+      ]
+    },
+    {
+      "id": "image-33500-1790354089495303800-72",
+      "status": "cancelled",
+      "total": 6,
+      "completed": 2,
+      "failed": 0,
+      "cancelled": 4,
+      "outcomeUnknown": 0,
+      "outputs": [
+        {
+          "index": 1,
+          "path": "C:\\Users\\admin\\AppData\\Local\\Temp\\oceanway-packaged-images-r2cjsD\\workspace\\output\\images\\image-33500-1790354089495303800-72\\1.png",
+          "sha256": "9b8cf6ff9214c93c092861c087e4418fcb454a9bf0e992927fd88b8248948cf2",
+          "requestId": "ow-local-fixture-19"
+        },
+        {
+          "index": 2,
+          "path": "C:\\Users\\admin\\AppData\\Local\\Temp\\oceanway-packaged-images-r2cjsD\\workspace\\output\\images\\image-33500-1790354089495303800-72\\2.png",
+          "sha256": "9b8cf6ff9214c93c092861c087e4418fcb454a9bf0e992927fd88b8248948cf2",
+          "requestId": "ow-local-fixture-20"
+        }
+      ]
+    },
+    {
+      "id": "image-23504-1790354090532795000-10",
+      "status": "partial",
+      "total": 5,
+      "completed": 3,
+      "failed": 2,
+      "cancelled": 0,
+      "outcomeUnknown": 0,
+      "outputs": [
+        {
+          "index": 1,
+          "path": "C:\\Users\\admin\\AppData\\Local\\Temp\\oceanway-packaged-images-r2cjsD\\workspace\\output\\images\\image-23504-1790354090532795000-10\\1.png",
+          "sha256": "9b8cf6ff9214c93c092861c087e4418fcb454a9bf0e992927fd88b8248948cf2",
+          "requestId": "ow-local-fixture-21"
+        },
+        {
+          "index": 3,
+          "path": "C:\\Users\\admin\\AppData\\Local\\Temp\\oceanway-packaged-images-r2cjsD\\workspace\\output\\images\\image-23504-1790354090532795000-10\\3.png",
+          "sha256": "9b8cf6ff9214c93c092861c087e4418fcb454a9bf0e992927fd88b8248948cf2",
+          "requestId": "ow-local-fixture-23"
+        },
+        {
+          "index": 5,
+          "path": "C:\\Users\\admin\\AppData\\Local\\Temp\\oceanway-packaged-images-r2cjsD\\workspace\\output\\images\\image-23504-1790354090532795000-10\\5.png",
+          "sha256": "9b8cf6ff9214c93c092861c087e4418fcb454a9bf0e992927fd88b8248948cf2",
+          "requestId": "ow-local-fixture-25"
+        }
+      ]
+    },
+    {
+      "id": "image-23504-1790354090532795000-10",
+      "status": "completed",
+      "total": 5,
+      "completed": 5,
+      "failed": 0,
+      "cancelled": 0,
+      "outcomeUnknown": 0,
+      "outputs": [
+        {
+          "index": 1,
+          "path": "C:\\Users\\admin\\AppData\\Local\\Temp\\oceanway-packaged-images-r2cjsD\\workspace\\output\\images\\image-23504-1790354090532795000-10\\1.png",
+          "sha256": "9b8cf6ff9214c93c092861c087e4418fcb454a9bf0e992927fd88b8248948cf2",
+          "requestId": "ow-local-fixture-21"
+        },
+        {
+          "index": 2,
+          "path": "C:\\Users\\admin\\AppData\\Local\\Temp\\oceanway-packaged-images-r2cjsD\\workspace\\output\\images\\image-23504-1790354090532795000-10\\2.png",
+          "sha256": "9b8cf6ff9214c93c092861c087e4418fcb454a9bf0e992927fd88b8248948cf2",
+          "requestId": "ow-local-fixture-28"
+        },
+        {
+          "index": 3,
+          "path": "C:\\Users\\admin\\AppData\\Local\\Temp\\oceanway-packaged-images-r2cjsD\\workspace\\output\\images\\image-23504-1790354090532795000-10\\3.png",
+          "sha256": "9b8cf6ff9214c93c092861c087e4418fcb454a9bf0e992927fd88b8248948cf2",
+          "requestId": "ow-local-fixture-23"
+        },
+        {
+          "index": 4,
+          "path": "C:\\Users\\admin\\AppData\\Local\\Temp\\oceanway-packaged-images-r2cjsD\\workspace\\output\\images\\image-23504-1790354090532795000-10\\4.png",
+          "sha256": "9b8cf6ff9214c93c092861c087e4418fcb454a9bf0e992927fd88b8248948cf2",
+          "requestId": "ow-local-fixture-29"
+        },
+        {
+          "index": 5,
+          "path": "C:\\Users\\admin\\AppData\\Local\\Temp\\oceanway-packaged-images-r2cjsD\\workspace\\output\\images\\image-23504-1790354090532795000-10\\5.png",
+          "sha256": "9b8cf6ff9214c93c092861c087e4418fcb454a9bf0e992927fd88b8248948cf2",
+          "requestId": "ow-local-fixture-25"
+        }
+      ]
+    },
+    {
+      "id": "image-50012-1790354091640506400-19",
+      "status": "completed_with_warnings",
+      "total": 1,
+      "completed": 1,
+      "failed": 0,
+      "cancelled": 0,
+      "outcomeUnknown": 0,
+      "outputs": [
+        {
+          "index": 1,
+          "path": "C:\\Users\\admin\\AppData\\Local\\Temp\\oceanway-packaged-images-r2cjsD\\workspace\\output\\images\\image-50012-1790354091640506400-19\\1.png",
+          "sha256": "9b8cf6ff9214c93c092861c087e4418fcb454a9bf0e992927fd88b8248948cf2",
+          "requestId": "ow-local-fixture-30"
+        }
+      ]
+    }
+  ],
+  "cleanup": {
+    "fixtureClosed": true,
+    "temporaryDirectoryRemoved": true,
+    "allOwnedProcessesExited": true,
+    "errors": []
+  },
+  "sandbox": "C:\\Users\\admin\\AppData\\Local\\Temp\\oceanway-packaged-images-r2cjsD",
+  "fixtureStats": {
+    "active": 0,
+    "peak": 2,
+    "imageSubmissions": 30
+  },
+  "audit": [
+    {
+      "id": "ow-local-fixture-1",
+      "path": "/v1/images/generations",
+      "model": "gpt-image-2",
+      "n": 1,
+      "prompt": "batch slot 1",
+      "size": "320x160",
+      "references": [],
+      "mode": "success",
+      "outcome": "mock-image"
+    },
+    {
+      "id": "ow-local-fixture-2",
+      "path": "/v1/images/generations",
+      "model": "gpt-image-2",
+      "n": 1,
+      "prompt": "batch slot 2",
+      "size": "320x160",
+      "references": [],
+      "mode": "success",
+      "outcome": "mock-image"
+    },
+    {
+      "id": "ow-local-fixture-3",
+      "path": "/v1/images/generations",
+      "model": "gpt-image-2",
+      "n": 1,
+      "prompt": "batch slot 3",
+      "size": "320x160",
+      "references": [],
+      "mode": "success",
+      "outcome": "mock-image"
+    },
+    {
+      "id": "ow-local-fixture-4",
+      "path": "/v1/images/generations",
+      "model": "gpt-image-2",
+      "n": 1,
+      "prompt": "batch slot 4",
+      "size": "320x160",
+      "references": [],
+      "mode": "success",
+      "outcome": "mock-image"
+    },
+    {
+      "id": "ow-local-fixture-5",
+      "path": "/v1/images/generations",
+      "model": "gpt-image-2",
+      "n": 1,
+      "prompt": "batch slot 5",
+      "size": "320x160",
+      "references": [],
+      "mode": "success",
+      "outcome": "mock-image"
+    },
+    {
+      "id": "ow-local-fixture-6",
+      "path": "/v1/images/generations",
+      "model": "gpt-image-2",
+      "n": 1,
+      "prompt": "batch slot 6",
+      "size": "320x160",
+      "references": [],
+      "mode": "success",
+      "outcome": "mock-image"
+    },
+    {
+      "id": "ow-local-fixture-7",
+      "path": "/v1/images/generations",
+      "model": "gpt-image-2",
+      "n": 1,
+      "prompt": "batch slot 7",
+      "size": "320x160",
+      "references": [],
+      "mode": "success",
+      "outcome": "mock-image"
+    },
+    {
+      "id": "ow-local-fixture-8",
+      "path": "/v1/images/edits",
+      "model": "gpt-image-2",
+      "n": 1,
+      "prompt": "edit first view",
+      "size": "1024x1024",
+      "references": [
+        {
+          "field": "image[]",
+          "name": "reference-1.png",
+          "type": "image/png",
+          "bytes": 73,
+          "sha256": "e758ba6aee712b163f66d2269d5c60e7beeca48055dc4578d463a8942607cafd"
+        },
+        {
+          "field": "image[]",
+          "name": "reference-2.png",
+          "type": "image/png",
+          "bytes": 74,
+          "sha256": "129f59ef8d417fa4a6b0f73e5659f175528b6c3d85f81e7b9a367a9de69261bb"
+        },
+        {
+          "field": "image[]",
+          "name": "reference-3.png",
+          "type": "image/png",
+          "bytes": 73,
+          "sha256": "e758ba6aee712b163f66d2269d5c60e7beeca48055dc4578d463a8942607cafd"
+        }
+      ],
+      "mode": "success",
+      "outcome": "mock-image"
+    },
+    {
+      "id": "ow-local-fixture-9",
+      "path": "/v1/images/edits",
+      "model": "gpt-image-2",
+      "n": 1,
+      "prompt": "edit second view",
+      "size": "1024x1024",
+      "references": [
+        {
+          "field": "image[]",
+          "name": "reference-1.png",
+          "type": "image/png",
+          "bytes": 73,
+          "sha256": "e758ba6aee712b163f66d2269d5c60e7beeca48055dc4578d463a8942607cafd"
+        },
+        {
+          "field": "image[]",
+          "name": "reference-2.png",
+          "type": "image/png",
+          "bytes": 74,
+          "sha256": "129f59ef8d417fa4a6b0f73e5659f175528b6c3d85f81e7b9a367a9de69261bb"
+        },
+        {
+          "field": "image[]",
+          "name": "reference-3.png",
+          "type": "image/png",
+          "bytes": 73,
+          "sha256": "e758ba6aee712b163f66d2269d5c60e7beeca48055dc4578d463a8942607cafd"
+        }
+      ],
+      "mode": "success",
+      "outcome": "mock-image"
+    },
+    {
+      "id": "ow-local-fixture-10",
+      "path": "/v1/images/generations",
+      "model": "gpt-image-2",
+      "n": 1,
+      "prompt": "partial first",
+      "size": "1024x1024",
+      "references": [],
+      "mode": "partial",
+      "outcome": "mock-image"
+    },
+    {
+      "id": "ow-local-fixture-11",
+      "path": "/v1/images/generations",
+      "model": "gpt-image-2",
+      "n": 1,
+      "prompt": "OW_FAIL partial second",
+      "size": "1024x1024",
+      "references": [],
+      "mode": "partial",
+      "outcome": "http-502"
+    },
+    {
+      "id": "ow-local-fixture-12",
+      "path": "/v1/images/generations",
+      "model": "gpt-image-2",
+      "n": 1,
+      "prompt": "partial third",
+      "size": "1024x1024",
+      "references": [],
+      "mode": "partial",
+      "outcome": "mock-image"
+    },
+    {
+      "id": "ow-local-fixture-13",
+      "path": "/v1/images/generations",
+      "model": "gpt-image-2",
+      "n": 1,
+      "prompt": "OW_FAIL partial fourth",
+      "size": "1024x1024",
+      "references": [],
+      "mode": "partial",
+      "outcome": "http-502"
+    },
+    {
+      "id": "ow-local-fixture-14",
+      "path": "/v1/images/generations",
+      "model": "gpt-image-2",
+      "n": 1,
+      "prompt": "partial fifth",
+      "size": "1024x1024",
+      "references": [],
+      "mode": "partial",
+      "outcome": "mock-image"
+    },
+    {
+      "id": "ow-local-fixture-15",
+      "path": "/v1/images/generations",
+      "model": "gpt-image-2",
+      "n": 1,
+      "prompt": "OW_FAIL partial second",
+      "size": "1024x1024",
+      "references": [],
+      "mode": "success",
+      "outcome": "mock-image"
+    },
+    {
+      "id": "ow-local-fixture-16",
+      "path": "/v1/images/generations",
+      "model": "gpt-image-2",
+      "n": 1,
+      "prompt": "OW_FAIL partial fourth",
+      "size": "1024x1024",
+      "references": [],
+      "mode": "success",
+      "outcome": "mock-image"
+    },
+    {
+      "id": "ow-local-fixture-17",
+      "path": "/v1/images/generations",
+      "model": "gpt-image-2",
+      "n": 1,
+      "prompt": "live owner fixture",
+      "size": "1024x1024",
+      "references": [],
+      "mode": "stall",
+      "outcome": "mock-image"
+    },
+    {
+      "id": "ow-local-fixture-18",
+      "path": "/v1/images/generations",
+      "model": "gpt-image-2",
+      "n": 1,
+      "prompt": "live owner fixture",
+      "size": "1024x1024",
+      "references": [],
+      "mode": "stall",
+      "outcome": "mock-image"
+    },
+    {
+      "id": "ow-local-fixture-19",
+      "path": "/v1/images/generations",
+      "model": "gpt-image-2",
+      "n": 1,
+      "prompt": "EOF drain fixture",
+      "size": "1024x1024",
+      "references": [],
+      "mode": "stall",
+      "outcome": "mock-image"
+    },
+    {
+      "id": "ow-local-fixture-20",
+      "path": "/v1/images/generations",
+      "model": "gpt-image-2",
+      "n": 1,
+      "prompt": "EOF drain fixture",
+      "size": "1024x1024",
+      "references": [],
+      "mode": "stall",
+      "outcome": "mock-image"
+    },
+    {
+      "id": "ow-local-fixture-21",
+      "path": "/v1/images/generations",
+      "model": "gpt-image-2",
+      "n": 1,
+      "prompt": "crash first",
+      "size": "1024x1024",
+      "references": [],
+      "mode": "partial",
+      "outcome": "mock-image"
+    },
+    {
+      "id": "ow-local-fixture-22",
+      "path": "/v1/images/generations",
+      "model": "gpt-image-2",
+      "n": 1,
+      "prompt": "OW_FAIL crash second",
+      "size": "1024x1024",
+      "references": [],
+      "mode": "partial",
+      "outcome": "http-502"
+    },
+    {
+      "id": "ow-local-fixture-23",
+      "path": "/v1/images/generations",
+      "model": "gpt-image-2",
+      "n": 1,
+      "prompt": "crash third",
+      "size": "1024x1024",
+      "references": [],
+      "mode": "partial",
+      "outcome": "mock-image"
+    },
+    {
+      "id": "ow-local-fixture-24",
+      "path": "/v1/images/generations",
+      "model": "gpt-image-2",
+      "n": 1,
+      "prompt": "OW_FAIL crash fourth",
+      "size": "1024x1024",
+      "references": [],
+      "mode": "partial",
+      "outcome": "http-502"
+    },
+    {
+      "id": "ow-local-fixture-25",
+      "path": "/v1/images/generations",
+      "model": "gpt-image-2",
+      "n": 1,
+      "prompt": "crash fifth",
+      "size": "1024x1024",
+      "references": [],
+      "mode": "partial",
+      "outcome": "mock-image"
+    },
+    {
+      "id": "ow-local-fixture-26",
+      "path": "/v1/images/generations",
+      "model": "gpt-image-2",
+      "n": 1,
+      "prompt": "OW_FAIL crash second",
+      "size": "1024x1024",
+      "references": [],
+      "mode": "stall",
+      "outcome": "mock-image"
+    },
+    {
+      "id": "ow-local-fixture-27",
+      "path": "/v1/images/generations",
+      "model": "gpt-image-2",
+      "n": 1,
+      "prompt": "OW_FAIL crash fourth",
+      "size": "1024x1024",
+      "references": [],
+      "mode": "stall",
+      "outcome": "mock-image"
+    },
+    {
+      "id": "ow-local-fixture-28",
+      "path": "/v1/images/generations",
+      "model": "gpt-image-2",
+      "n": 1,
+      "prompt": "OW_FAIL crash second",
+      "size": "1024x1024",
+      "references": [],
+      "mode": "success",
+      "outcome": "mock-image"
+    },
+    {
+      "id": "ow-local-fixture-29",
+      "path": "/v1/images/generations",
+      "model": "gpt-image-2",
+      "n": 1,
+      "prompt": "OW_FAIL crash fourth",
+      "size": "1024x1024",
+      "references": [],
+      "mode": "success",
+      "outcome": "mock-image"
+    },
+    {
+      "id": "ow-local-fixture-30",
+      "path": "/v1/images/generations",
+      "model": "gpt-image-2",
+      "n": 1,
+      "prompt": "extra output fixture",
+      "size": "1024x1024",
+      "references": [],
+      "mode": "extra-output",
+      "outcome": "mock-image"
+    }
+  ],
+  "unexpectedFetchCalls": 0,
+  "finishedAt": "2026-09-25T16:34:51.755Z",
+  "status": "pass"
+}
