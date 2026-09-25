@@ -188,6 +188,16 @@ struct Session {
     previews_sent: Mutex<HashSet<(String, usize)>>,
 }
 
+type CancellationGuard = Arc<dyn Fn() -> bool + Send + Sync>;
+
+fn pending_cancellation(
+    cancelled: impl Fn() -> bool + Send + Sync + 'static,
+) -> (Arc<AtomicBool>, CancellationGuard) {
+    let active = Arc::new(AtomicBool::new(true));
+    let pending = active.clone();
+    (active, Arc::new(move || cancelled() && pending.load(Ordering::SeqCst)))
+}
+
 struct Operation(Arc<Session>);
 
 impl Operation {
@@ -278,51 +288,37 @@ impl ImageMcp {
     async fn generate(
         &self,
         args: GenerateArgs,
-        context: RequestContext<RoleServer>,
+        cancelled: CancellationGuard,
     ) -> Result<ImageJob, String> {
-        if context.ct.is_cancelled() {
+        if cancelled() {
             return Err("The image request was cancelled before submission.".into());
         }
         args.validate()?;
-        let job = self
-            .mutate(move |jobs| {
-                let workspace = absolute_workspace(&args.workspace_directory)?;
-                let request = ImageTestRequest {
-                    model: args.model,
-                    prompt: args.prompt,
-                    prompts: args.prompts,
-                    count: args.count,
-                    size: args.size,
-                    reference_paths: args.reference_paths,
-                };
-                jobs.start(request, Some(&workspace), true)
-            })
-            .await?;
-        // Submission is blocking and cannot be aborted safely. Cancel its queue
-        // if the client cancelled while submission was being prepared.
-        if context.ct.is_cancelled() {
-            self.cancel_job(job.id).await
-        } else {
-            Ok(job)
-        }
+        self.mutate(move |jobs| {
+            let workspace = absolute_workspace(&args.workspace_directory)?;
+            let request = ImageTestRequest {
+                model: args.model,
+                prompt: args.prompt,
+                prompts: args.prompts,
+                count: args.count,
+                size: args.size,
+                reference_paths: args.reference_paths,
+            };
+            jobs.start_guarded(request, Some(&workspace), true, cancelled)
+        })
+        .await
     }
 
     async fn retry(
         &self,
         args: JobArgs,
-        context: RequestContext<RoleServer>,
+        cancelled: CancellationGuard,
     ) -> Result<ImageJob, String> {
-        if context.ct.is_cancelled() {
+        if cancelled() {
             return Err("The retry was cancelled before submission.".into());
         }
-        let job = self
-            .mutate(move |jobs| jobs.retry(&args.job_id))
-            .await?;
-        if context.ct.is_cancelled() {
-            self.cancel_job(job.id).await
-        } else {
-            Ok(job)
-        }
+        self.mutate(move |jobs| jobs.retry_guarded(&args.job_id, cancelled))
+            .await
     }
 
     async fn poll(&self, args: &GetArgs) -> Result<ImageJob, String> {
@@ -379,10 +375,12 @@ impl ImageMcp {
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> CallToolResult {
+        let ct = context.ct.clone();
+        let (active, cancelled) = pending_cancellation(move || ct.is_cancelled());
         let arguments = request.arguments.unwrap_or_default();
         let result = match request.name.as_ref() {
             "generate_images" => match parse(arguments) {
-                Ok(args) => self.generate(args, context).await,
+                Ok(args) => self.generate(args, cancelled.clone()).await,
                 Err(message) => Err(message),
             },
             "get_image_job" => match parse(arguments) {
@@ -394,12 +392,13 @@ impl ImageMcp {
                 Err(message) => Err(message),
             },
             "retry_image_job" => match parse(arguments) {
-                Ok(args) => self.retry(args, context).await,
+                Ok(args) => self.retry(args, cancelled.clone()).await,
                 Err(message) => Err(message),
             },
             _ => Err("Unknown image tool.".into()),
         };
-        match result {
+        let job_id = result.as_ref().ok().map(|job| job.id.clone());
+        let response = match result {
             Ok(job) => {
                 let session = self.session.clone();
                 match blocking(move || render_job(job, &session)).await {
@@ -408,7 +407,18 @@ impl ImageMcp {
                 }
             }
             Err(message) => tool_error(message),
+        };
+        if cancelled() {
+            if let Some(id) = job_id {
+                let _ = self.cancel_job(id).await;
+            }
+            // Keep the engine predicate armed if cancellation raced with rendering.
+            return tool_error("The image tool request was cancelled.".into());
         }
+        // rmcp cancels ct on normal completion too. Disarm only after rendering,
+        // with no await before returning, so durable queued work survives that event.
+        active.store(false, Ordering::SeqCst);
+        response
     }
 }
 
@@ -848,6 +858,49 @@ mod tests {
         let result = tool_error(error);
         assert_eq!(result.is_error, Some(true));
         assert_eq!(result.structured_content.unwrap()["error"], expected);
+    }
+
+    #[test]
+    fn cancellation_guard_remains_active_through_rendering() {
+        let ct = Arc::new(AtomicBool::new(false));
+        let token = ct.clone();
+        let (active, cancelled) = pending_cancellation(move || token.load(Ordering::SeqCst));
+        let engine_guard = cancelled.clone();
+        assert!(!engine_guard());
+        render_job(sample_job(), &Session::default()).unwrap();
+        assert!(active.load(Ordering::SeqCst));
+        ct.store(true, Ordering::SeqCst);
+        assert!(std::thread::spawn(move || engine_guard()).join().unwrap());
+        drop(cancelled);
+        assert!(active.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn normal_response_disarms_guard_before_sdk_completion_cancellation() {
+        let ct = Arc::new(AtomicBool::new(false));
+        let token = ct.clone();
+        let (active, cancelled) = pending_cancellation(move || token.load(Ordering::SeqCst));
+        render_job(sample_job(), &Session::default()).unwrap();
+        active.store(false, Ordering::SeqCst);
+        ct.store(true, Ordering::SeqCst);
+        assert!(!std::thread::spawn(move || cancelled()).join().unwrap());
+    }
+
+    #[tokio::test]
+    async fn cancelled_generate_and_retry_never_enter_engine_preflight() {
+        let server = ImageMcp::new(ImageJobs::default());
+        let (_, cancelled) = pending_cancellation(|| true);
+        let args: GenerateArgs = serde_json::from_value(json!({
+            "workspace_directory": "unavailable-relative-workspace",
+            "prompt": "Create an image.",
+        })).unwrap();
+        let error = server.generate(args, cancelled.clone()).await.err().unwrap();
+        assert_eq!(error, "The image request was cancelled before submission.");
+        let error = server.retry(JobArgs { job_id: "unknown-job".into() }, cancelled)
+            .await.err().unwrap();
+        assert_eq!(error, "The retry was cancelled before submission.");
+        assert!(!server.jobs.has_active_requests());
+        assert_eq!(server.session.operations.load(Ordering::SeqCst), 0);
     }
 
     #[test]
