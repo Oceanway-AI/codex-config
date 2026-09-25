@@ -34,6 +34,7 @@ const TIMEOUT: Duration = Duration::from_secs(240);
 const LEASE: Duration = Duration::from_secs(120);
 const PREVIEW_BUDGET: usize = 96 * 1024;
 const MAX_PREVIEWS: usize = 2;
+const LOCAL_FIXTURE_KEY: &str = "oceanway-local-fixture";
 const BILLING_NOTICE: &str = "Each attempt sends n=1; batch support is unverified. No automatic retry. \
     Timeout, cancellation, or an unusable response does not prove that billing did not occur. \
     Cancellation stops queued work; in-flight requests finish. Explicit retry may incur another charge.";
@@ -851,6 +852,13 @@ fn validate_submission_provider(input: &Input, provider: &SavedProvider) -> Resu
     if provider.home != input.provider.home {
         return Err(Failure::not_sent("Image submission owner changed; no POST was sent."));
     }
+    if checked_provider_transport(&input.provider)? != checked_provider_transport(provider)? {
+        return Err(Failure {
+            stop_job: true,
+            ..Failure::not_sent("Image provider transport changed during preflight; no POST was sent. \
+                Review the saved provider and explicitly retry.")
+        });
+    }
     ensure_inputs_do_not_contain_key(&input.request, &provider.key)?;
     ensure_no_credential_in_values(
         [input.directory.to_string_lossy().as_ref(), provider.home.to_string_lossy().as_ref()],
@@ -1298,6 +1306,41 @@ fn normalize_api_base(base: &str) -> Result<String, String> {
     Ok(if url.path().trim_matches('/').is_empty() { format!("{base}/v1") } else { base.into() })
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ProviderTransport {
+    Https,
+    LoopbackHttp,
+}
+
+fn provider_transport(base: &str, key: &str) -> Result<ProviderTransport, String> {
+    super::validate_base_url(base).map_err(|_| "Saved provider base URL is invalid.".to_string())?;
+    let url = Url::parse(base).map_err(|_| "Saved provider base URL is invalid.".to_string())?;
+    if url.scheme() == "https" {
+        return Ok(ProviderTransport::Https);
+    }
+    // Numeric hosts never invoke DNS. IpAddr::is_loopback excludes mapped IPv6,
+    // private networks and wildcard listeners; no localhost/domain exception.
+    let loopback = url.host_str().and_then(|host|
+        host.trim_start_matches('[').trim_end_matches(']').parse::<IpAddr>().ok()
+    ).is_some_and(|ip| ip.is_loopback());
+    if url.scheme() == "http" && loopback && key == LOCAL_FIXTURE_KEY {
+        return Ok(ProviderTransport::LoopbackHttp);
+    }
+    Err("Image providers require HTTPS. HTTP fixtures require a numeric loopback address \
+        and the reserved local fixture credential.".into())
+}
+
+fn checked_provider_transport(provider: &SavedProvider) -> Result<ProviderTransport, Failure> {
+    #[cfg(test)]
+    if provider.local_mock {
+        return Ok(ProviderTransport::LoopbackHttp);
+    }
+    provider_transport(&provider.api_base, &provider.key).map_err(|message| Failure {
+        stop_job: true,
+        ..Failure::not_sent(message)
+    })
+}
+
 fn load_provider() -> Result<SavedProvider, String> {
     let home = super::codex_home().map_err(|_| "Could not locate CODEX_HOME.".to_string())?;
     load_provider_in_home(&home)
@@ -1329,9 +1372,6 @@ fn load_provider_in_home(home: &Path) -> Result<SavedProvider, String> {
         }
     }
     let api_base = normalize_api_base(&base)?;
-    if Url::parse(&api_base).map_err(|_| "Invalid provider URL.".to_string())?.scheme() != "https" {
-        return Err("The saved image API base must use HTTPS to protect the API key.".into());
-    }
     // Native MCP does not require a shell environment variable. auth.json is
     // authoritative when present; legacy inline bearer tokens remain supported.
     let auth_path = home.join("auth.json");
@@ -1342,6 +1382,7 @@ fn load_provider_in_home(home: &Path) -> Result<SavedProvider, String> {
         Err(_) => return Err("Could not read saved auth.json credentials.".into()),
     }.filter(|key| !key.trim().is_empty())
         .ok_or_else(|| "Save an OceanWay API key in auth.json before running image requests.".to_string())?;
+    provider_transport(&api_base, &key)?;
     // Do not pair a key read from a changed config with an earlier endpoint snapshot.
     if fs::read_to_string(home.join("config.toml")).ok().as_ref() != Some(&config) {
         return Err("Provider configuration changed while loading; try again.".into());
@@ -1591,11 +1632,7 @@ fn client_builder(timeout: Duration) -> ClientBuilder {
 }
 
 fn provider_client(provider: &SavedProvider) -> Result<Client, Failure> {
-    let https_only = true;
-    #[cfg(test)]
-    let https_only = https_only && !provider.local_mock;
-    #[cfg(not(test))]
-    let _ = provider;
+    let https_only = checked_provider_transport(provider)? == ProviderTransport::Https;
     client_builder(TIMEOUT).https_only(https_only).build()
         .map_err(|_| Failure::new("Could not initialize the image HTTP client."))
 }
@@ -1662,7 +1699,7 @@ fn load_post_provider(provider: &SavedProvider) -> Result<SavedProvider, Failure
     load_provider_in_home(&provider.home).map_err(|message| Failure {
         message: format!("Current saved OceanWay provider is unavailable; no POST was sent. {message}"),
         stop_job: true,
-        ..Failure::new("")
+        ..Failure::not_sent("")
     })
 }
 

@@ -1437,12 +1437,14 @@ fn provider_reload_at_final_guard_uses_explicit_home_and_blocks_changed_config()
         authorize_post(&service.shared, &id, 1, &input)
     });
     let failure = result.err().unwrap();
-    assert!(failure.stop_job);
+    assert!(failure.stop_job && failure.not_sent);
     assert!(failure.message.contains("no POST was sent"));
     assert!(!failure.message.contains(MOCK_KEY));
     assert_eq!(mock.count(), 0);
     let mut registry = lock(&service.shared).unwrap();
-    finish_item(find_job_mut(&mut registry, &id).unwrap(), 1, Err(failure), 1);
+    let job = find_job_mut(&mut registry, &id).unwrap();
+    finish_item(job, 1, Err(failure), 1);
+    assert_eq!((job.snapshot().failed, job.snapshot().cancelled), (0, 1));
 }
 
 #[test]
@@ -2208,5 +2210,202 @@ fn invalid_unrelated_history_is_preserved_and_does_not_block_new_jobs() {
     assert_eq!(index_after["jobs"][history[3].0.as_str()], malformed_entry);
     for (path, bytes) in unchanged {
         assert_eq!(fs::read(path).unwrap(), bytes);
+    }
+}
+
+fn save_local_fixture_provider(home: &Path, base: &str, key: &str) {
+    fs::write(home.join("config.toml"), format!(
+        "model_provider = 'OceanWay'\n[model_providers.OceanWay]\n\
+         base_url = '{base}'\nenv_key = 'FIXTURE_MUST_NOT_REQUIRE_ENV'\n"
+    )).unwrap();
+    fs::write(home.join("auth.json"), json!({ "OPENAI_API_KEY": key }).to_string()).unwrap();
+}
+
+#[test]
+fn fixture_transport_accepts_only_numeric_loopback_http_with_the_exact_reserved_key() {
+    for base in [
+        "http://127.0.0.1:41000/v1", "http://127.8.9.10:41000/custom",
+        "http://[::1]:41000/v1", "http://[0:0:0:0:0:0:0:1]:41000/v1",
+        // The URL parser canonicalizes these numeric forms to 127.0.0.1.
+        "http://2130706433:41000/v1", "http://0x7f000001:41000/v1",
+    ] {
+        assert!(matches!(provider_transport(base, LOCAL_FIXTURE_KEY), Ok(ProviderTransport::LoopbackHttp)), "{base}");
+        for key in ["", MOCK_KEY, "oceanway-local-fixture-extra", " oceanway-local-fixture "] {
+            assert!(provider_transport(base, key).is_err(), "{base}");
+        }
+    }
+    for base in [
+        "http://example.invalid/v1", "http://localhost:41000/v1", "http://x.localhost/v1",
+        "http://127.0.0.1.example.invalid/v1", "http://0.0.0.0/v1", "http://8.8.8.8/v1",
+        "http://10.0.0.1/v1", "http://169.254.169.254/v1", "http://192.168.1.1/v1",
+        "http://[::]/v1", "http://[::ffff:127.0.0.1]/v1", "http://[fc00::1]/v1",
+        "http://user:secret@127.0.0.1/v1", "http://127.0.0.1/v1?key=secret",
+        "http://127.0.0.1/v1#fragment", "file:///127.0.0.1/v1",
+    ] {
+        assert!(provider_transport(base, LOCAL_FIXTURE_KEY).is_err(), "{base}");
+    }
+    assert!(matches!(provider_transport("https://example.invalid/custom", MOCK_KEY),
+        Ok(ProviderTransport::Https)));
+}
+
+#[test]
+fn saved_http_fixture_rejects_arbitrary_auth_keys_before_start_or_client_creation() {
+    let home = TempHome::new();
+    let mock = Mock::new(|_, _| panic!("non-fixture credentials must never reach HTTP"));
+    let service = ImageJobs::new(&home.0).unwrap();
+    for key in ["", MOCK_KEY, "oceanway-local-fixture-extra"] {
+        save_local_fixture_provider(&home.0, &mock.base, key);
+        assert!(load_provider_in_home(&home.0).is_err());
+        assert!(service.start(request(1), None, false).is_err());
+        let (_, mut input) = input(&home, &mock, 1);
+        input.provider.local_mock = false;
+        input.provider.key = key.into();
+        let failure = provider_client(&input.provider).err().unwrap();
+        assert!(failure.not_sent && failure.stop_job);
+    }
+    assert!(lock(&service.shared).unwrap().jobs.is_empty());
+    assert!(!service.has_active_requests());
+    assert_eq!(mock.count(), 0);
+}
+
+#[test]
+fn production_fixture_auth_metadata_partial_retry_and_ordered_edits_share_the_real_engine() {
+    let _serial = WORKER_TEST.lock().unwrap();
+    let home = TempHome::new();
+    let fail_once = AtomicBool::new(true);
+    let mock = Mock::new(move |_, request| {
+        assert_eq!(request.headers["authorization"], format!("Bearer {LOCAL_FIXTURE_KEY}"));
+        if request.method == "GET" {
+            assert_eq!(request.path, "/v1/models");
+            return Reply::json(json!({ "data": [{ "id": "gpt-image-2" }] }));
+        }
+        if request.path.ends_with("/generations") {
+            let body: Value = serde_json::from_slice(&request.body).unwrap();
+            if body["prompt"] == "fixture-fail-once" && fail_once.swap(false, Ordering::SeqCst) {
+                return Reply { status: 503, headers: Vec::new(), body: b"mock-only failure".to_vec() };
+            }
+        }
+        Reply::json(success())
+    });
+    save_local_fixture_provider(&home.0, &mock.base, LOCAL_FIXTURE_KEY);
+    let provider = load_provider_in_home(&home.0).unwrap();
+    assert!(!provider.local_mock, "exercise production validation, not the unit-test bypass");
+    assert!(probe_capabilities(&provider, "gpt-image-2".into()).available);
+    let service = ImageJobs::new(&home.0).unwrap();
+    let mut generation = request(2);
+    generation.prompts = vec!["fixture-success".into(), "fixture-fail-once".into()];
+    let submitted = service.start(generation, None, false).unwrap();
+    let partial = finished(&service, &submitted.id);
+    assert_eq!((partial.status.as_str(), partial.completed, partial.failed), ("partial", 1, 1));
+    assert_eq!(mock.count(), 3, "metadata plus two POSTs; failure must not automatically retry");
+    let saved = partial.items.iter().find(|item| item.status == "succeeded").unwrap();
+    let path = saved.path.as_ref().unwrap();
+    let original = fs::read(path).unwrap();
+    assert_eq!(saved.sha256.as_deref(), Some(hash(&original).as_str()));
+    service.retry(&submitted.id).unwrap();
+    assert_eq!(finished(&service, &submitted.id).completed, 2);
+    assert_eq!(fs::read(path).unwrap(), original);
+    assert_eq!(mock.count(), 4);
+
+    let first = home.0.join("fixture-first.png");
+    let second = home.0.join("fixture-second.png");
+    fs::write(&first, png(1, 2)).unwrap();
+    fs::write(&second, png(3, 4)).unwrap();
+    let mut edit = request(1);
+    edit.reference_paths = [&first, &second, &first].into_iter()
+        .map(|path| path.to_string_lossy().into_owned()).collect();
+    let submitted = service.start(edit, None, false).unwrap();
+    let done = finished(&service, &submitted.id);
+    assert_eq!(done.completed, 1);
+    assert_eq!(done.reference_hashes, vec![hash(&png(1, 2)), hash(&png(3, 4)), hash(&png(1, 2))]);
+    let captured = mock.requests.lock().unwrap();
+    assert_eq!(captured.len(), 5);
+    let edit = captured.last().unwrap();
+    assert_eq!(edit.path, "/v1/images/edits");
+    let body = String::from_utf8_lossy(&edit.body);
+    let positions: Vec<_> = (1..=3).map(|index| body.find(&format!("reference-{index}.png")).unwrap()).collect();
+    assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
+    let manifest = fs::read_to_string(Path::new(&done.output_directory).join("manifest.json")).unwrap();
+    assert!(!manifest.contains(LOCAL_FIXTURE_KEY));
+}
+
+#[test]
+fn production_fixture_preflight_transport_or_key_changes_are_not_sent_and_stop_the_queue() {
+    for change in ["key", "to_https", "to_http"] {
+        for after_persistence in [false, true] {
+            let home = TempHome::new();
+            let mock = Mock::new(|_, _| panic!("changed fixture preflight must never POST"));
+            let https_base = mock.base.replacen("http://", "https://", 1);
+            let original_base = if change == "to_http" { &https_base } else { &mock.base };
+            save_local_fixture_provider(&home.0, original_base, LOCAL_FIXTURE_KEY);
+            let (id, mut input) = input(&home, &mock, 3);
+            input.provider = load_provider_in_home(&home.0).unwrap();
+            assert!(!input.provider.local_mock);
+            let service = ImageJobs::default();
+            record_without_workers(&service, id.clone(), input, false);
+            let input = {
+                let mut registry = lock(&service.shared).unwrap();
+                let job = find_job_mut(&mut registry, &id).unwrap();
+                job.claim().unwrap();
+                Arc::clone(&job.input)
+            };
+            let mut reads = 0;
+            let outcome = execute_with_guard(&input, 1, Instant::now(), || {
+                authorize_post_with_loader(&service.shared, &id, 1, &input, || {
+                    reads += 1;
+                    if reads == if after_persistence { 2 } else { 1 } {
+                        if after_persistence {
+                            let manifest: Value = serde_json::from_slice(
+                                &fs::read(input.directory.join("manifest.json")).unwrap()
+                            ).unwrap();
+                            assert_eq!(manifest["job"]["items"][0]["postStarted"], true);
+                        }
+                        let base = if change == "to_https" { &https_base } else { &mock.base };
+                        let key = if change == "key" { "different-nonsecret-fixture-key" } else { LOCAL_FIXTURE_KEY };
+                        save_local_fixture_provider(&home.0, base, key);
+                    }
+                    load_post_provider(&input.provider)
+                })
+            });
+            let failure = outcome.as_ref().err().unwrap();
+            assert!(failure.not_sent && failure.stop_job, "{change}");
+            assert!(!failure.message.contains("different-nonsecret-fixture-key"));
+            assert_eq!(reads, if after_persistence { 2 } else { 1 });
+            {
+                let mut registry = lock(&service.shared).unwrap();
+                let job = find_job_mut(&mut registry, &id).unwrap();
+                finish_item(job, 1, outcome, 1);
+                persist_or_stop(job).unwrap();
+            }
+            let done = service.status(&id).unwrap();
+            assert_eq!((done.completed, done.failed, done.cancelled), (0, 0, 3));
+            assert!(!service.has_active_requests());
+            assert_eq!(mock.count(), 0);
+        }
+    }
+}
+
+#[test]
+fn production_loopback_fixture_keeps_redirects_disabled_and_output_downloads_public() {
+    let _serial = WORKER_TEST.lock().unwrap();
+    for scenario in ["redirect", "http", "https"] {
+        let home = TempHome::new();
+        let mock = Mock::new(move |_, request| {
+            if scenario == "redirect" {
+                return Reply {
+                    status: 307,
+                    headers: vec![("Location".into(), format!("http://{}/redirect", request.headers["host"]))],
+                    body: Vec::new(),
+                };
+            }
+            Reply::json(json!({
+                "data": [{ "url": format!("{scenario}://{}/image.png", request.headers["host"]) }]
+            }))
+        });
+        save_local_fixture_provider(&home.0, &mock.base, LOCAL_FIXTURE_KEY);
+        let service = ImageJobs::new(&home.0).unwrap();
+        let submitted = service.start(request(1), None, false).unwrap();
+        assert_eq!(finished(&service, &submitted.id).failed, 1);
+        assert_eq!(mock.count(), 1, "no redirect or loopback download may follow the provider POST");
     }
 }
