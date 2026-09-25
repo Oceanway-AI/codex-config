@@ -1,4 +1,4 @@
-//! Direct, explicitly requested paid image tests. Register ImageJobs as Tauri state.
+//! Shared image engine for explicit Tauri/MCP submissions. Register ImageJobs as Tauri state.
 //!
 //! `completed` counts successes, not all terminal items. Indices are one-based.
 //! The queue is a cursor, not a count-sized allocation. `items` contains every
@@ -12,13 +12,14 @@ use reqwest::blocking::{multipart, Client, ClientBuilder, Response};
 use reqwest::{redirect::Policy, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Cursor, Read, Write};
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{mpsc, Arc, Condvar, Mutex, MutexGuard};
+use std::sync::{mpsc, Arc, Condvar, Mutex, MutexGuard, OnceLock, Weak};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::State;
@@ -29,18 +30,24 @@ const JSON_BYTES: usize = 72 * 1024 * 1024;
 const MODEL_BYTES: usize = 4 * 1024 * 1024;
 const MAX_DIMENSION: u32 = 16_384;
 const MAX_PIXELS: u64 = 64 * 1024 * 1024;
-const TIMEOUT: Duration = Duration::from_secs(180);
+const TIMEOUT: Duration = Duration::from_secs(240);
+const LEASE: Duration = Duration::from_secs(120);
+const PREVIEW_BUDGET: usize = 96 * 1024;
+const MAX_PREVIEWS: usize = 2;
 const BILLING_NOTICE: &str = "Each attempt sends n=1; batch support is unverified. No automatic retry. \
     Timeout, cancellation, or an unusable response does not prove that billing did not occur. \
     Cancellation stops queued work; in-flight requests finish. Explicit retry may incur another charge.";
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ImageTestRequest {
     #[serde(default = "default_model")]
     pub model: String,
+    #[serde(default)]
     pub prompt: String,
+    #[serde(default)]
+    pub prompts: Vec<String>,
     pub count: usize,
     #[serde(default)]
     pub reference_paths: Vec<String>,
@@ -66,7 +73,7 @@ pub struct ImageCapabilities {
     pub message: String,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImageItem {
     pub index: usize,
@@ -83,8 +90,32 @@ pub struct ImageItem {
     pub elapsed_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub warning: Option<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub additional_paths: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub outputs: Vec<ImageOutput>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub count_mismatch: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub retry_blocked: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub post_started: bool,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageOutput {
+    pub path: String,
+    pub width: u32,
+    pub height: u32,
+    pub sha256: String,
+    pub bytes: u64,
 }
 
 impl ImageItem {
@@ -99,11 +130,18 @@ impl ImageItem {
             elapsed_ms: None,
             warning: None,
             additional_paths: Vec::new(),
+            width: None,
+            height: None,
+            sha256: None,
+            outputs: Vec::new(),
+            count_mismatch: false,
+            retry_blocked: false,
+            post_started: false,
         }
     }
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImageJob {
     pub id: String,
@@ -116,6 +154,17 @@ pub struct ImageJob {
     pub cancelled: usize,
     pub items: Vec<ImageItem>,
     pub message: String,
+    pub output_directory: String,
+    pub reference_paths: Vec<String>,
+    pub reference_hashes: Vec<String>,
+    pub warnings: Vec<String>,
+    pub count_mismatch: bool,
+    pub persistence_error: Option<String>,
+    pub paused: bool,
+    pub leased: bool,
+    pub recovered: bool,
+    pub outcome_unknown: usize,
+    pub lease_remaining_ms: Option<u64>,
 }
 
 // Credentials and the config snapshot never implement Serialize or Debug.
@@ -154,10 +203,21 @@ struct StoredJob {
     failed: usize,
     items: BTreeMap<usize, ImageItem>,
     persistence_error: Option<String>,
+    reference_hashes: Vec<String>,
+    ownership_token: String,
+    leased: bool,
+    lease_deadline: Option<Instant>,
+    paused: bool,
+    recovered: bool,
+    revision: u64,
 }
 
 impl StoredJob {
     fn new(id: String, input: Input) -> Self {
+        let reference_hashes = input.references.iter().map(|reference| hash(&reference.bytes)).collect();
+        let ownership_token = hash(format!(
+            "{}:{id}:{}", input.provider.home.display(), SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ).as_bytes());
         Self {
             id,
             input: Arc::new(input),
@@ -168,6 +228,13 @@ impl StoredJob {
             failed: 0,
             items: BTreeMap::new(),
             persistence_error: None,
+            reference_hashes,
+            ownership_token,
+            leased: false,
+            lease_deadline: None,
+            paused: false,
+            recovered: false,
+            revision: 0,
         }
     }
 
@@ -178,18 +245,19 @@ impl StoredJob {
 
     fn skip_successes(&mut self) {
         while self.next.is_some_and(|index| {
-            self.items.get(&index).is_some_and(|item| item.status == "succeeded")
+            self.items.get(&index).is_some_and(|item| item.status == "succeeded" || item.retry_blocked)
         }) {
             self.advance();
         }
     }
 
     fn running(&self) -> bool {
-        self.active > 0 || (!self.stopped && self.next.is_some())
+        self.active > 0 || (!self.stopped && !self.paused && !self.recovered && self.next.is_some())
     }
 
     fn claim(&mut self) -> Option<usize> {
-        if self.stopped {
+        self.expire_lease();
+        if self.stopped || self.paused || self.recovered {
             return None;
         }
         let index = self.next?;
@@ -203,16 +271,24 @@ impl StoredJob {
     fn snapshot(&self) -> ImageJob {
         let total = self.input.request.count;
         let cancelled = if self.stopped {
-            total - self.completed - self.failed - self.active
+            total.saturating_sub(self.completed).saturating_sub(self.failed).saturating_sub(self.active)
         } else {
             0
         };
         let status = if self.running() {
             "running"
+        } else if self.completed == total {
+            if self.items.values().any(|item| item.warning.is_some() || item.count_mismatch) {
+                "completed_with_warnings"
+            } else {
+                "completed"
+            }
+        } else if self.recovered {
+            "interrupted"
+        } else if self.paused {
+            "paused"
         } else if self.stopped {
             "cancelled"
-        } else if self.completed == total {
-            "completed"
         } else if self.completed > 0 {
             "partial"
         } else {
@@ -224,7 +300,7 @@ impl StoredJob {
             let mut previews = 0;
             while let Some(index) = cursor {
                 if !self.items.contains_key(&index) {
-                    items.push(ImageItem::new(index, "queued"));
+                    items.push(ImageItem::new(index, if self.paused || self.recovered { "paused" } else { "queued" }));
                     previews += 1;
                     if previews == 2 {
                         break;
@@ -234,6 +310,7 @@ impl StoredJob {
             }
         }
         items.sort_by_key(|item| item.index);
+        bound_previews(&mut items);
         let warning_count = self.items.values().filter(|item| item.warning.is_some()).count();
         let response_warning = self.items.values().find_map(|item| item.warning.as_ref())
             .map(|warning| format!(" {warning_count} index/indices have response warnings. {warning}"))
@@ -248,11 +325,24 @@ impl StoredJob {
             failed: self.failed,
             cancelled,
             items,
+            output_directory: self.input.directory.to_string_lossy().into_owned(),
+            reference_paths: self.input.request.reference_paths.clone(),
+            reference_hashes: self.reference_hashes.clone(),
+            warnings: self.items.values().filter_map(|item| item.warning.clone()).take(8).collect(),
+            count_mismatch: self.items.values().any(|item| item.count_mismatch),
+            persistence_error: self.persistence_error.clone(),
+            paused: self.paused || self.recovered,
+            leased: self.leased,
+            recovered: self.recovered,
+            outcome_unknown: self.items.values().filter(|item| item.status == "uncertain").count(),
+            lease_remaining_ms: self.lease_deadline.map(|deadline|
+                u64::try_from(deadline.saturating_duration_since(Instant::now()).as_millis()).unwrap_or(u64::MAX)),
             message: format!(
                 "{BILLING_NOTICE} Items include attempted indices and at most two queue previews; \
-                 other indices are {}. Progress is saved to manifest.json; restarting the app \
-                 never automatically resumes POSTs. Recovery requires explicit user action.{}{}",
-                if self.stopped { "cancelled" } else { "queued" },
+                 other indices are {}. manifest.json is the durable progress record unless a \
+                 persistenceError is reported. Restarting never automatically resumes POSTs. \
+                 Paused/recovered jobs require explicit retry; status only renews the 120s lease.{}{}",
+                if self.stopped { "cancelled" } else if self.paused || self.recovered { "paused" } else { "queued" },
                 self.persistence_error.as_ref().map(|error| format!(" {error}")).unwrap_or_default(),
                 response_warning
             ),
@@ -261,6 +351,9 @@ impl StoredJob {
 
     fn cancel(&mut self) {
         self.stopped = true;
+        self.paused = false;
+        self.recovered = false;
+        self.revision = self.revision.wrapping_add(1);
         for item in self.items.values_mut().filter(|item| item.status == "queued") {
             item.status = "cancelled".into();
         }
@@ -270,35 +363,85 @@ impl StoredJob {
         if self.running() {
             return Err("Wait for all in-flight image requests to finish before retrying.".into());
         }
-        if self.completed == self.input.request.count {
-            return Err("All image indices already succeeded; nothing to retry.".into());
+        if self.items.values().filter(|item| item.status == "succeeded" || item.retry_blocked).count()
+            == self.input.request.count
+        {
+            return Err("All indices are already saved or blocked by output integrity evidence; nothing to retry.".into());
         }
-        for item in self.items.values_mut().filter(|item| item.status != "succeeded") {
+        for item in self.items.values_mut().filter(|item| item.status != "succeeded" && !item.retry_blocked) {
             // Retain the last failure's evidence until this index is actually claimed.
             item.status = "queued".into();
         }
-        self.failed = 0;
+        self.failed = self.items.values().filter(|item| item.retry_blocked && item.status != "succeeded").count();
         self.stopped = false;
+        self.paused = false;
+        self.recovered = false;
+        self.revision = self.revision.wrapping_add(1);
+        self.renew_lease();
         self.next = Some(1);
         self.skip_successes();
         self.persistence_error = None;
         persist_or_stop(self)
     }
+
+    fn renew_lease(&mut self) {
+        self.lease_deadline = self.leased.then(|| Instant::now() + LEASE);
+    }
+
+    fn expire_lease(&mut self) -> bool {
+        if !self.stopped && !self.paused && !self.recovered
+            && (self.next.is_some() || self.active > 0)
+            && self.lease_deadline.is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            self.paused = true;
+            self.revision = self.revision.wrapping_add(1);
+            return true;
+        }
+        false
+    }
 }
 
-#[derive(Serialize)]
+fn hash(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+fn bound_previews(items: &mut [ImageItem]) {
+    let mut remaining = PREVIEW_BUDGET;
+    let mut count = 0;
+    for item in items.iter_mut().rev() {
+        if let Some(preview) = &item.preview_data_url {
+            if count < MAX_PREVIEWS && preview.len() <= remaining {
+                remaining -= preview.len();
+                count += 1;
+            } else {
+                item.preview_data_url = None;
+            }
+        }
+    }
+}
+
+#[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct JobManifest {
     schema_version: u32,
     updated_at_ms: u64,
     requires_explicit_resume: bool,
-    recovery_message: &'static str,
+    recovery_message: String,
+    engine: String,
+    codex_home: PathBuf,
+    ownership_token: String,
     prompt: String,
+    prompts: Vec<String>,
     model: String,
     reference_paths: Vec<String>,
     size: String,
     count: usize,
     output_directory: String,
+    leased: bool,
     job: ImageJob,
 }
 
@@ -326,20 +469,25 @@ fn persist_manifest(job: &StoredJob) -> Result<(), String> {
         item.preview_data_url = None;
     }
     let manifest = JobManifest {
-        schema_version: 1,
+        schema_version: 2,
         updated_at_ms: u64::try_from(
             SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis(),
         ).unwrap_or(u64::MAX),
         requires_explicit_resume: true,
         recovery_message: "This is the last saved progress, not a resumed job. No POST is resumed \
             automatically. Previously running indices may already have been billed. Review saved \
-            outputs and explicitly choose recovery before sending any further paid request.",
+            outputs and explicitly choose recovery before sending any further paid request.".into(),
+        engine: ENGINE_ID.into(),
+        codex_home: job.input.provider.home.clone(),
+        ownership_token: job.ownership_token.clone(),
         prompt: job.input.request.prompt.clone(),
+        prompts: job.input.request.prompts.clone(),
         model: job.input.request.model.clone(),
         reference_paths: job.input.request.reference_paths.clone(),
         size: job.input.request.size.clone(),
         count: job.input.request.count,
         output_directory: job.input.directory.to_string_lossy().into_owned(),
+        leased: job.leased,
         job: snapshot,
     };
     let mut manifest = serde_json::to_value(manifest)
@@ -373,9 +521,9 @@ fn persist_manifest(job: &StoredJob) -> Result<(), String> {
 }
 
 fn persist_or_stop(job: &mut StoredJob) -> Result<(), String> {
-    if persist_manifest(job).is_err() {
-        let message = "Progress could not be persisted. Queued work stopped; in-flight requests \
-            may finish and may have been billed. Existing images are not deleted.".to_string();
+    if let Err(error) = persist_manifest(job) {
+        let message = format!("Progress could not be persisted: {error} Queued work stopped; in-flight requests \
+            may finish and may have been billed. Existing images are not deleted.");
         job.persistence_error = Some(message.clone());
         job.cancel();
         return Err(message);
@@ -389,6 +537,7 @@ struct Registry {
     workers: usize,
     last_job: Option<String>,
     shutdown: bool,
+    home: Option<PathBuf>,
 }
 
 #[derive(Default)]
@@ -397,17 +546,29 @@ struct Shared {
     wake: Condvar,
 }
 
-#[derive(Default)]
+#[derive(Clone)]
 pub struct ImageJobs {
+    shared: Arc<Shared>,
+    _lifetime: Arc<ServiceLifetime>,
+}
+
+struct ServiceLifetime {
     shared: Arc<Shared>,
 }
 
-impl Drop for ImageJobs {
+impl Default for ImageJobs {
+    fn default() -> Self {
+        let shared = Arc::new(Shared::default());
+        Self { _lifetime: Arc::new(ServiceLifetime { shared: Arc::clone(&shared) }), shared }
+    }
+}
+
+impl Drop for ServiceLifetime {
     fn drop(&mut self) {
         if let Ok(mut registry) = self.shared.registry.lock() {
             registry.shutdown = true;
             for job in registry.jobs.values_mut() {
-                if job.running() {
+                if job.running() || job.paused || job.recovered {
                     job.cancel();
                     let _ = persist_or_stop(job);
                 }
@@ -416,6 +577,10 @@ impl Drop for ImageJobs {
         }
     }
 }
+
+#[path = "image_engine_store.rs"]
+mod durable;
+use durable::*;
 
 fn lock(shared: &Shared) -> Result<MutexGuard<'_, Registry>, String> {
     shared.registry.lock().map_err(|_| "Image job state is unavailable.".into())
@@ -430,57 +595,99 @@ fn find_job_mut<'a>(registry: &'a mut Registry, id: &str) -> Result<&'a mut Stor
 }
 
 fn ensure_workers(shared: &Arc<Shared>, registry: &mut Registry) -> Result<(), String> {
-    while registry.workers < 2 {
-        let state = Arc::clone(shared);
-        thread::Builder::new()
-            .name(format!("image-api-{}", registry.workers + 1))
-            .spawn(move || worker(state))
-            .map_err(|_| "Could not start image workers; no new job was submitted.".to_string())?;
-        registry.workers += 1;
+    let pool = worker_pool();
+    let mut state = pool.state.lock().map_err(|_| "Image worker pool is unavailable.".to_string())?;
+    if !state.services.iter().any(|service| service.ptr_eq(&Arc::downgrade(shared))) {
+        state.services.push(Arc::downgrade(shared));
     }
+    while state.workers < 2 {
+        let pool = Arc::clone(pool);
+        thread::Builder::new()
+            .name(format!("image-api-{}", state.workers + 1))
+            .spawn(move || worker(pool))
+            .map_err(|_| "Could not start image workers; no new job was submitted.".to_string())?;
+        state.workers += 1;
+    }
+    registry.workers = state.workers;
+    pool.wake.notify_all();
     Ok(())
 }
 
-fn worker(shared: Arc<Shared>) {
+#[derive(Default)]
+struct PoolState {
+    services: Vec<Weak<Shared>>,
+    cursor: usize,
+    workers: usize,
+}
+
+#[derive(Default)]
+struct WorkerPool {
+    state: Mutex<PoolState>,
+    wake: Condvar,
+}
+
+fn worker_pool() -> &'static Arc<WorkerPool> {
+    static POOL: OnceLock<Arc<WorkerPool>> = OnceLock::new();
+    POOL.get_or_init(|| Arc::new(WorkerPool::default()))
+}
+
+fn claim_task(shared: &Arc<Shared>) -> Option<(String, usize, Arc<Input>)> {
+    // Never hold the pool lock while acquiring a service registry.
+    let mut registry = shared.registry.try_lock().ok()?;
+    if registry.shutdown {
+        return None;
+    }
+    for job in registry.jobs.values_mut() {
+        if job.expire_lease() {
+            let _ = persist_or_stop(job);
+        }
+    }
+    let eligible = |job: &&StoredJob| !job.stopped && !job.paused && !job.recovered && job.next.is_some();
+    let id = registry.jobs.values().filter(eligible)
+        .find(|job| registry.last_job.as_ref().is_none_or(|last| job.id > *last))
+        .or_else(|| registry.jobs.values().find(eligible))
+        .map(|job| job.id.clone())?;
+    let job = registry.jobs.get_mut(&id)?;
+    let index = job.claim()?;
+    if persist_or_stop(job).is_err() {
+        job.active -= 1;
+        let item = job.items.get_mut(&index)?;
+        item.status = "cancelled".into();
+        item.error = Some("Progress write failed; no request was sent for this index.".into());
+        return None;
+    }
+    let input = Arc::clone(&job.input);
+    registry.last_job = Some(id.clone());
+    Some((id, index, input))
+}
+
+fn worker(pool: Arc<WorkerPool>) {
     loop {
-        let (id, index, input) = {
-            let mut registry = match lock(&shared) {
-                Ok(registry) => registry,
+        let services = {
+            let mut state = match pool.state.lock() {
+                Ok(state) => state,
                 Err(_) => return,
             };
-            loop {
-                if registry.shutdown {
-                    return;
-                }
-                let eligible = |job: &&StoredJob| !job.stopped && job.next.is_some();
-                let next = registry.jobs.values().filter(eligible)
-                    .find(|job| registry.last_job.as_ref().is_none_or(|last| job.id > *last))
-                    .or_else(|| registry.jobs.values().find(eligible))
-                    .map(|job| job.id.clone());
-                if let Some(id) = next {
-                    let job = registry.jobs.get_mut(&id).expect("selected recorded job");
-                    let index = job.claim().expect("selected queued index");
-                    if persist_or_stop(job).is_err() {
-                        job.active -= 1;
-                        let item = job.items.get_mut(&index).expect("claimed index");
-                        item.status = "cancelled".into();
-                        item.error = Some("Progress write failed; no request was sent for this index.".into());
-                        let _ = persist_manifest(job);
-                        continue;
-                    }
-                    let input = Arc::clone(&job.input);
-                    registry.last_job = Some(id.clone());
-                    break (id, index, input);
-                }
-                registry = match shared.wake.wait(registry) {
-                    Ok(registry) => registry,
-                    Err(_) => return,
-                };
+            state.services.retain(|service| service.strong_count() > 0);
+            let len = state.services.len();
+            if len > 0 {
+                state.cursor = (state.cursor + 1) % len;
             }
+            (0..len).filter_map(|offset|
+                state.services[(state.cursor + offset) % len].upgrade()).collect::<Vec<_>>()
+        };
+        let selected = services.iter().find_map(|shared|
+            claim_task(shared).map(|task| (Arc::clone(shared), task)));
+        drop(services);
+        let Some((shared, (id, index, input))) = selected else {
+            let state = match pool.state.lock() { Ok(state) => state, Err(_) => return };
+            // Also expires leases without callers polling; a notification is only an optimization.
+            drop(pool.wake.wait_timeout(state, Duration::from_millis(100)));
+            continue;
         };
         let started = Instant::now();
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            execute(&input, index, started)
+            execute_with_guard(&input, index, started, || authorize_post(&shared, &id, index, &input))
         })).unwrap_or_else(|_| Err(Failure::new("Image worker failed; billing may be unknown.")));
         let elapsed = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         drop(input);
@@ -509,19 +716,95 @@ fn finish_item(job: &mut StoredJob, index: usize, outcome: Result<SavedResult, F
             item.request_id = result.request_id;
             item.warning = result.warning;
             item.additional_paths = result.additional_paths;
+            item.width = Some(result.outputs[0].width);
+            item.height = Some(result.outputs[0].height);
+            item.sha256 = Some(result.outputs[0].sha256.clone());
+            item.outputs = result.outputs;
+            item.count_mismatch = result.count_mismatch;
             job.completed += 1;
         }
         Err(failure) => {
-            item.status = "failed".into();
+            item.status = if failure.not_sent {
+                if job.paused { "paused" } else { "cancelled" }
+            } else {
+                "failed"
+            }.into();
             item.error = Some(failure.message);
             item.request_id = failure.request_id;
-            job.failed += 1;
+            item.count_mismatch = failure.count_mismatch;
+            if !failure.not_sent {
+                job.failed += 1;
+            }
         }
     }
     job.active -= 1;
     if stop_job {
         job.cancel();
     }
+    let mut preview_bytes = 0;
+    let mut previews = 0;
+    for item in job.items.values_mut().rev() {
+        if let Some(preview) = &item.preview_data_url {
+            preview_bytes += preview.len();
+            previews += 1;
+            if preview_bytes > PREVIEW_BUDGET || previews > MAX_PREVIEWS {
+                item.preview_data_url = None;
+            }
+        }
+    }
+}
+
+fn authorize_post(shared: &Shared, id: &str, index: usize, input: &Input) -> Result<SavedProvider, Failure> {
+    authorize_post_with_loader(shared, id, index, input, || load_post_provider(&input.provider))
+}
+
+fn authorize_post_with_loader(
+    shared: &Shared, id: &str, index: usize, input: &Input,
+    mut load: impl FnMut() -> Result<SavedProvider, Failure>,
+) -> Result<SavedProvider, Failure> {
+    let mut registry = lock(shared)?;
+    let shutdown = registry.shutdown;
+    let job = find_job_mut(&mut registry, id)?;
+    if job.expire_lease() {
+        let _ = persist_or_stop(job);
+    }
+    if shutdown || job.stopped || job.paused || job.recovered {
+        return Err(Failure::not_sent("Image queue stopped before dispatch; no POST was sent for this index."));
+    }
+    // The body is fully built. Re-read this service's explicit home, never the
+    // ambient CODEX_HOME. Cancellation and dispatch share this admission lock.
+    let provider = load()?;
+    validate_submission_provider(input, &provider)?;
+    verify_unused_slot(input, index)?;
+    Arc::make_mut(&mut job.input).provider = provider;
+    let item = job.items.get_mut(&index).ok_or_else(|| Failure::not_sent("Missing image slot."))?;
+    item.post_started = true;
+    if let Err(error) = persist_or_stop(job) {
+        return Err(Failure::not_sent(error));
+    }
+    // A second read closes the disk-persistence preflight window. A cancellation
+    // after this admission is in-flight; blocking send intentionally runs unlocked.
+    let provider = load()?;
+    validate_submission_provider(input, &provider)?;
+    verify_unused_slot(input, index)?;
+    if job.expire_lease() {
+        let _ = persist_or_stop(job);
+        return Err(Failure::not_sent("Image lease expired before dispatch; no POST was sent."));
+    }
+    Arc::make_mut(&mut job.input).provider = provider.clone();
+    Ok(provider)
+}
+
+fn validate_submission_provider(input: &Input, provider: &SavedProvider) -> Result<(), Failure> {
+    if provider.home != input.provider.home {
+        return Err(Failure::not_sent("Image submission owner changed; no POST was sent."));
+    }
+    ensure_inputs_do_not_contain_key(&input.request, &provider.key)?;
+    ensure_no_credential_in_values(
+        [input.directory.to_string_lossy().as_ref(), provider.home.to_string_lossy().as_ref()],
+        &provider.key,
+    )?;
+    Ok(())
 }
 
 fn release_completed_input(job: &mut StoredJob) {
@@ -593,20 +876,22 @@ pub async fn test_image_api(
     request: ImageTestRequest,
     state: State<'_, ImageJobs>,
 ) -> Result<ImageJob, String> {
-    let shared = Arc::clone(&state.shared);
-    tauri::async_runtime::spawn_blocking(move || {
-        let request = validate_request(request)?;
-        let provider = load_provider()?;
-        ensure_inputs_do_not_contain_key(&request, &provider.key)?;
-        let references = load_references(&request.reference_paths)?;
-        let (id, directory) = create_directory(&provider.home)?;
-        let input = Input { request, provider, references, directory };
-        submit(&shared, id, input)
-    }).await.map_err(|_| "Image submission task failed.".to_string())?
+    let service = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || service.start(request, None, false))
+        .await.map_err(|_| "Image submission task failed.".to_string())?
 }
 
+#[cfg(test)]
 fn submit(shared: &Arc<Shared>, id: String, input: Input) -> Result<ImageJob, String> {
+    submit_leased(shared, id, input, false)
+}
+
+fn submit_leased(shared: &Arc<Shared>, id: String, input: Input, leased: bool) -> Result<ImageJob, String> {
     ensure_inputs_do_not_contain_key(&input.request, &input.provider.key)?;
+    ensure_no_credential_in_values(
+        [input.directory.to_string_lossy().as_ref(), input.provider.home.to_string_lossy().as_ref()],
+        &input.provider.key,
+    )?;
     let mut registry = lock(shared)?;
     if registry.shutdown {
         return Err("Image jobs are shutting down.".into());
@@ -614,13 +899,170 @@ fn submit(shared: &Arc<Shared>, id: String, input: Input) -> Result<ImageJob, St
     if registry.jobs.contains_key(&id) {
         return Err("Image job already exists.".into());
     }
-    let job = StoredJob::new(id.clone(), input);
+    if registry.home.as_ref().is_some_and(|home| home != &input.provider.home) {
+        return Err("Image service cannot mix CODEX_HOME owners.".into());
+    }
+    registry.home = Some(input.provider.home.clone());
+    let mut job = StoredJob::new(id.clone(), input);
+    job.leased = leased;
+    job.renew_lease();
     persist_manifest(&job)?;
+    register_manifest(&job)?;
     ensure_workers(shared, &mut registry)?;
     let snapshot = job.snapshot();
     registry.jobs.insert(id, job);
     shared.wake.notify_all();
+    worker_pool().wake.notify_all();
     Ok(snapshot)
+}
+
+impl ImageJobs {
+    /// An explicit home is mandatory for the stdio service. Recovery reads only
+    /// the engine index and its owned manifests, and never loads keys or sends HTTP.
+    pub fn new(codex_home: impl AsRef<Path>) -> Result<Self, String> {
+        let service = Self::default();
+        service.initialize(codex_home.as_ref())?;
+        Ok(service)
+    }
+
+    pub fn with_home(codex_home: impl AsRef<Path>) -> Result<Self, String> {
+        Self::new(codex_home)
+    }
+
+    fn initialize(&self, home: &Path) -> Result<(), String> {
+        let home = fs::canonicalize(home).map_err(|_| "CODEX_HOME does not exist.".to_string())?;
+        let mut registry = lock(&self.shared)?;
+        if let Some(previous) = &registry.home {
+            return if previous == &home { Ok(()) } else { Err("Image service owner changed.".into()) };
+        }
+        registry.jobs = recover_jobs(&home)?;
+        registry.home = Some(home);
+        Ok(())
+    }
+
+    fn home(&self) -> Result<PathBuf, String> {
+        if let Some(home) = lock(&self.shared)?.home.clone() {
+            return Ok(home);
+        }
+        let home = super::codex_home().map_err(|_| "Could not locate CODEX_HOME.".to_string())?;
+        self.initialize(&home)?;
+        lock(&self.shared)?.home.clone().ok_or_else(|| "Image service owner is unavailable.".into())
+    }
+
+    pub fn start(&self, request: ImageTestRequest, workspace: Option<&Path>, leased: bool)
+        -> Result<ImageJob, String>
+    {
+        let request = validate_request(request)?;
+        let home = self.home()?;
+        let provider = load_provider_in_home(&home)?;
+        ensure_inputs_do_not_contain_key(&request, &provider.key)?;
+        let references = load_references_in_home(&request.reference_paths, &home)?;
+        let (id, directory) = match workspace {
+            Some(workspace) => create_workspace_directory(workspace)?,
+            None => create_directory(&home)?,
+        };
+        submit_leased(&self.shared, id, Input { request, provider, references, directory }, leased)
+    }
+
+    pub fn status(&self, id: &str) -> Result<ImageJob, String> {
+        self.home()?;
+        let mut registry = lock(&self.shared)?;
+        let job = find_job_mut(&mut registry, id)?;
+        let expired = job.expire_lease();
+        job.renew_lease();
+        let changed = verify_saved_items(job);
+        if expired || changed {
+            let _ = persist_or_stop(job);
+        }
+        Ok(job.snapshot())
+    }
+
+    pub fn cancel(&self, id: &str) -> Result<ImageJob, String> {
+        self.home()?;
+        let mut registry = lock(&self.shared)?;
+        let job = find_job_mut(&mut registry, id)?;
+        // A terminal completed/partial/failed job is not retroactively cancelled.
+        if job.running() || job.paused || job.recovered {
+            job.cancel();
+            let _ = persist_or_stop(job);
+        } else {
+            // Invalidate a concurrent retry preflight even for terminal jobs.
+            job.revision = job.revision.wrapping_add(1);
+        }
+        let snapshot = job.snapshot();
+        worker_pool().wake.notify_all();
+        Ok(snapshot)
+    }
+
+    pub fn retry(&self, id: &str) -> Result<ImageJob, String> {
+        self.retry_with_loader(id, load_provider_in_home)
+    }
+
+    fn retry_with_loader(
+        &self, id: &str, load: impl FnOnce(&Path) -> Result<SavedProvider, String>,
+    ) -> Result<ImageJob, String> {
+        let home = self.home()?;
+        let (previous, hashes, revision) = {
+            let registry = lock(&self.shared)?;
+            let job = find_job(&registry, id)?;
+            if job.running() {
+                return Err("Wait for all in-flight image requests to finish before retrying.".into());
+            }
+            if job.completed == job.input.request.count {
+                return Err("All image indices already succeeded; nothing to retry.".into());
+            }
+            (Arc::clone(&job.input), job.reference_hashes.clone(), job.revision)
+        };
+        // Explicit retry is a new submission using the *current* saved credentials.
+        // Reference content is immutable across retries, including duplicate roles.
+        let provider = load(&home)?;
+        if provider.home != home {
+            return Err("Retry provider does not belong to this service's CODEX_HOME.".into());
+        }
+        ensure_inputs_do_not_contain_key(&previous.request, &provider.key)?;
+        let references = load_references_in_home(&previous.request.reference_paths, &home)?;
+        if references.iter().map(|reference| hash(&reference.bytes)).collect::<Vec<_>>() != hashes {
+            return Err("Original reference hashes changed; create a new explicit image job.".into());
+        }
+        verify_directory(&previous.directory)?;
+        let mut registry = lock(&self.shared)?;
+        if registry.shutdown {
+            return Err("Image jobs are shutting down.".into());
+        }
+        ensure_workers(&self.shared, &mut registry)?;
+        let job = find_job_mut(&mut registry, id)?;
+        if job.revision != revision {
+            return Err("Image job changed during retry preflight; no new request was queued.".into());
+        }
+        verify_saved_items(job);
+        let mut input = (*previous).clone();
+        input.provider = provider;
+        input.references = references;
+        job.input = Arc::new(input);
+        job.retry()?;
+        let snapshot = job.snapshot();
+        worker_pool().wake.notify_all();
+        Ok(snapshot)
+    }
+
+    /// Stops queued work and future starts. Already admitted HTTP requests finish.
+    pub fn cancel_all(&self) {
+        if let Ok(mut registry) = lock(&self.shared) {
+            registry.shutdown = true;
+            for job in registry.jobs.values_mut() {
+                if job.running() || job.paused || job.recovered {
+                    job.cancel();
+                    let _ = persist_or_stop(job);
+                }
+            }
+        }
+        worker_pool().wake.notify_all();
+    }
+
+    pub fn has_active_requests(&self) -> bool {
+        lock(&self.shared).map(|registry| registry.jobs.values().any(|job| job.active > 0))
+            .unwrap_or(true)
+    }
 }
 
 #[tauri::command]
@@ -628,8 +1070,9 @@ pub async fn get_image_test_status(
     job_id: String,
     state: State<'_, ImageJobs>,
 ) -> Result<ImageJob, String> {
-    let registry = lock(&state.shared)?;
-    Ok(find_job(&registry, &job_id)?.snapshot())
+    let service = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || service.status(&job_id))
+        .await.map_err(|_| "Image status task failed.".to_string())?
 }
 
 #[tauri::command]
@@ -637,19 +1080,9 @@ pub async fn cancel_image_test(
     job_id: String,
     state: State<'_, ImageJobs>,
 ) -> Result<ImageJob, String> {
-    let shared = Arc::clone(&state.shared);
-    tauri::async_runtime::spawn_blocking(move || {
-        let mut registry = lock(&shared)?;
-        let job = find_job_mut(&mut registry, &job_id)?;
-        // A terminal completed/partial/failed job is not retroactively cancelled.
-        if job.running() {
-            job.cancel();
-            let _ = persist_or_stop(job);
-        }
-        let snapshot = job.snapshot();
-        shared.wake.notify_all();
-        Ok(snapshot)
-    }).await.map_err(|_| "Image cancellation task failed.".to_string())?
+    let service = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || service.cancel(&job_id))
+        .await.map_err(|_| "Image cancellation task failed.".to_string())?
 }
 
 #[tauri::command]
@@ -657,28 +1090,9 @@ pub async fn retry_image_test(
     job_id: String,
     state: State<'_, ImageJobs>,
 ) -> Result<ImageJob, String> {
-    let shared = Arc::clone(&state.shared);
-    tauri::async_runtime::spawn_blocking(move || {
-        let input = {
-            let registry = lock(&shared)?;
-            let job = find_job(&registry, &job_id)?;
-            if job.completed == job.input.request.count {
-                return Err("All image indices already succeeded; nothing to retry.".into());
-            }
-            Arc::clone(&job.input)
-        };
-        ensure_provider_unchanged(&input.provider)?;
-        verify_directory(&input.directory)?;
-        let mut registry = lock(&shared)?;
-        if registry.shutdown {
-            return Err("Image jobs are shutting down.".into());
-        }
-        let job = find_job_mut(&mut registry, &job_id)?;
-        job.retry()?;
-        let snapshot = job.snapshot();
-        shared.wake.notify_all();
-        Ok(snapshot)
-    }).await.map_err(|_| "Image retry task failed.".to_string())?
+    let service = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || service.retry(&job_id))
+        .await.map_err(|_| "Image retry task failed.".to_string())?
 }
 
 #[tauri::command]
@@ -697,6 +1111,7 @@ pub async fn open_image_result(
             (job.input.directory.clone(), item)
         };
         let path = recorded_path(&directory, &item)?;
+        verify_item(&directory, &item)?;
         super::open_path(&path).map_err(|_| "Could not open the recorded image file.".into())
     }).await.map_err(|_| "Image open task failed.".to_string())?
 }
@@ -729,6 +1144,10 @@ fn ensure_inputs_do_not_contain_key(request: &ImageTestRequest, key: &str) -> Re
         [request.model.as_str(), request.prompt.as_str(), request.size.as_str()]
             .into_iter().chain(request.reference_paths.iter().map(String::as_str)),
         key,
+    )?;
+    ensure_no_credential_in_values(
+        request.prompts.iter().map(String::as_str),
+        key,
     )
 }
 
@@ -737,8 +1156,17 @@ fn validate_request(mut request: ImageTestRequest) -> Result<ImageTestRequest, S
     if request.count == 0 {
         return Err("Image count must be a positive integer.".into());
     }
-    if request.prompt.trim().is_empty() || request.prompt.len() > 256 * 1024 {
-        return Err("Prompt must be nonblank and at most 256 KiB.".into());
+    if request.prompt.len() > 256 * 1024 {
+        return Err("Prompt must be at most 256 KiB.".into());
+    }
+    if request.prompts.is_empty() {
+        if request.prompt.trim().is_empty() {
+            return Err("Prompt must be nonblank, or supply one prompt per image slot.".into());
+        }
+    } else if request.prompts.len() != request.count
+        || request.prompts.iter().any(|prompt| prompt.trim().is_empty() || prompt.len() > 256 * 1024)
+    {
+        return Err("prompts must contain exactly count nonblank prompts of at most 256 KiB each.".into());
     }
     request.size = request.size.trim().into();
     if request.size.is_empty() {
@@ -797,8 +1225,16 @@ fn load_provider_in_home(home: &Path) -> Result<SavedProvider, String> {
     if Url::parse(&api_base).map_err(|_| "Invalid provider URL.".to_string())?.scheme() != "https" {
         return Err("The saved image API base must use HTTPS to protect the API key.".into());
     }
-    let key = super::resolve_api_key_in_home(&home, "")
-        .map_err(|_| "Save an OceanWay API key before running image tests.".to_string())?;
+    // Native MCP does not require a shell environment variable. auth.json is
+    // authoritative when present; legacy inline bearer tokens remain supported.
+    let auth_path = home.join("auth.json");
+    let key = match fs::symlink_metadata(&auth_path) {
+        Ok(_) => super::read_auth_api_key(&auth_path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound =>
+            super::read_provider_bearer_token(&config, super::PROVIDER_ID),
+        Err(_) => return Err("Could not read saved auth.json credentials.".into()),
+    }.filter(|key| !key.trim().is_empty())
+        .ok_or_else(|| "Save an OceanWay API key in auth.json before running image requests.".to_string())?;
     // Do not pair a key read from a changed config with an earlier endpoint snapshot.
     if fs::read_to_string(home.join("config.toml")).ok().as_ref() != Some(&config) {
         return Err("Provider configuration changed while loading; try again.".into());
@@ -813,11 +1249,7 @@ fn load_provider_in_home(home: &Path) -> Result<SavedProvider, String> {
     })
 }
 
-fn ensure_provider_unchanged(previous: &SavedProvider) -> Result<(), String> {
-    let current = load_provider()?;
-    compare_provider(previous, &current)
-}
-
+#[cfg(test)]
 fn compare_provider(previous: &SavedProvider, current: &SavedProvider) -> Result<(), String> {
     if current.home != previous.home || current.config != previous.config
         || current.api_base != previous.api_base || current.key != previous.key
@@ -878,6 +1310,7 @@ fn load_references(paths: &[String]) -> Result<Vec<Reference>, String> {
     let mut total = 0usize;
     for (index, path) in paths.iter().enumerate() {
         let result = (|| {
+            validate_reference_path(Path::new(path), None)?;
             let file = File::open(path).map_err(|_| "Reference file cannot be opened.".to_string())?;
             let metadata = file.metadata().map_err(|_| "Reference metadata is unavailable.".to_string())?;
             if !metadata.is_file() || metadata.len() > IMAGE_BYTES as u64 {
@@ -898,6 +1331,36 @@ fn load_references(paths: &[String]) -> Result<Vec<Reference>, String> {
     Ok(references)
 }
 
+fn load_references_in_home(paths: &[String], home: &Path) -> Result<Vec<Reference>, String> {
+    for path in paths {
+        validate_reference_path(Path::new(path), Some(home))?;
+    }
+    load_references(paths)
+}
+
+fn validate_reference_path(path: &Path, home: Option<&Path>) -> Result<(), String> {
+    let metadata = fs::symlink_metadata(path).map_err(|_| "Reference original is unavailable.".to_string())?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err("Reference original must be a regular file, not a link or directory.".into());
+    }
+    let resolved = fs::canonicalize(path).map_err(|_| "Reference path cannot be resolved.".to_string())?;
+    for candidate in [path, resolved.as_path()] {
+        let name = candidate.file_name().and_then(|name| name.to_str()).unwrap_or("").to_ascii_lowercase();
+        if name.starts_with("config.toml") || name.starts_with("auth.json")
+            || name.starts_with(".env") || matches!(name.as_str(), "credentials" | "credentials.json" | "id_rsa" | "id_ed25519")
+            || candidate.components().any(|part| part.as_os_str().to_string_lossy().eq_ignore_ascii_case(".ssh"))
+        {
+            return Err("Credential/configuration paths cannot be image references.".into());
+        }
+    }
+    if let Some(home) = home {
+        if resolved == home.join("config.toml") || resolved == home.join("auth.json") {
+            return Err("Credential/configuration paths cannot be image references.".into());
+        }
+    }
+    Ok(())
+}
+
 fn create_directory(home: &Path) -> Result<(String, PathBuf), String> {
     let root = home.join("oceanway-image-tests");
     fs::create_dir_all(&root).map_err(|_| "Could not create image output root.".to_string())?;
@@ -910,6 +1373,26 @@ fn create_directory(home: &Path) -> Result<(String, PathBuf), String> {
     if root.parent() != Some(canonical_home.as_path()) {
         return Err("Image output root escaped CODEX_HOME.".into());
     }
+    allocate_directory(&root)
+}
+
+fn create_workspace_directory(workspace: &Path) -> Result<(String, PathBuf), String> {
+    let workspace = fs::canonicalize(workspace).map_err(|_| "Task workspace does not exist.".to_string())?;
+    verify_directory(&workspace)?;
+    let mut root = workspace;
+    for segment in ["output", "images"] {
+        root = root.join(segment);
+        match fs::create_dir(&root) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(_) => return Err("Could not create task image output directory.".into()),
+        }
+        verify_directory(&root)?;
+    }
+    allocate_directory(&root)
+}
+
+fn allocate_directory(root: &Path) -> Result<(String, PathBuf), String> {
     for _ in 0..16 {
         let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
         let id = format!("image-{}-{stamp}-{}", std::process::id(), SEQUENCE.fetch_add(1, Ordering::Relaxed));
@@ -959,11 +1442,17 @@ struct Failure {
     message: String,
     request_id: Option<String>,
     stop_job: bool,
+    not_sent: bool,
+    count_mismatch: bool,
 }
 
 impl Failure {
     fn new(message: impl Into<String>) -> Self {
-        Self { message: message.into(), request_id: None, stop_job: false }
+        Self { message: message.into(), request_id: None, stop_job: false, not_sent: false, count_mismatch: false }
+    }
+
+    fn not_sent(message: impl Into<String>) -> Self {
+        Self { not_sent: true, ..Self::new(message) }
     }
 }
 
@@ -979,6 +1468,8 @@ struct SavedResult {
     request_id: Option<String>,
     warning: Option<String>,
     additional_paths: Vec<String>,
+    outputs: Vec<ImageOutput>,
+    count_mismatch: bool,
 }
 
 fn client_builder(timeout: Duration) -> ClientBuilder {
@@ -1004,7 +1495,7 @@ fn provider_client(provider: &SavedProvider) -> Result<Client, Failure> {
 
 fn network_failure(error: &reqwest::Error) -> Failure {
     if error.is_timeout() {
-        Failure::new("Image request timed out (180s budget); billing is unknown. No automatic retry.")
+        Failure::new("Image request timed out (240s budget); billing is unknown. No automatic retry.")
     } else if error.is_connect() {
         Failure::new("Could not connect to the image endpoint. No automatic retry; billing may be unknown.")
     } else {
@@ -1056,16 +1547,19 @@ fn json_response(response: Response, key: &str, limit: usize) -> Result<(Value, 
     })
 }
 
-fn post_image(input: &Input) -> Result<(Value, Option<String>), Failure> {
-    post_image_with_guard(input, || {
-        #[cfg(test)]
-        if input.provider.local_mock {
-            return Ok(());
-        }
-        provider_guard_result(ensure_provider_unchanged(&input.provider))
+fn load_post_provider(provider: &SavedProvider) -> Result<SavedProvider, Failure> {
+    #[cfg(test)]
+    if provider.local_mock {
+        return Ok(provider.clone());
+    }
+    load_provider_in_home(&provider.home).map_err(|message| Failure {
+        message: format!("Current saved OceanWay provider is unavailable; no POST was sent. {message}"),
+        stop_job: true,
+        ..Failure::new("")
     })
 }
 
+#[cfg(test)]
 fn provider_guard_result(result: Result<(), String>) -> Result<(), Failure> {
     result.map_err(|message| Failure {
         message: format!(
@@ -1074,23 +1568,44 @@ fn provider_guard_result(result: Result<(), String>) -> Result<(), Failure> {
         ),
         request_id: None,
         stop_job: true,
+        not_sent: false,
+        count_mismatch: false,
     })
 }
 
+#[cfg(test)]
 fn post_image_with_guard(
     input: &Input,
     guard: impl FnOnce() -> Result<(), Failure>,
 ) -> Result<(Value, Option<String>), Failure> {
+    post_image_at_with_guard(input, 1, Instant::now(), || {
+        guard()?;
+        Ok(input.provider.clone())
+    })
+}
+
+fn post_image_at_with_guard(
+    input: &Input,
+    index: usize,
+    started: Instant,
+    guard: impl FnOnce() -> Result<SavedProvider, Failure>,
+) -> Result<(Value, Option<String>), Failure> {
     let client = provider_client(&input.provider)?;
     let request = &input.request;
+    let prompt = if request.prompts.is_empty() {
+        &request.prompt
+    } else {
+        request.prompts.get(index.wrapping_sub(1))
+            .ok_or_else(|| Failure::not_sent("Missing prompt for the requested image slot."))?
+    };
     let editing = !input.references.is_empty();
     let endpoint = format!("{}/images/{}", input.provider.api_base,
         if editing { "edits" } else { "generations" });
-    let builder = client.post(endpoint).bearer_auth(&input.provider.key);
+    let builder = client.post(endpoint);
     let builder = if editing {
         let mut form = multipart::Form::new()
             .text("model", request.model.clone())
-            .text("prompt", request.prompt.clone())
+            .text("prompt", prompt.clone())
             .text("n", "1");
         if !request.size.is_empty() {
             form = form.text("size", request.size.clone());
@@ -1105,7 +1620,7 @@ fn post_image_with_guard(
         }
         builder.multipart(form)
     } else {
-        let mut body = json!({ "model": request.model, "prompt": request.prompt, "n": 1 });
+        let mut body = json!({ "model": request.model, "prompt": prompt, "n": 1 });
         if !request.size.is_empty() {
             body["size"] = Value::String(request.size.clone());
         }
@@ -1113,12 +1628,37 @@ fn post_image_with_guard(
     };
     // Build the body first, then re-read the active config/key immediately before
     // every paid POST. Already in-flight requests retain their original snapshot.
-    guard()?;
-    let response = builder.send().map_err(|error| network_failure(&error))?;
-    json_response(response, &input.provider.key, JSON_BYTES)
+    let mut request = builder.build().map_err(|_| Failure::not_sent("Could not build the image request."))?;
+    let provider = guard()?;
+    // The body contains no credentials. Bind the latest endpoint/key only after
+    // final admission, so auth.json updates during preflight cannot use an old key.
+    let endpoint = format!("{}/images/{}", provider.api_base, if editing { "edits" } else { "generations" });
+    *request.url_mut() = Url::parse(&endpoint).map_err(|_| Failure::not_sent("Invalid saved image endpoint."))?;
+    let authorization = reqwest::header::HeaderValue::from_str(&format!("Bearer {}", provider.key))
+        .map_err(|_| Failure::not_sent("Saved API credential is not a valid HTTP header."))?;
+    request.headers_mut().insert(reqwest::header::AUTHORIZATION, authorization);
+    *request.timeout_mut() = Some(remaining(started)?);
+    let response = client.execute(request).map_err(|error| network_failure(&error))?;
+    json_response(response, &provider.key, JSON_BYTES)
 }
 
+#[cfg(test)]
 fn execute(input: &Input, index: usize, started: Instant) -> Result<SavedResult, Failure> {
+    execute_with_guard(input, index, started, || load_post_provider(&input.provider))
+}
+
+fn execute_with_guard(
+    input: &Input,
+    index: usize,
+    started: Instant,
+    guard: impl FnOnce() -> Result<SavedProvider, Failure>,
+) -> Result<SavedResult, Failure> {
+    verify_unused_slot(input, index)?;
+    let (body, request_id) = post_image_at_with_guard(input, index, started, guard)?;
+    save_response_images(input, index, &body, request_id, started)
+}
+
+fn verify_unused_slot(input: &Input, index: usize) -> Result<(), Failure> {
     // Detect an altered output directory before sending a billable request.
     verify_directory(&input.directory)?;
     if index == 0 || index > input.request.count {
@@ -1132,12 +1672,11 @@ fn execute(input: &Input, index: usize, started: Instant) -> Result<SavedResult,
             )),
         }
     }
-    let (body, request_id) = post_image(input)?;
-    save_response_images(input, index, &body, request_id, started)
+    Ok(())
 }
 
 fn save_image_bytes(input: &Input, index: usize, extra: Option<usize>, bytes: &[u8])
-    -> Result<(PathBuf, String), Failure>
+    -> Result<(PathBuf, String, ImageOutput), Failure>
 {
     let (decoded, format) = decode_image(bytes)?;
     let preview = if extra.is_none() {
@@ -1179,7 +1718,14 @@ fn save_image_bytes(input: &Input, index: usize, extra: Option<usize>, bytes: &[
         let _ = fs::remove_file(&path);
         return Err(Failure::new("Could not persist the output image; billing may have occurred."));
     }
-    Ok((path, preview))
+    let output = ImageOutput {
+        path: path.to_string_lossy().into_owned(),
+        width: decoded.width(),
+        height: decoded.height(),
+        sha256: hash(bytes),
+        bytes: bytes.len() as u64,
+    };
+    Ok((path, preview, output))
 }
 
 fn save_response_images(
@@ -1190,10 +1736,14 @@ fn save_response_images(
     started: Instant,
 ) -> Result<SavedResult, Failure> {
     let result = (|| {
-        let data = body.get("data").and_then(Value::as_array)
-            .ok_or_else(|| Failure::new("Expected an image for n=1; data array is missing."))?;
+        let data = body.get("data").and_then(Value::as_array).ok_or_else(|| {
+            let mut failure = Failure::new("Expected an image for n=1; data array is missing.");
+            failure.count_mismatch = true;
+            failure
+        })?;
         let mut primary: Option<(PathBuf, String)> = None;
         let mut additional_paths = Vec::new();
+        let mut outputs = Vec::new();
         let mut unusable = 0usize;
         let mut first_problem = None;
         for (offset, entry) in data.iter().enumerate() {
@@ -1201,7 +1751,8 @@ fn save_response_images(
                 save_image_bytes(input, index, primary.as_ref().map(|_| offset + 1), &bytes)
             });
             match saved {
-                Ok((path, preview)) => {
+                Ok((path, preview, output)) => {
+                    outputs.push(output);
                     if primary.is_none() {
                         primary = Some((path, preview));
                     } else {
@@ -1216,11 +1767,15 @@ fn save_response_images(
                 }
             }
         }
-        let (path, preview) = primary.ok_or_else(|| Failure::new(format!(
+        let (path, preview) = primary.ok_or_else(|| {
+            let mut failure = Failure::new(format!(
             "Expected one image for n=1; received {} entries but no image could be saved. {} \
              Billing may have occurred. No automatic retry.",
             data.len(), first_problem.as_deref().unwrap_or("The response contained no images.")
-        )))?;
+            ));
+            failure.count_mismatch = data.len() != 1;
+            failure
+        })?;
         let provider_error = body.get("error").is_some_and(|error| !error.is_null());
         let warning = if data.len() != 1 || unusable > 0 || provider_error {
             Some(format!(
@@ -1234,7 +1789,10 @@ fn save_response_images(
         } else {
             None
         };
-        Ok(SavedResult { path, preview, request_id: request_id.clone(), warning, additional_paths })
+        Ok(SavedResult {
+            path, preview, request_id: request_id.clone(), warning, additional_paths,
+            outputs, count_mismatch: data.len() != 1,
+        })
     })();
     result.map_err(|mut failure: Failure| {
         failure.request_id = request_id;
@@ -1330,7 +1888,7 @@ fn download_url(raw: &str) -> Result<Url, Failure> {
 
 fn remaining(started: Instant) -> Result<Duration, Failure> {
     TIMEOUT.checked_sub(started.elapsed()).filter(|duration| !duration.is_zero())
-        .ok_or_else(|| Failure::new("Image attempt exceeded 180s; billing may have occurred."))
+        .ok_or_else(|| Failure::new("Image attempt exceeded 240s; billing may have occurred."))
 }
 
 fn resolve_public(url: &Url, timeout: Duration) -> Result<Vec<SocketAddr>, Failure> {

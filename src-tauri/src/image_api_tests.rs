@@ -4,6 +4,9 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 
 const MOCK_KEY: &str = "mock-only-credential";
+// Production has exactly two workers per process, including across service
+// instances. Tests with gated requests must not compete for those same workers.
+static WORKER_TEST: Mutex<()> = Mutex::new(());
 
 struct TempHome(PathBuf);
 
@@ -200,6 +203,7 @@ fn request(count: usize) -> ImageTestRequest {
     ImageTestRequest {
         model: "gpt-image-2".into(),
         prompt: "A mock-only image.".into(),
+        prompts: Vec::new(),
         count,
         reference_paths: Vec::new(),
         size: "1024x1024".into(),
@@ -239,9 +243,10 @@ fn finished(state: &ImageJobs, id: &str) -> ImageJob {
 }
 
 fn retry_mock(state: &ImageJobs, id: &str) {
-    // Production command additionally reloads and compares the saved config/key.
-    find_job_mut(&mut lock(&state.shared).unwrap(), id).unwrap().retry().unwrap();
-    state.shared.wake.notify_all();
+    let mut registry = lock(&state.shared).unwrap();
+    ensure_workers(&state.shared, &mut registry).unwrap();
+    find_job_mut(&mut registry, id).unwrap().retry().unwrap();
+    worker_pool().wake.notify_all();
 }
 
 #[test]
@@ -305,6 +310,7 @@ fn default_size_and_custom_prefix_reach_generation_and_edit_requests() {
 
 #[test]
 fn manifest_persists_progress_without_keys_or_thumbnails_and_does_not_auto_resume() {
+    let _serial = WORKER_TEST.lock().unwrap();
     let home = TempHome::new();
     let mock = Mock::new(|_, _| Reply::json(success()));
     let state = ImageJobs::default();
@@ -323,7 +329,7 @@ fn manifest_persists_progress_without_keys_or_thumbnails_and_does_not_auto_resum
     assert!(!text.contains("apiBase"));
     assert!(!text.contains("\"config\""));
     let manifest: Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(manifest["schemaVersion"], 1);
+    assert_eq!(manifest["schemaVersion"], 2);
     assert_eq!(manifest["requiresExplicitResume"], true);
     assert_eq!(manifest["count"], 2);
     assert_eq!(manifest["model"], "gpt-image-2");
@@ -345,11 +351,12 @@ fn credentials_in_inputs_are_rejected_before_manifest_or_http_and_redaction_is_d
     let home = TempHome::new();
     let mock = Mock::new(|_, _| panic!("credential-bearing inputs must not POST"));
     let state = ImageJobs::default();
-    for field in ["model", "prompt", "referencePaths", "size"] {
+    for field in ["model", "prompt", "prompts", "referencePaths", "size"] {
         let (id, mut input) = input(&home, &mock, 1);
         match field {
             "model" => input.request.model = MOCK_KEY.into(),
             "prompt" => input.request.prompt = format!("accidental {MOCK_KEY} paste"),
+            "prompts" => input.request.prompts = vec![format!("accidental {MOCK_KEY} paste")],
             "referencePaths" => input.request.reference_paths.push(format!("C:/test/{MOCK_KEY}.png")),
             "size" => input.request.size = MOCK_KEY.into(),
             _ => unreachable!(),
@@ -487,7 +494,7 @@ fn metadata_probe_only_gets_models_and_does_not_claim_verified_generation() {
 }
 
 #[test]
-fn retries_reject_changed_configuration_endpoint_home_or_credentials() {
+fn provider_snapshot_comparison_detects_changed_configuration_endpoint_home_or_credentials() {
     let home = TempHome::new();
     let mock = Mock::new(|_, _| panic!("comparison must not send HTTP"));
     let (_, first) = input(&home, &mock, 1);
@@ -665,6 +672,7 @@ fn invalid_base64_falls_back_to_a_clean_download_without_another_post() {
 
 #[test]
 fn multiple_results_preserve_every_valid_image_and_never_retry_a_successful_index() {
+    let _serial = WORKER_TEST.lock().unwrap();
     let home = TempHome::new();
     let mock = Mock::new(|_, _| Reply::json(json!({
         "data": [
@@ -679,6 +687,8 @@ fn multiple_results_preserve_every_valid_image_and_never_retry_a_successful_inde
     submit(&state.shared, id.clone(), input).unwrap();
     let done = finished(&state, &id);
     assert_eq!((done.completed, done.failed), (1, 0));
+    assert_eq!(done.status, "completed_with_warnings");
+    assert!(done.count_mismatch);
     let item = &done.items[0];
     assert_eq!(item.status, "succeeded");
     assert!(item.warning.as_ref().unwrap().contains("provider returned 3 entries"));
@@ -719,6 +729,7 @@ fn existing_extra_names_do_not_discard_images_or_overwrite_existing_files() {
 
 #[test]
 fn completed_jobs_release_reference_bytes_and_secrets_but_failed_jobs_keep_retry_inputs() {
+    let _serial = WORKER_TEST.lock().unwrap();
     for succeed in [true, false] {
         let home = TempHome::new();
         let mock = Mock::new(move |_, _| Reply::json(
@@ -869,6 +880,7 @@ fn downloads_use_clean_client_validate_mime_and_refuse_redirects() {
 
 #[test]
 fn huge_count_is_lazy_cancel_finishes_inflight_and_preserves_indices() {
+    let _serial = WORKER_TEST.lock().unwrap();
     let home = TempHome::new();
     let gate = Arc::new(Gate::default());
     let handler_gate = Arc::clone(&gate);
@@ -907,6 +919,7 @@ fn huge_count_is_lazy_cancel_finishes_inflight_and_preserves_indices() {
 
 #[test]
 fn partial_failure_retry_sends_only_failed_indices_and_preserves_successes() {
+    let _serial = WORKER_TEST.lock().unwrap();
     let home = TempHome::new();
     let mock = Mock::new(|number, _| {
         if number == 2 {
@@ -922,16 +935,16 @@ fn partial_failure_retry_sends_only_failed_indices_and_preserves_successes() {
     assert_eq!(first.status, "partial");
     assert_eq!((first.completed, first.failed), (3, 1));
     let previous: Vec<_> = first.items.iter().filter(|item| item.status == "succeeded")
-        .map(|item| (item.index, item.path.clone(), item.preview_data_url.clone())).collect();
+        .map(|item| (item.index, item.path.clone(), item.sha256.clone())).collect();
     retry_mock(&state, &id);
     let second = finished(&state, &id);
     assert_eq!(second.status, "completed");
     assert_eq!((second.completed, second.failed), (4, 0));
     assert_eq!(mock.count(), 5);
-    for (index, path, preview) in previous {
+    for (index, path, sha256) in previous {
         let item = second.items.iter().find(|item| item.index == index).unwrap();
         assert_eq!(item.path, path);
-        assert_eq!(item.preview_data_url, preview);
+        assert_eq!(item.sha256, sha256);
     }
     assert!(find_job_mut(&mut lock(&state.shared).unwrap(), &id).unwrap().retry().is_err());
     let serialized = serde_json::to_string(&second).unwrap();
@@ -941,6 +954,7 @@ fn partial_failure_retry_sends_only_failed_indices_and_preserves_successes() {
 
 #[test]
 fn all_failed_job_retries_explicitly_and_counts_are_consistent() {
+    let _serial = WORKER_TEST.lock().unwrap();
     let home = TempHome::new();
     let mock = Mock::new(|_, _| Reply::json(json!({ "data": [] })));
     let state = ImageJobs::default();
@@ -959,6 +973,7 @@ fn all_failed_job_retries_explicitly_and_counts_are_consistent() {
 
 #[test]
 fn cancellation_retry_resumes_only_unfinished_queue() {
+    let _serial = WORKER_TEST.lock().unwrap();
     let home = TempHome::new();
     let gate = Arc::new(Gate::default());
     let handler_gate = Arc::clone(&gate);
@@ -982,6 +997,7 @@ fn cancellation_retry_resumes_only_unfinished_queue() {
 
 #[test]
 fn worker_limit_is_global_across_multiple_jobs() {
+    let _serial = WORKER_TEST.lock().unwrap();
     let home = TempHome::new();
     let active = Arc::new(AtomicUsize::new(0));
     let maximum = Arc::new(AtomicUsize::new(0));
@@ -1055,4 +1071,682 @@ fn symlink_output_roots_and_results_are_rejected() {
     let mut item = ImageItem::new(1, "succeeded");
     item.path = Some(link.to_string_lossy().into_owned());
     assert!(recorded_path(&directory, &item).is_err());
+}
+
+fn record_without_workers(state: &ImageJobs, id: String, input: Input, leased: bool) {
+    let mut job = StoredJob::new(id.clone(), input);
+    job.leased = leased;
+    job.renew_lease();
+    persist_manifest(&job).unwrap();
+    register_manifest(&job).unwrap();
+    let mut registry = lock(&state.shared).unwrap();
+    registry.home = Some(job.input.provider.home.clone());
+    registry.jobs.insert(id, job);
+}
+
+fn save_provider_fixture(home: &Path, key: &str) {
+    fs::write(home.join("config.toml"), format!(
+        "model_provider = \"OceanWay\"\n[model_providers.OceanWay]\n\
+         base_url = \"https://example.invalid/v1\"\nexperimental_bearer_token = \"{key}\"\n"
+    )).unwrap();
+}
+
+#[test]
+fn per_slot_prompts_default_validate_and_reach_generation_and_edit_in_order() {
+    let parsed: ImageTestRequest = serde_json::from_value(json!({
+        "count": 2, "prompts": ["first subject", "second subject"]
+    })).unwrap();
+    assert!(parsed.prompt.is_empty());
+    assert_eq!(validate_request(parsed).unwrap().prompts.len(), 2);
+    for prompts in [vec!["one"], vec!["one", ""], vec!["one", "two", "three"]] {
+        let mut invalid = request(2);
+        invalid.prompts = prompts.into_iter().map(String::from).collect();
+        assert!(validate_request(invalid).is_err());
+    }
+    let legacy = validate_request(request(usize::MAX)).unwrap();
+    assert!(legacy.prompts.is_empty(), "shared prompt never allocates count slots");
+    let home = TempHome::new();
+    let mock = Mock::new(|_, _| Reply::json(success()));
+    let (_, mut input) = input(&home, &mock, 3);
+    input.request.prompt = "shared fallback not used".into();
+    input.request.prompts = vec!["first subject".into(), "second subject".into(), "edit subject".into()];
+    execute(&input, 1, Instant::now()).unwrap();
+    execute(&input, 2, Instant::now()).unwrap();
+    input.references.push(Reference { bytes: png(1, 1).into(), mime: "image/png", extension: "png" });
+    execute(&input, 3, Instant::now()).unwrap();
+    let captured = mock.requests.lock().unwrap();
+    for (position, expected) in ["first subject", "second subject"].iter().enumerate() {
+        assert_eq!(serde_json::from_slice::<Value>(&captured[position].body).unwrap()["prompt"], *expected);
+    }
+    let body = String::from_utf8_lossy(&captured[2].body);
+    assert!(body.contains("name=\"prompt\"\r\n\r\nedit subject\r\n"));
+    assert!(!body.contains("shared fallback"));
+}
+
+#[test]
+fn task_output_layout_ordered_original_hashes_and_result_metadata_survive_recovery() {
+    let home = TempHome::new();
+    let workspace = TempHome::new();
+    let attachments = TempHome::new();
+    let first = attachments.0.join("subject.png");
+    let second = attachments.0.join("style.png");
+    let original = png(2, 3);
+    fs::write(&first, &original).unwrap();
+    fs::write(&second, png(5, 7)).unwrap();
+    let mock = Mock::new(|_, _| Reply::json(success()));
+    let (_, mut input) = input(&home, &mock, 1);
+    let (id, directory) = create_workspace_directory(&workspace.0).unwrap();
+    input.directory = directory.clone();
+    input.request.reference_paths = [&second, &first, &second].into_iter()
+        .map(|path| path.to_string_lossy().into_owned()).collect();
+    input.references = load_references_in_home(&input.request.reference_paths, &home.0).unwrap();
+    let mut job = StoredJob::new(id.clone(), input);
+    let slot = job.claim().unwrap();
+    let result = execute(&job.input, slot, Instant::now()).unwrap();
+    finish_item(&mut job, slot, Ok(result), 1);
+    persist_manifest(&job).unwrap();
+    register_manifest(&job).unwrap();
+    assert_eq!(directory, workspace.0.join("output").join("images").join(&id));
+    let reopened = ImageJobs::new(&home.0).unwrap();
+    let saved = reopened.status(&id).unwrap();
+    assert_eq!(saved.status, "completed");
+    assert_eq!(saved.reference_hashes, vec![hash(&png(5, 7)), hash(&original), hash(&png(5, 7))]);
+    assert_eq!(saved.reference_paths, job.input.request.reference_paths);
+    assert_eq!(saved.output_directory, directory.to_string_lossy());
+    let item = &saved.items[0];
+    assert_eq!((item.width, item.height), (Some(320), Some(160)));
+    assert_eq!(item.sha256, Some(hash(&png(320, 160))));
+    assert_eq!(item.outputs[0].bytes, png(320, 160).len() as u64);
+    assert!(item.preview_data_url.is_none());
+    assert!(!reopened.has_active_requests());
+    assert!(reopened.retry(&id).is_err());
+    let registry = lock(&reopened.shared).unwrap();
+    let recovered = find_job(&registry, &id).unwrap();
+    assert!(recovered.input.provider.key.is_empty());
+    assert!(recovered.input.provider.config.is_empty());
+    assert_eq!(registry.workers, 0, "recovery never starts the pool");
+    assert_eq!(mock.count(), 1);
+}
+
+#[test]
+fn sha256_is_the_standard_digest_and_extra_outputs_have_individual_evidence() {
+    assert_eq!(hash(b"abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    let home = TempHome::new();
+    let mock = Mock::new(|_, _| Reply::json(json!({ "data": [
+        { "b64_json": STANDARD.encode(png(3, 4)) },
+        { "b64_json": STANDARD.encode(png(5, 6)) }
+    ] })));
+    let (id, input) = input(&home, &mock, 1);
+    let mut job = StoredJob::new(id.clone(), input);
+    let slot = job.claim().unwrap();
+    let result = execute(&job.input, slot, Instant::now()).unwrap();
+    assert_eq!(result.outputs.len(), 2);
+    assert_eq!(result.outputs[1].sha256, hash(&png(5, 6)));
+    assert_eq!((result.outputs[1].width, result.outputs[1].height), (5, 6));
+    finish_item(&mut job, slot, Ok(result), 1);
+    persist_manifest(&job).unwrap();
+    register_manifest(&job).unwrap();
+    let reopened = ImageJobs::new(&home.0).unwrap();
+    let snapshot = reopened.status(&id).unwrap();
+    assert_eq!(snapshot.status, "completed_with_warnings");
+    assert!(snapshot.count_mismatch);
+    assert!(snapshot.items[0].count_mismatch);
+    assert!(!snapshot.warnings.is_empty());
+}
+
+#[test]
+fn recovery_marks_running_unknown_and_only_explicit_retry_posts_missing_slots_with_current_key() {
+    let _serial = WORKER_TEST.lock().unwrap();
+    let home = TempHome::new();
+    let mock = Mock::new(|number, request| {
+        let expected = if number == 1 { MOCK_KEY } else { "new-mock-credential" };
+        assert_eq!(request.headers["authorization"], format!("Bearer {expected}"));
+        Reply::json(success())
+    });
+    let (id, mut input) = input(&home, &mock, 3);
+    input.request.prompts = vec!["retained".into(), "unknown".into(), "queued".into()];
+    let mut provider = input.provider.clone();
+    provider.key = "new-mock-credential".into();
+    let mut job = StoredJob::new(id.clone(), input);
+    let first = job.claim().unwrap();
+    let result = execute(&job.input, first, Instant::now()).unwrap();
+    let saved_path = result.path.clone();
+    finish_item(&mut job, first, Ok(result), 1);
+    assert_eq!(job.claim(), Some(2));
+    job.items.get_mut(&2).unwrap().post_started = true;
+    persist_manifest(&job).unwrap();
+    register_manifest(&job).unwrap();
+    let service = ImageJobs::new(&home.0).unwrap();
+    let recovered = service.status(&id).unwrap();
+    assert_eq!(recovered.status, "interrupted");
+    assert_eq!((recovered.completed, recovered.failed, recovered.outcome_unknown), (1, 1, 1));
+    assert_eq!(recovered.items[1].status, "uncertain");
+    assert!(!service.has_active_requests());
+    thread::sleep(Duration::from_millis(150));
+    assert_eq!(mock.count(), 1, "status/recovery must not send HTTP");
+    service.retry_with_loader(&id, |_| Ok(provider)).unwrap();
+    let done = finished(&service, &id);
+    assert_eq!((done.completed, done.failed), (3, 0));
+    assert_eq!(done.status, "completed");
+    assert_eq!(Path::new(done.items[0].path.as_ref().unwrap()), saved_path);
+    assert_eq!(mock.count(), 3);
+    let captured = mock.requests.lock().unwrap();
+    let mut retried: Vec<_> = captured[1..].iter().map(|request|
+        serde_json::from_slice::<Value>(&request.body).unwrap()["prompt"].as_str().unwrap().to_owned()).collect();
+    retried.sort();
+    assert_eq!(retried, vec!["queued", "unknown"]);
+}
+
+#[test]
+fn recovery_hash_failure_blocks_reposting_even_after_output_is_removed() {
+    let home = TempHome::new();
+    let mock = Mock::new(|_, _| Reply::json(success()));
+    let (id, input) = input(&home, &mock, 1);
+    let mut job = StoredJob::new(id.clone(), input);
+    let slot = job.claim().unwrap();
+    let result = execute(&job.input, slot, Instant::now()).unwrap();
+    let output = result.path.clone();
+    finish_item(&mut job, slot, Ok(result), 1);
+    persist_manifest(&job).unwrap();
+    register_manifest(&job).unwrap();
+    fs::write(&output, png(1, 1)).unwrap();
+    let reopened = ImageJobs::new(&home.0).unwrap();
+    let snapshot = reopened.status(&id).unwrap();
+    assert_eq!((snapshot.completed, snapshot.failed), (0, 1));
+    assert_eq!(snapshot.items[0].status, "integrity_failed");
+    assert!(snapshot.items[0].retry_blocked);
+    fs::remove_file(output).unwrap();
+    assert!(find_job_mut(&mut lock(&reopened.shared).unwrap(), &id).unwrap().retry().is_err());
+    assert_eq!(mock.count(), 1);
+}
+
+#[test]
+fn status_hash_checks_primary_and_extra_files_without_reporting_clean_completion() {
+    let home = TempHome::new();
+    let mock = Mock::new(|_, _| Reply::json(json!({ "data": [
+        { "b64_json": STANDARD.encode(png(1, 1)) },
+        { "b64_json": STANDARD.encode(png(2, 2)) }
+    ] })));
+    let (id, input) = input(&home, &mock, 1);
+    let state = ImageJobs::default();
+    record_without_workers(&state, id.clone(), input, false);
+    {
+        let mut registry = lock(&state.shared).unwrap();
+        let job = find_job_mut(&mut registry, &id).unwrap();
+        let slot = job.claim().unwrap();
+        let result = execute(&job.input, slot, Instant::now()).unwrap();
+        let extra = result.additional_paths[0].clone();
+        finish_item(job, slot, Ok(result), 1);
+        persist_manifest(job).unwrap();
+        fs::remove_file(extra).unwrap();
+    }
+    let status = state.status(&id).unwrap();
+    assert_eq!(status.status, "paused");
+    assert_eq!(status.items[0].status, "integrity_failed");
+    assert_eq!(status.completed, 0);
+    assert_eq!(mock.count(), 1);
+}
+
+#[test]
+fn interrupted_slot_with_uncommitted_output_is_preserved_and_never_reposted() {
+    let home = TempHome::new();
+    let mock = Mock::new(|_, _| panic!("readback test must not POST"));
+    let (id, input) = input(&home, &mock, 1);
+    let mut job = StoredJob::new(id.clone(), input);
+    job.claim().unwrap();
+    persist_manifest(&job).unwrap();
+    register_manifest(&job).unwrap();
+    let orphan = job.input.directory.join("1.png");
+    fs::write(&orphan, png(9, 11)).unwrap();
+    let recovered = ImageJobs::new(&home.0).unwrap();
+    let snapshot = recovered.status(&id).unwrap();
+    assert_eq!(snapshot.outcome_unknown, 1);
+    assert!(snapshot.items[0].retry_blocked);
+    assert_eq!((snapshot.items[0].width, snapshot.items[0].height), (Some(9), Some(11)));
+    assert_eq!(snapshot.items[0].sha256, Some(hash(&png(9, 11))));
+    assert!(find_job_mut(&mut lock(&recovered.shared).unwrap(), &id).unwrap().retry().is_err());
+    assert_eq!(fs::read(orphan).unwrap(), png(9, 11));
+    assert_eq!(mock.count(), 0);
+}
+
+#[test]
+fn recovery_only_reads_index_referenced_owned_manifests() {
+    let home = TempHome::new();
+    let mock = Mock::new(|_, _| panic!("recovery must not POST"));
+    let (id, input) = input(&home, &mock, 1);
+    let job = StoredJob::new(id.clone(), input);
+    persist_manifest(&job).unwrap();
+    let service = ImageJobs::new(&home.0).unwrap();
+    assert!(lock(&service.shared).unwrap().jobs.is_empty(), "unindexed output is not discovered");
+    assert!(service.status(&id).is_err());
+    register_manifest(&job).unwrap();
+    let path = job.input.directory.join("manifest.json");
+    let original = fs::read(&path).unwrap();
+    for (key, value) in [
+        ("ownershipToken", json!("wrong owner")),
+        ("codexHome", json!(home.0.join("another-home"))),
+        ("engine", json!("foreign engine")),
+        ("outputDirectory", json!(home.0)),
+        ("schemaVersion", json!(1)),
+    ] {
+        let mut manifest: Value = serde_json::from_slice(&original).unwrap();
+        manifest[key] = value;
+        fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        assert!(ImageJobs::new(&home.0).is_err(), "{key}");
+    }
+    fs::write(&path, &original).unwrap();
+    let recovered = ImageJobs::new(&home.0).unwrap();
+    assert_eq!(recovered.status(&id).unwrap().status, "interrupted");
+    assert_eq!(mock.count(), 0);
+}
+
+#[test]
+fn manifests_and_index_do_not_serialize_credentials_or_config_snapshots() {
+    let home = TempHome::new();
+    let mock = Mock::new(|_, _| panic!("record-only test must not POST"));
+    let (id, mut input) = input(&home, &mock, 2);
+    input.request.prompts = vec!["one".into(), "two".into()];
+    input.provider.config = "full-private-config-snapshot".into();
+    let job = StoredJob::new(id, input);
+    persist_manifest(&job).unwrap();
+    register_manifest(&job).unwrap();
+    for path in [
+        job.input.directory.join("manifest.json"),
+        home.0.join("oceanway-image-jobs").join("index.json"),
+    ] {
+        let text = fs::read_to_string(path).unwrap();
+        assert!(!text.contains(MOCK_KEY));
+        assert!(!text.contains("full-private-config-snapshot"));
+        assert!(!text.contains("previewDataUrl"));
+        assert!(!text.contains("apiBase"));
+    }
+}
+
+#[test]
+fn cancellation_after_body_preflight_prevents_post_and_drains_active_accounting() {
+    let home = TempHome::new();
+    let mock = Mock::new(|_, _| panic!("cancelled preflight must not POST"));
+    let (id, input) = input(&home, &mock, 4);
+    let service = ImageJobs::default();
+    record_without_workers(&service, id.clone(), input, false);
+    let input = {
+        let mut registry = lock(&service.shared).unwrap();
+        let job = find_job_mut(&mut registry, &id).unwrap();
+        assert_eq!(job.claim(), Some(1));
+        Arc::clone(&job.input)
+    };
+    let ready = Arc::new(Gate::default());
+    let resume = Arc::new(Gate::default());
+    let thread_ready = Arc::clone(&ready);
+    let thread_resume = Arc::clone(&resume);
+    let shared = Arc::clone(&service.shared);
+    let thread_id = id.clone();
+    let handle = thread::spawn(move || {
+        let outcome = execute_with_guard(&input, 1, Instant::now(), || {
+            thread_ready.release();
+            thread_resume.wait();
+            authorize_post(&shared, &thread_id, 1, &input)
+        });
+        assert!(outcome.as_ref().err().unwrap().not_sent);
+        let mut registry = lock(&shared).unwrap();
+        let job = find_job_mut(&mut registry, &thread_id).unwrap();
+        finish_item(job, 1, outcome, 1);
+        persist_or_stop(job).unwrap();
+    });
+    ready.wait();
+    assert!(service.has_active_requests());
+    service.cancel(&id).unwrap();
+    resume.release();
+    handle.join().unwrap();
+    let status = service.status(&id).unwrap();
+    assert_eq!((status.completed, status.failed, status.cancelled), (0, 0, 4));
+    assert!(!service.has_active_requests());
+    assert_eq!(mock.count(), 0);
+}
+
+#[test]
+fn provider_reload_at_final_guard_uses_explicit_home_and_blocks_changed_config() {
+    let home = TempHome::new();
+    save_provider_fixture(&home.0, MOCK_KEY);
+    let mock = Mock::new(|_, _| panic!("changed provider must not POST"));
+    let (id, mut input) = input(&home, &mock, 1);
+    input.provider = load_provider_in_home(&home.0).unwrap();
+    let service = ImageJobs::default();
+    record_without_workers(&service, id.clone(), input, false);
+    let input = {
+        let mut registry = lock(&service.shared).unwrap();
+        let job = find_job_mut(&mut registry, &id).unwrap();
+        job.claim().unwrap();
+        Arc::clone(&job.input)
+    };
+    let result = execute_with_guard(&input, 1, Instant::now(), || {
+        fs::write(home.0.join("config.toml"), "model_provider = 'other'\n").unwrap();
+        authorize_post(&service.shared, &id, 1, &input)
+    });
+    let failure = result.err().unwrap();
+    assert!(failure.stop_job);
+    assert!(failure.message.contains("no POST was sent"));
+    assert!(!failure.message.contains(MOCK_KEY));
+    assert_eq!(mock.count(), 0);
+    let mut registry = lock(&service.shared).unwrap();
+    finish_item(find_job_mut(&mut registry, &id).unwrap(), 1, Err(failure), 1);
+}
+
+#[test]
+fn retry_preflight_cannot_undo_a_concurrent_cancel() {
+    let _serial = WORKER_TEST.lock().unwrap();
+    let home = TempHome::new();
+    let mock = Mock::new(|_, _| panic!("cancel must win retry preflight"));
+    let (id, input) = input(&home, &mock, 2);
+    let provider = input.provider.clone();
+    let service = ImageJobs::default();
+    record_without_workers(&service, id.clone(), input, false);
+    service.cancel(&id).unwrap();
+    let result = service.retry_with_loader(&id, |_| {
+        service.cancel(&id).unwrap();
+        Ok(provider)
+    });
+    assert!(result.err().unwrap().contains("changed during retry preflight"));
+    assert_eq!(service.status(&id).unwrap().status, "cancelled");
+    assert_eq!(mock.count(), 0);
+}
+
+#[test]
+fn changed_reference_hashes_block_explicit_retry_before_http() {
+    let home = TempHome::new();
+    let attachments = TempHome::new();
+    let path = attachments.0.join("source.png");
+    fs::write(&path, png(1, 1)).unwrap();
+    let mock = Mock::new(|_, _| panic!("changed references must not POST"));
+    let (id, mut input) = input(&home, &mock, 1);
+    input.request.reference_paths = vec![path.to_string_lossy().into_owned()];
+    input.references = load_references_in_home(&input.request.reference_paths, &home.0).unwrap();
+    let provider = input.provider.clone();
+    let service = ImageJobs::default();
+    record_without_workers(&service, id.clone(), input, false);
+    service.cancel(&id).unwrap();
+    fs::write(path, png(2, 2)).unwrap();
+    assert!(service.retry_with_loader(&id, |_| Ok(provider)).err().unwrap().contains("hashes changed"));
+    assert_eq!(mock.count(), 0);
+}
+
+#[test]
+fn expired_lease_pauses_and_status_renews_without_implicitly_resuming() {
+    let home = TempHome::new();
+    let mock = Mock::new(|_, _| panic!("lease state test must not POST"));
+    let (id, input) = input(&home, &mock, usize::MAX);
+    let service = ImageJobs::default();
+    record_without_workers(&service, id.clone(), input, true);
+    {
+        let mut registry = lock(&service.shared).unwrap();
+        let job = find_job_mut(&mut registry, &id).unwrap();
+        job.lease_deadline = Some(Instant::now() + Duration::from_secs(1));
+    }
+    let renewed = service.status(&id).unwrap();
+    assert!(renewed.lease_remaining_ms.unwrap() > 119_000);
+    assert!(!renewed.paused);
+    {
+        let mut registry = lock(&service.shared).unwrap();
+        let job = find_job_mut(&mut registry, &id).unwrap();
+        job.lease_deadline = Some(Instant::now() - Duration::from_millis(1));
+        assert!(job.claim().is_none(), "claim itself enforces the lease");
+    }
+    let paused = service.status(&id).unwrap();
+    assert_eq!(paused.status, "paused");
+    assert!(paused.leased);
+    assert!(paused.lease_remaining_ms.unwrap() > 119_000);
+    assert_eq!(paused.items.len(), 2);
+    assert_eq!(mock.count(), 0);
+}
+
+#[test]
+fn workers_pause_expired_queue_without_polls_and_do_not_interrupt_admitted_requests() {
+    let _serial = WORKER_TEST.lock().unwrap();
+    let home = TempHome::new();
+    let gate = Arc::new(Gate::default());
+    let handler_gate = Arc::clone(&gate);
+    let mock = Mock::new(move |_, _| { handler_gate.wait(); Reply::json(success()) });
+    let (id, input) = input(&home, &mock, 5);
+    let service = ImageJobs::default();
+    submit_leased(&service.shared, id.clone(), input, true).unwrap();
+    wait_until(|| mock.count() == 2);
+    {
+        let mut registry = lock(&service.shared).unwrap();
+        find_job_mut(&mut registry, &id).unwrap().lease_deadline =
+            Some(Instant::now() - Duration::from_secs(1));
+    }
+    gate.release();
+    wait_until(|| {
+        let registry = lock(&service.shared).unwrap();
+        let job = find_job(&registry, &id).unwrap();
+        job.paused && job.active == 0
+    });
+    let status = service.status(&id).unwrap();
+    assert_eq!(status.status, "paused");
+    assert_eq!((status.completed, status.failed), (2, 0));
+    assert_eq!(mock.count(), 2);
+    let manifest: Value = serde_json::from_slice(
+        &fs::read(Path::new(&status.output_directory).join("manifest.json")).unwrap()
+    ).unwrap();
+    assert_eq!(manifest["job"]["paused"], true);
+}
+
+#[test]
+fn cancel_all_stops_future_submissions_but_waits_for_inflight_requests() {
+    let _serial = WORKER_TEST.lock().unwrap();
+    let home = TempHome::new();
+    let gate = Arc::new(Gate::default());
+    let handler_gate = Arc::clone(&gate);
+    let mock = Mock::new(move |_, _| { handler_gate.wait(); Reply::json(success()) });
+    let (id, first_input) = input(&home, &mock, 5);
+    let service = ImageJobs::default();
+    submit(&service.shared, id.clone(), first_input).unwrap();
+    wait_until(|| mock.count() == 2);
+    service.cancel_all();
+    assert!(service.has_active_requests());
+    let (next_id, next_input) = input(&home, &mock, 1);
+    assert!(submit(&service.shared, next_id, next_input).is_err());
+    gate.release();
+    wait_until(|| !service.has_active_requests());
+    let result = service.status(&id).unwrap();
+    assert_eq!((result.completed, result.cancelled), (2, 3));
+    assert_eq!(mock.count(), 2);
+}
+
+#[test]
+fn the_two_worker_limit_is_process_global_across_independent_services() {
+    let _serial = WORKER_TEST.lock().unwrap();
+    let first_home = TempHome::new();
+    let second_home = TempHome::new();
+    let active = Arc::new(AtomicUsize::new(0));
+    let maximum = Arc::new(AtomicUsize::new(0));
+    let handler_active = Arc::clone(&active);
+    let handler_maximum = Arc::clone(&maximum);
+    let gate = Arc::new(Gate::default());
+    let handler_gate = Arc::clone(&gate);
+    let mock = Mock::new(move |_, _| {
+        let count = handler_active.fetch_add(1, Ordering::SeqCst) + 1;
+        handler_maximum.fetch_max(count, Ordering::SeqCst);
+        handler_gate.wait();
+        handler_active.fetch_sub(1, Ordering::SeqCst);
+        Reply::json(success())
+    });
+    let first = ImageJobs::default();
+    let second = ImageJobs::default();
+    let (first_id, first_input) = input(&first_home, &mock, 3);
+    let (second_id, second_input) = input(&second_home, &mock, 3);
+    submit(&first.shared, first_id.clone(), first_input).unwrap();
+    submit(&second.shared, second_id.clone(), second_input).unwrap();
+    wait_until(|| mock.count() == 2);
+    thread::sleep(Duration::from_millis(150));
+    assert_eq!(mock.count(), 2);
+    assert_eq!(maximum.load(Ordering::SeqCst), 2);
+    gate.release();
+    assert_eq!(finished(&first, &first_id).completed, 3);
+    assert_eq!(finished(&second, &second_id).completed, 3);
+    assert_eq!(maximum.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn preview_memory_and_response_text_are_bounded_per_job() {
+    let home = TempHome::new();
+    let mock = Mock::new(|_, _| panic!("preview-only test must not POST"));
+    let (id, input) = input(&home, &mock, 12);
+    let mut job = StoredJob::new(id, input);
+    for index in 1..=12 {
+        let mut item = ImageItem::new(index, "succeeded");
+        item.preview_data_url = Some(format!("data:image/png;base64,{}", "A".repeat(PREVIEW_BUDGET / 2)));
+        job.items.insert(index, item);
+    }
+    let result = job.snapshot();
+    let previews: Vec<_> = result.items.iter().filter_map(|item| item.preview_data_url.as_ref()).collect();
+    assert!(previews.len() <= MAX_PREVIEWS);
+    assert!(previews.iter().map(|preview| preview.len()).sum::<usize>() <= PREVIEW_BUDGET);
+    persist_manifest(&job).unwrap();
+    assert!(!fs::read_to_string(job.input.directory.join("manifest.json")).unwrap().contains("previewDataUrl"));
+}
+
+#[test]
+fn persistence_failure_is_reported_without_claiming_progress_was_saved() {
+    let home = TempHome::new();
+    let mock = Mock::new(|_, _| panic!("persistence state test must not POST"));
+    let (id, input) = input(&home, &mock, 2);
+    let mut job = StoredJob::new(id, input);
+    persist_manifest(&job).unwrap();
+    let path = job.input.directory.join("manifest.json");
+    fs::remove_file(&path).unwrap();
+    fs::create_dir(&path).unwrap();
+    let error = persist_or_stop(&mut job).err().unwrap();
+    assert!(error.contains("Could not replace"));
+    let status = job.snapshot();
+    assert_eq!(status.persistence_error.as_deref(), Some(error.as_str()));
+    assert_eq!(status.status, "cancelled");
+    assert_eq!(status.cancelled, 2);
+    assert!(!status.message.contains("Progress is saved"));
+}
+
+#[test]
+fn index_write_failure_prevents_any_new_worker_submission() {
+    let home = TempHome::new();
+    let mock = Mock::new(|_, _| panic!("failed index registration must not POST"));
+    let (id, input) = input(&home, &mock, 1);
+    fs::create_dir(home.0.join("oceanway-image-jobs")).unwrap();
+    fs::create_dir(home.0.join("oceanway-image-jobs").join("index.json")).unwrap();
+    let state = ImageJobs::default();
+    assert!(submit(&state.shared, id, input).is_err());
+    assert!(lock(&state.shared).unwrap().jobs.is_empty());
+    assert!(!state.has_active_requests());
+    assert_eq!(mock.count(), 0);
+}
+
+#[test]
+fn original_regular_attachments_outside_home_are_allowed_but_credential_paths_are_not() {
+    let home = TempHome::new();
+    let outside = TempHome::new();
+    let attachment = outside.0.join("actual-upload.png");
+    fs::write(&attachment, png(1, 1)).unwrap();
+    assert!(load_references_in_home(&[attachment.to_string_lossy().into_owned()], &home.0).is_ok());
+    for name in ["config.toml", "auth.json", ".env", "credentials.json", "config.toml.backup"] {
+        for root in [&home.0, &outside.0] {
+            let path = root.join(name);
+            fs::write(&path, png(1, 1)).unwrap();
+            assert!(load_references_in_home(&[path.to_string_lossy().into_owned()], &home.0).is_err());
+        }
+    }
+    assert!(load_references_in_home(&[outside.0.to_string_lossy().into_owned()], &home.0).is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn symlink_originals_owned_indexes_manifests_and_workspace_roots_are_rejected() {
+    use std::os::unix::fs::symlink;
+    let home = TempHome::new();
+    let outside = TempHome::new();
+    let original = outside.0.join("original.png");
+    fs::write(&original, png(1, 1)).unwrap();
+    let link = outside.0.join("link.png");
+    symlink(&original, &link).unwrap();
+    assert!(load_references_in_home(&[link.to_string_lossy().into_owned()], &home.0).is_err());
+    symlink(&outside.0, home.0.join("output")).unwrap();
+    assert!(create_workspace_directory(&home.0).is_err());
+    symlink(&outside.0, home.0.join("oceanway-image-jobs")).unwrap();
+    assert!(ImageJobs::new(&home.0).is_err());
+}
+
+#[test]
+fn configured_timeout_and_public_timeout_errors_agree_on_240_seconds() {
+    assert_eq!(TIMEOUT, Duration::from_secs(240));
+    let error = remaining(Instant::now() - TIMEOUT - Duration::from_millis(1)).err().unwrap();
+    assert!(error.message.contains("240s"));
+    assert!(!error.message.contains("180s"));
+}
+
+#[test]
+fn auth_json_is_authoritative_without_a_shell_environment_requirement() {
+    let home = TempHome::new();
+    save_provider_fixture(&home.0, "legacy-inline-token");
+    fs::write(home.0.join("auth.json"), json!({ "OPENAI_API_KEY": "saved-auth-json-token" }).to_string()).unwrap();
+    let provider = load_provider_in_home(&home.0).unwrap();
+    assert_eq!(provider.key, "saved-auth-json-token");
+    fs::write(home.0.join("config.toml"),
+        "model_provider = 'OceanWay'\n[model_providers.OceanWay]\n\
+         base_url = 'https://example.invalid/v1'\nenv_key = 'MUST_NOT_REQUIRE_THIS_VARIABLE'\n"
+    ).unwrap();
+    assert_eq!(load_provider_in_home(&home.0).unwrap().key, "saved-auth-json-token");
+    save_provider_fixture(&home.0, "legacy-inline-token");
+    fs::write(home.0.join("auth.json"), json!({ "OPENAI_API_KEY": "" }).to_string()).unwrap();
+    assert!(load_provider_in_home(&home.0).is_err(), "invalid auth.json must not resurrect an old inline key");
+}
+
+#[test]
+fn final_dispatch_rebinds_current_auth_json_key_after_body_and_manifest_preflight() {
+    let home = TempHome::new();
+    save_provider_fixture(&home.0, "legacy-inline-token");
+    fs::write(home.0.join("auth.json"), json!({ "OPENAI_API_KEY": "first-auth-key" }).to_string()).unwrap();
+    let mock = Mock::new(|number, request| {
+        let expected = if number == 1 { "latest-during-preflight" } else { "updated-between-slots" };
+        assert_eq!(request.headers["authorization"], format!("Bearer {expected}"));
+        Reply::json(success())
+    });
+    let (id, input) = input(&home, &mock, 2);
+    let service = ImageJobs::default();
+    record_without_workers(&service, id.clone(), input, false);
+    for index in 1..=2 {
+        let input = {
+            let mut registry = lock(&service.shared).unwrap();
+            let job = find_job_mut(&mut registry, &id).unwrap();
+            assert_eq!(job.claim(), Some(index));
+            Arc::clone(&job.input)
+        };
+        let mut checks = 0;
+        let result = execute_with_guard(&input, index, Instant::now(), || {
+            authorize_post_with_loader(&service.shared, &id, index, &input, || {
+                checks += 1;
+                if index == 1 && checks == 2 {
+                    fs::write(home.0.join("auth.json"),
+                        json!({ "OPENAI_API_KEY": "latest-during-preflight" }).to_string()).unwrap();
+                }
+                let mut provider = load_provider_in_home(&home.0).map_err(Failure::from)?;
+                // Only test transport changes; the saved auth loader is the production one.
+                provider.api_base = mock.base.clone();
+                provider.local_mock = true;
+                Ok(provider)
+            })
+        }).unwrap();
+        assert_eq!(checks, 2);
+        let mut registry = lock(&service.shared).unwrap();
+        let job = find_job_mut(&mut registry, &id).unwrap();
+        finish_item(job, index, Ok(result), 1);
+        persist_or_stop(job).unwrap();
+        fs::write(home.0.join("auth.json"),
+            json!({ "OPENAI_API_KEY": "updated-between-slots" }).to_string()).unwrap();
+    }
+    assert_eq!(service.status(&id).unwrap().completed, 2);
+    let registry = lock(&service.shared).unwrap();
+    let job = find_job(&registry, &id).unwrap();
+    let manifest = fs::read_to_string(job.input.directory.join("manifest.json")).unwrap();
+    for key in ["first-auth-key", "latest-during-preflight", "updated-between-slots"] {
+        assert!(!manifest.contains(key));
+    }
+    assert_eq!(mock.count(), 2);
 }
