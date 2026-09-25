@@ -35,41 +35,70 @@ const TOOL_NAMES: [&str; 4] = [
 ];
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
-// The image engine allows 180 seconds per in-flight request; leave time to save.
-const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(195);
+// The image engine allows 240 seconds per in-flight request; leave time to save.
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(255);
 const PREVIEW_SOURCE_LIMIT: usize = 512 * 1024;
 const PREVIEW_BYTES_LIMIT: usize = 256 * 1024;
 const RESPONSE_PREVIEW_LIMIT: usize = 512 * 1024;
 const MAX_PREVIEWS: usize = 4;
-const BILLING_NOTICE: &str = "Each attempt may be charged. Cancellation stops queued work; \
-    in-flight requests finish and are saved. Retry is explicit and may incur another charge.";
 
 #[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct GenerateArgs {
-    /// Absolute path to the workspace in which image results will be saved.
-    workspace: String,
+    /// Absolute current task working directory. Results are saved under output/images.
+    workspace_directory: String,
+    /// Shared generation or edit description for all slots. Required unless prompts is supplied.
     #[serde(default)]
     prompt: String,
+    /// Ordered per-image descriptions for different subjects or styles; length must equal count.
     #[serde(default)]
     prompts: Vec<String>,
+    /// Honor the user's requested image model; default to gpt-image-2 only when unspecified.
     #[serde(default = "default_model")]
     model: String,
+    /// Exact total number of images requested by the user, not a per-request limit; default 1.
     #[serde(default = "default_count")]
+    #[schemars(range(min = 1))]
     count: usize,
+    /// Requested output dimensions, such as 1024x1024, or auto. Default 1024x1024.
     #[serde(default = "default_size")]
     size: String,
-    /// Local image paths. Relative paths are resolved against workspace.
+    /// Ordered absolute paths to real original attachments or previous output images.
+    /// Preserve order and duplicate roles. Never substitute descriptions for unavailable files.
     #[serde(default)]
-    references: Vec<String>,
+    reference_paths: Vec<String>,
+}
+
+impl GenerateArgs {
+    fn validate(&self) -> Result<(), String> {
+        if !Path::new(&self.workspace_directory).is_absolute() {
+            return Err("workspace_directory must be an absolute directory path.".into());
+        }
+        if self.reference_paths.iter().any(|path| !Path::new(path).is_absolute()) {
+            return Err("reference_paths must contain absolute paths to real image files.".into());
+        }
+        if self.count == 0 {
+            return Err("count must be the positive total number of requested images.".into());
+        }
+        if self.prompts.is_empty() {
+            if self.prompt.trim().is_empty() {
+                return Err("Supply a generation or edit prompt, or one prompt per image slot.".into());
+            }
+        } else if self.prompts.len() != self.count
+            || self.prompts.iter().any(|prompt| prompt.trim().is_empty())
+        {
+            return Err("prompts must contain exactly count nonblank descriptions in output order.".into());
+        }
+        Ok(())
+    }
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct GetArgs {
     job_id: String,
-    /// Wait for progress or completion, at most 30 seconds. Zero returns immediately.
-    #[serde(default)]
+    /// Wait for progress or completion: default 20 seconds, maximum 30. Zero returns immediately.
+    #[serde(default = "default_wait_seconds")]
     #[schemars(range(min = 0, max = 30))]
     wait_seconds: u64,
 }
@@ -92,6 +121,10 @@ fn default_size() -> String {
     "1024x1024".into()
 }
 
+fn default_wait_seconds() -> u64 {
+    20
+}
+
 fn tools() -> Vec<Tool> {
     let annotations = |read_only, idempotent, open_world| {
         ToolAnnotations::from_raw(
@@ -105,15 +138,25 @@ fn tools() -> Vec<Tool> {
     vec![
         Tool::new(
             TOOL_NAMES[0],
-            "Start explicitly requested paid image generation or editing in an absolute workspace. \
-             Uses saved provider settings. Returns a job; no automatic retries.",
+            "Create actual pictures, posters, visual assets, variations, or image edits when the \
+             user asks for images to be made or changed. Uses the configured image provider. \
+             Honor the requested model, total count, size, and ordered original reference files; \
+             default to gpt-image-2, one image, and 1024x1024 only when unspecified. For different \
+             subjects or styles supply one prompt per output slot. For edits use actual original \
+             attachments or previous output files, never text substitutes or invented paths. \
+             Do not call for analysis-only or prompt-writing requests, or without a generation \
+             or edit prompt. Requests may be charged. Poll get_image_job while running and \
+             display the saved images; never silently resubmit paid requests.",
             JsonObject::new(),
         )
         .with_input_schema::<GenerateArgs>()
         .with_annotations(annotations(false, false, true)),
         Tool::new(
             TOOL_NAMES[1],
-            "Read an image job; optionally wait up to 30 seconds for progress. \
+            "Wait for and inspect an image job without submitting new image requests. \
+             Waits 20 seconds by default, up to 30, and returns counts, saved output paths, \
+             previews, request IDs, errors, and warnings. Poll while running. Paused or \
+             interrupted jobs need an explicit retry; polling does not resume them. \
              Cancelling a pending poll also cancels the job's queued work.",
             JsonObject::new(),
         )
@@ -128,8 +171,9 @@ fn tools() -> Vec<Tool> {
         .with_annotations(annotations(false, true, false)),
         Tool::new(
             TOOL_NAMES[3],
-            "Explicitly retry unfinished image indices. Successful images are retained; \
-             new attempts may incur charges.",
+            "Resume paused or interrupted image jobs, or retry unfinished indices, when the user \
+             requests retrying. Successful images are retained; unsafe or uncertain outputs may \
+             block retry. New attempts may incur charges; never retry automatically.",
             JsonObject::new(),
         )
         .with_input_schema::<JobArgs>()
@@ -209,15 +253,15 @@ impl ImageMcp {
         }
     }
 
-    async fn mutate<F>(&self, operation: F) -> Result<ImageJob, &'static str>
+    async fn mutate<F>(&self, operation: F) -> Result<ImageJob, String>
     where
-        F: FnOnce(ImageJobs) -> Result<ImageJob, &'static str> + Send + 'static,
+        F: FnOnce(ImageJobs) -> Result<ImageJob, String> + Send + 'static,
     {
         let jobs = self.jobs.clone();
         let guard = Operation::new(self.session.clone());
         blocking(move || {
             if guard.0.closing.load(Ordering::SeqCst) {
-                return Err("The image server is shutting down.");
+                return Err("The image server is shutting down.".into());
             }
             let result = operation(jobs);
             drop(guard);
@@ -226,50 +270,32 @@ impl ImageMcp {
         .await
     }
 
-    async fn cancel_job(&self, id: String) -> Result<ImageJob, &'static str> {
+    async fn cancel_job(&self, id: String) -> Result<ImageJob, String> {
         let jobs = self.jobs.clone();
-        blocking(move || {
-            jobs.cancel(&id)
-                .map_err(|_| "Could not cancel this image job.")
-        })
-        .await
+        blocking(move || jobs.cancel(&id)).await
     }
 
     async fn generate(
         &self,
         args: GenerateArgs,
         context: RequestContext<RoleServer>,
-    ) -> Result<ImageJob, &'static str> {
+    ) -> Result<ImageJob, String> {
         if context.ct.is_cancelled() {
-            return Err("The image request was cancelled before submission.");
+            return Err("The image request was cancelled before submission.".into());
         }
+        args.validate()?;
         let job = self
             .mutate(move |jobs| {
-                let workspace = absolute_workspace(&args.workspace)?;
-                let references = args
-                    .references
-                    .into_iter()
-                    .map(|reference| {
-                        let path = PathBuf::from(reference);
-                        if path.is_absolute() {
-                            path
-                        } else {
-                            workspace.join(path)
-                        }
-                        .to_string_lossy()
-                        .into_owned()
-                    })
-                    .collect();
+                let workspace = absolute_workspace(&args.workspace_directory)?;
                 let request = ImageTestRequest {
                     model: args.model,
                     prompt: args.prompt,
                     prompts: args.prompts,
                     count: args.count,
                     size: args.size,
-                    reference_paths: references,
+                    reference_paths: args.reference_paths,
                 };
                 jobs.start(request, Some(&workspace), true)
-                    .map_err(|_| "Could not start the image job. Check the saved configuration and inputs.")
             })
             .await?;
         // Submission is blocking and cannot be aborted safely. Cancel its queue
@@ -285,15 +311,12 @@ impl ImageMcp {
         &self,
         args: JobArgs,
         context: RequestContext<RoleServer>,
-    ) -> Result<ImageJob, &'static str> {
+    ) -> Result<ImageJob, String> {
         if context.ct.is_cancelled() {
-            return Err("The retry was cancelled before submission.");
+            return Err("The retry was cancelled before submission.".into());
         }
         let job = self
-            .mutate(move |jobs| {
-                jobs.retry(&args.job_id)
-                    .map_err(|_| "Could not retry this image job. Wait for active requests to finish.")
-            })
+            .mutate(move |jobs| jobs.retry(&args.job_id))
             .await?;
         if context.ct.is_cancelled() {
             self.cancel_job(job.id).await
@@ -302,12 +325,12 @@ impl ImageMcp {
         }
     }
 
-    async fn poll(&self, args: &GetArgs) -> Result<ImageJob, &'static str> {
+    async fn poll(&self, args: &GetArgs) -> Result<ImageJob, String> {
         let started = Instant::now();
         let status = || {
             let jobs = self.jobs.clone();
             let id = args.job_id.clone();
-            blocking(move || jobs.status(&id).map_err(|_| "Could not find this image job."))
+            blocking(move || jobs.status(&id))
         };
         let mut job = timeout(Duration::from_secs(30), status())
             .await
@@ -338,9 +361,9 @@ impl ImageMcp {
         &self,
         args: GetArgs,
         context: RequestContext<RoleServer>,
-    ) -> Result<ImageJob, &'static str> {
+    ) -> Result<ImageJob, String> {
         if args.wait_seconds > 30 {
-            return Err("wait_seconds must be between 0 and 30.");
+            return Err("wait_seconds must be between 0 and 30.".into());
         }
         // Keep this select inside the request. rmcp also cancels context.ct after
         // a normal response, so no watcher may outlive this method.
@@ -374,7 +397,7 @@ impl ImageMcp {
                 Ok(args) => self.retry(args, context).await,
                 Err(message) => Err(message),
             },
-            _ => Err("Unknown image tool."),
+            _ => Err("Unknown image tool.".into()),
         };
         match result {
             Ok(job) => {
@@ -420,44 +443,53 @@ impl ServerHandler for ImageMcp {
     }
 }
 
-fn parse<T: DeserializeOwned>(arguments: JsonObject) -> Result<T, &'static str> {
+fn parse<T: DeserializeOwned>(arguments: JsonObject) -> Result<T, String> {
     // Serde errors can quote caller-supplied values. Never return them verbatim.
     serde_json::from_value(serde_json::Value::Object(arguments))
-        .map_err(|_| "Invalid image tool arguments. Use the advertised input schema.")
+        .map_err(|_| "Invalid image tool arguments. Use the advertised input schema.".into())
 }
 
-fn tool_error(message: &'static str) -> CallToolResult {
+fn tool_error(message: String) -> CallToolResult {
     CallToolResult::structured_error(json!({ "error": message }))
 }
 
-async fn blocking<T, F>(operation: F) -> Result<T, &'static str>
+async fn blocking<T, F>(operation: F) -> Result<T, String>
 where
     T: Send + 'static,
-    F: FnOnce() -> Result<T, &'static str> + Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
 {
     tokio::task::spawn_blocking(operation)
         .await
         .map_err(|_| "The local image operation could not finish.")?
 }
 
-fn absolute_workspace(value: &str) -> Result<PathBuf, &'static str> {
+fn absolute_workspace(value: &str) -> Result<PathBuf, String> {
     let path = Path::new(value);
     if !path.is_absolute() {
-        return Err("workspace must be an absolute directory path.");
+        return Err("workspace_directory must be an absolute directory path.".into());
     }
-    let path = std::fs::canonicalize(path).map_err(|_| "workspace is not accessible.")?;
+    let path = std::fs::canonicalize(path)
+        .map_err(|_| "workspace_directory is not accessible.")?;
     if !path.is_dir() {
-        return Err("workspace must be a directory.");
+        return Err("workspace_directory must be a directory.".into());
     }
     Ok(path)
 }
 
 fn terminal(job: &ImageJob) -> bool {
-    matches!(job.status.as_str(), "completed" | "partial" | "failed" | "cancelled")
+    matches!(
+        job.status.as_str(),
+        "completed" | "completed_with_warnings" | "partial" | "failed" | "cancelled"
+            | "paused" | "interrupted"
+    )
 }
 
-fn progress(job: &ImageJob) -> (String, usize, usize, usize) {
-    (job.status.clone(), job.completed, job.failed, job.cancelled)
+fn progress(job: &ImageJob) -> (String, usize, usize, usize, usize, bool, bool, bool) {
+    // Lease renewal changes lease_remaining_ms on every read; it is not progress.
+    (
+        job.status.clone(), job.completed, job.failed, job.cancelled, job.outcome_unknown,
+        job.paused, job.recovered, job.count_mismatch,
+    )
 }
 
 fn thumbnail(data_url: &str) -> Option<String> {
@@ -481,7 +513,7 @@ fn thumbnail(data_url: &str) -> Option<String> {
     Some(STANDARD.encode(output.into_inner()))
 }
 
-fn render_job(mut job: ImageJob, session: &Session) -> Result<CallToolResult, &'static str> {
+fn render_job(mut job: ImageJob, session: &Session) -> Result<CallToolResult, String> {
     let mut images = Vec::new();
     let mut bytes = 0;
     let mut sent = session
@@ -500,16 +532,10 @@ fn render_job(mut job: ImageJob, session: &Session) -> Result<CallToolResult, &'
                 }
             }
         }
-        if item.error.is_some() {
-            item.error = Some("This image attempt failed; inspect the saved local job details.".into());
-        }
-        if item.warning.is_some() {
-            item.warning = Some("This image has a response warning; inspect the saved local job details.".into());
-        }
     }
     drop(sent);
-    // Do not mirror provider-originated error text or duplicate base64 in JSON.
-    job.message = BILLING_NOTICE.into();
+    // The engine owns credential redaction. Preserve its diagnostic evidence;
+    // only remove duplicated preview data URLs from the structured job.
     let value = serde_json::to_value(job).map_err(|_| "Could not serialize the image job.")?;
     let mut result = CallToolResult::structured(value);
     result.content.extend(images);
@@ -530,8 +556,7 @@ async fn shutdown(server: &ImageMcp) -> Result<(), String> {
                 }
                 Ok(jobs.has_active_requests())
             })
-            .await
-            .map_err(str::to_owned)?;
+            .await?;
             if !active && server.session.operations.load(Ordering::SeqCst) == 0 {
                 return Ok::<(), String>(());
             }
@@ -545,7 +570,9 @@ async fn shutdown(server: &ImageMcp) -> Result<(), String> {
 }
 
 pub async fn serve_stdio() -> Result<(), String> {
-    let server = ImageMcp::new(ImageJobs::default());
+    // Recovery reads owned manifests only, never provider credentials or HTTP.
+    let jobs = blocking(|| ImageJobs::with_home(crate::codex_home()?)).await?;
+    let server = ImageMcp::new(jobs);
     let (input, output) = stdio();
     let input = DisconnectReader {
         inner: input,
@@ -581,8 +608,7 @@ pub async fn check(home: &Path) -> Result<McpStatus, String> {
         let status = mcp_config::status(&home, &config);
         Ok((executable, home, status))
     })
-    .await
-    .map_err(str::to_owned)?;
+    .await?;
     let mut command = tokio::process::Command::new(executable);
     command
         .arg("--image-mcp-stdio")
@@ -617,7 +643,7 @@ pub async fn check(home: &Path) -> Result<McpStatus, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::image_api::ImageItem;
+    use crate::image_api::{ImageItem, ImageOutput};
 
     fn sample_job() -> ImageJob {
         ImageJob {
@@ -639,8 +665,32 @@ mod tests {
                 elapsed_ms: None,
                 warning: None,
                 additional_paths: vec![],
+                width: Some(1024),
+                height: Some(1024),
+                sha256: Some("0".repeat(64)),
+                outputs: vec![ImageOutput {
+                    path: "image.png".into(),
+                    width: 1024,
+                    height: 1024,
+                    sha256: "0".repeat(64),
+                    bytes: 128,
+                }],
+                count_mismatch: false,
+                retry_blocked: false,
+                post_started: true,
             }],
             message: String::new(),
+            output_directory: "output/images/test-job".into(),
+            reference_paths: vec![],
+            reference_hashes: vec![],
+            warnings: vec![],
+            count_mismatch: false,
+            persistence_error: None,
+            paused: false,
+            leased: true,
+            recovered: false,
+            outcome_unknown: 0,
+            lease_remaining_ms: Some(120_000),
         }
     }
 
@@ -657,29 +707,70 @@ mod tests {
             assert!(!metadata.contains(forbidden), "{forbidden}");
         }
         let schema = serde_json::to_value(&tools[0].input_schema).unwrap();
-        assert_eq!(schema["required"], json!(["workspace"]));
+        assert_eq!(schema["required"], json!(["workspace_directory"]));
         assert_eq!(schema["properties"]["model"]["default"], "gpt-image-2");
         assert_eq!(schema["properties"]["count"]["default"], 1);
         assert_eq!(schema["properties"]["size"]["default"], "1024x1024");
-        assert!(schema["properties"].get("reference_paths").is_none());
-        assert!(schema["properties"].get("references").is_some());
+        assert!(schema["properties"].get("reference_paths").is_some());
+        assert!(schema["properties"].get("references").is_none());
+        assert!(schema["properties"].get("workspace").is_none());
         assert!(schema["properties"].get("prompts").is_some());
         assert_eq!(schema["additionalProperties"], false);
+        let poll = serde_json::to_value(&tools[1].input_schema).unwrap();
+        assert_eq!(poll["properties"]["wait_seconds"]["default"], 20);
+        assert_eq!(poll["properties"]["wait_seconds"]["maximum"], 30);
+        for intent in ["pictures", "posters", "visual assets", "variations", "image edits"] {
+            assert!(tools[0].description.as_deref().unwrap().contains(intent));
+        }
     }
 
     #[test]
     fn defaults_and_parse_failures_do_not_echo_secrets() {
         let args: GenerateArgs =
-            serde_json::from_value(json!({"workspace": "/workspace"})).unwrap();
+            serde_json::from_value(json!({"workspace_directory": "/workspace"})).unwrap();
         assert_eq!(args.count, 1);
-        assert!(args.references.is_empty());
+        assert!(args.reference_paths.is_empty());
         assert!(args.prompt.is_empty());
         assert!(args.prompts.is_empty());
         let arguments = json!({"job_id": "x", "wait_seconds": "sk-do-not-echo"})
             .as_object().unwrap().clone();
         let error = parse::<GetArgs>(arguments).err().unwrap();
         assert!(!error.contains("sk-do-not-echo"));
+        let unknown = json!({
+            "workspace_directory": "/workspace",
+            "api_key": "sk-do-not-echo",
+            "unknown-sk-do-not-echo": "hidden"
+        }).as_object().unwrap().clone();
+        let error = parse::<GenerateArgs>(unknown).err().unwrap();
+        assert!(!error.contains("sk-do-not-echo"));
+        assert!(!error.contains("api_key"));
+        let poll: GetArgs = serde_json::from_value(json!({"job_id": "x"})).unwrap();
+        assert_eq!(poll.wait_seconds, 20);
         assert!(absolute_workspace("relative/workspace").is_err());
+    }
+
+    #[test]
+    fn references_require_absolute_paths_and_preserve_order_and_duplicate_roles() {
+        let workspace = std::env::temp_dir();
+        let first = workspace.join("original.png").to_string_lossy().into_owned();
+        let second = workspace.join("previous-output.png").to_string_lossy().into_owned();
+        let paths = vec![first.clone(), second, first];
+        let mut args: GenerateArgs = serde_json::from_value(json!({
+            "workspace_directory": workspace,
+            "prompt": "Create a poster using the ordered references.",
+            "reference_paths": paths,
+        })).unwrap();
+        args.validate().unwrap();
+        assert_eq!(args.reference_paths, paths);
+        args.reference_paths[0] = "relative.png".into();
+        assert!(args.validate().unwrap_err().contains("absolute"));
+        args.reference_paths.clear();
+        args.prompt.clear();
+        assert!(args.validate().unwrap_err().contains("prompt"));
+        args.prompts = vec!["First style".into(), "Second style".into()];
+        assert!(args.validate().is_err());
+        args.count = 2;
+        args.validate().unwrap();
     }
 
     #[test]
@@ -690,9 +781,18 @@ mod tests {
         let mut job = sample_job();
         job.items[0].preview_data_url =
             Some(format!("data:image/png;base64,{}", STANDARD.encode(png.into_inner())));
-        job.items[0].error = Some("sk-provider-secret".into());
-        job.items[0].warning = Some("sk-provider-secret".into());
-        job.message = "sk-provider-secret".into();
+        job.items[0].error = Some("Additional output could not be decoded.".into());
+        job.items[0].warning = Some("Expected one image; provider returned two.".into());
+        job.items[0].request_id = Some("req-sanitized-123".into());
+        job.items[0].count_mismatch = true;
+        job.count_mismatch = true;
+        job.warnings = vec!["Expected one image; provider returned two.".into()];
+        job.persistence_error = Some("Could not save updated manifest.".into());
+        job.message = "Result count mismatch. Saved images are retained. [REDACTED]".into();
+        job.status = "completed_with_warnings".into();
+        let mut expected = job.clone();
+        expected.items[0].preview_data_url = None;
+        let expected = serde_json::to_value(expected).unwrap();
         let session = Session::default();
         let first = render_job(job.clone(), &session).unwrap();
         assert_eq!(first.content.len(), 2);
@@ -702,11 +802,52 @@ mod tests {
         let decoded = image::load_from_memory(&bytes).unwrap();
         assert!(decoded.width() <= 256 && decoded.height() <= 256);
         let json = serde_json::to_string(&first).unwrap();
-        assert!(!json.contains("sk-provider-secret"));
         assert!(!json.contains("previewDataUrl"));
+        assert_eq!(first.structured_content.as_ref(), Some(&expected));
         assert_eq!(render_job(job, &session).unwrap().content.len(), 1);
         assert!(thumbnail(&"x".repeat(PREVIEW_SOURCE_LIMIT + 1)).is_none());
         assert!(thumbnail("data:image/png;base64,invalid").is_none());
+    }
+
+    #[test]
+    fn terminal_states_and_progress_match_engine_without_counting_lease_renewals() {
+        let mut job = sample_job();
+        for status in [
+            "completed", "completed_with_warnings", "partial", "failed", "cancelled",
+            "paused", "interrupted",
+        ] {
+            job.status = status.into();
+            assert!(terminal(&job), "{status}");
+        }
+        job.status = "running".into();
+        assert!(!terminal(&job));
+        let initial = progress(&job);
+        job.lease_remaining_ms = Some(119_900);
+        assert_eq!(progress(&job), initial);
+        job.outcome_unknown = 1;
+        assert_ne!(progress(&job), initial);
+        assert!(SHUTDOWN_TIMEOUT >= Duration::from_secs(255));
+        for status in ["uncertain", "integrity_failed"] {
+            job.items[0].status = status.into();
+            job.items[0].error = Some("Output integrity prevents retry.".into());
+            job.items[0].retry_blocked = true;
+            let result = render_job(job.clone(), &Session::default()).unwrap();
+            let value = result.structured_content.unwrap();
+            assert_eq!(value["items"][0]["status"], status);
+            assert_eq!(value["items"][0]["error"], "Output integrity prevents retry.");
+            assert_eq!(value["items"][0]["retryBlocked"], true);
+        }
+    }
+
+    #[tokio::test]
+    async fn sanitized_engine_failures_remain_useful_tool_errors() {
+        let server = ImageMcp::new(ImageJobs::default());
+        let message = "Original reference hashes changed; create a new explicit image job.".to_owned();
+        let expected = message.clone();
+        let error = server.mutate(move |_| Err(message)).await.err().unwrap();
+        let result = tool_error(error);
+        assert_eq!(result.is_error, Some(true));
+        assert_eq!(result.structured_content.unwrap()["error"], expected);
     }
 
     #[test]
