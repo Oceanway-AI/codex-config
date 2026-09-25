@@ -70,8 +70,10 @@ pub(super) fn remove(content: &str) -> Result<String, String> {
     if let Some(item) = doc.get("developer_instructions") {
         let existing = item.as_str().ok_or("developer_instructions 不是字符串，未覆盖现有值。")?;
         let remaining = without_managed_block(existing)?;
-        if remaining.is_empty() { doc.remove("developer_instructions"); }
-        else { doc["developer_instructions"] = value(remaining); }
+        if remaining != existing {
+            if remaining.is_empty() { doc.remove("developer_instructions"); }
+            else { doc["developer_instructions"] = value(remaining); }
+        }
     }
     remove_owned_legacy_header(&mut doc)?;
     Ok(doc.to_string())

@@ -1,4 +1,17 @@
 use super::*;
+#[cfg(target_os = "macos")]
+#[test]
+fn language_exit_check_detects_either_host_or_backend_and_fails_closed() {
+    for command in [
+        "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT",
+        "/Applications/ChatGPT.app/Contents/Resources/codex app-server",
+        "/Users/test/Library/Application Support/OpenAI/Codex/bin/hash/codex app-server",
+    ] {
+        assert!(macos_target_present(Some(command), MacosCodexHost::ChatGpt).unwrap());
+    }
+    assert!(!macos_target_present(Some(""), MacosCodexHost::ChatGpt).unwrap());
+    assert!(macos_target_present(None, MacosCodexHost::ChatGpt).is_err());
+}
 #[test]
 fn logged_in_keyring_user_gets_file_api_auth_and_keeps_original_tokens() {
     let auth = render_auth_json_content(

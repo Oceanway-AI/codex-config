@@ -31,10 +31,10 @@ test('one action saves, handshakes, stages language and restarts without paid to
   assert.equal(result.languageStatus.verified, false);
   assert.equal(f.calls.some(name => /test_image|generate/.test(name)), false);
 });
-test('retrying a restart rechecks saved configuration but does not rewrite or restage', async () => {
+test('retrying a restart rechecks saved configuration and the current language choice', async () => {
   const f = fixture();
   await runAutoConfiguration({ ...f, resumeFrom: 'restarting' });
-  assert.deepEqual(f.calls, ['get_config_status', 'check_image_mcp', 'restart_codex', 'get_config_status', 'get_language_status']);
+  assert.deepEqual(f.calls, ['get_config_status', 'check_image_mcp', 'configure_language', 'restart_codex', 'get_config_status', 'get_language_status']);
 });
 test('checking and language retries do not rewrite provider credentials', async () => {
   for (const resumeFrom of ['checking', 'language']) {
@@ -88,4 +88,17 @@ test('post-restart configuration drift cannot be reported as success', async () 
     return call(name, args);
   } }), /重启后配置回读未通过/);
   assert.equal(f.stages.includes('complete'), false);
+});
+test('language status read failure preserves provider readiness with an explicit warning', async () => {
+  const f = fixture({ get_language_status: new Error('language read failed') });
+  let completion;
+  const result = await runAutoConfiguration({ ...f, onStage: (phase, message, options) => {
+    if (phase === 'complete') completion = { message, options };
+  } });
+  assert.equal(result.configured, true);
+  assert.equal(result.languageStatus.verified, false);
+  assert.equal(result.languageStatus.error, true);
+  assert.equal(completion.options.warning, true);
+  assert.match(completion.message, /语言状态尚未确认/);
+  assert.equal(f.calls.filter(name => name === 'restart_codex').length, 1);
 });

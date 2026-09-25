@@ -2737,26 +2737,15 @@ fn macos_codex_version(host: MacosCodexHost) -> Option<String> {
     ]) {
         return Some(version);
     }
-    let embedded_codex = app_path.join("Contents/Resources/codex");
-    if embedded_codex.exists() {
-        if let Some(version) = command_output(&display_path(&embedded_codex), &["--version"]) {
-            return Some(version);
-        }
-    }
-
-    if host == MacosCodexHost::Standalone {
-        let info_plist = app_path.join("Contents/Info.plist");
-        return command_output(
-            "/usr/libexec/PlistBuddy",
-            &[
-                "-c",
-                "Print :CFBundleShortVersionString",
-                &display_path(&info_plist),
-            ],
-        );
-    }
-
     None
+}
+
+#[cfg(target_os = "macos")]
+fn macos_target_present(process_list: Option<&str>, host: MacosCodexHost) -> Result<bool, String> {
+    let list = process_list.ok_or("无法确认应用及后端是否退出，未写入语言或重开。")?;
+    let family = format!("/{}/Contents/", host.bundle_name());
+    Ok(list.lines().any(|line| line.contains(&family)
+        || (line.contains("/OpenAI/Codex/bin/") && line.contains("app-server"))))
 }
 
 fn ensure_desktop_restart_home(override_home: Option<&std::ffi::OsStr>) -> Result<(), String> {
@@ -2773,14 +2762,19 @@ fn restart_codex_desktop() -> Result<RestartCodexResult, String> {
     ensure_desktop_restart_home(env::var_os("CODEX_HOME").as_deref())?;
     #[cfg(target_os = "macos")]
     {
-        let process_list = macos_process_list().unwrap_or_default();
-        let running_host = macos_codex_host_from_process_list(&process_list);
+        let process_list = macos_process_list().ok_or("无法读取应用进程，未执行重启。")?;
+        let live_hosts = [MacosCodexHost::Standalone, MacosCodexHost::ChatGpt].into_iter()
+            .filter(|host| process_list.lines().any(|line|
+                line.contains(&format!("/{}/Contents/", host.bundle_name()))))
+            .collect::<Vec<_>>();
+        if live_hosts.len() > 1 { return Err("检测到多个桌面宿主，请保存任务并手动退出后重试。".into()); }
+        let running_host = live_hosts.first().copied();
         let host = running_host
             .or_else(macos_installed_codex_host)
             .ok_or_else(|| "未在“应用程序”目录检测到 Codex 或 ChatGPT。".to_string())?;
         let app_path = macos_app_path(host)
             .ok_or_else(|| format!("未找到 {} 的应用程序文件。", host.label()))?;
-        let was_running = running_host.is_some();
+        let was_running = macos_target_present(Some(&process_list), host)?;
         if was_running {
             let quit_script = format!("tell application \"{}\" to quit", host.app_name());
             let quit = Command::new("osascript")
@@ -2791,24 +2785,20 @@ fn restart_codex_desktop() -> Result<RestartCodexResult, String> {
                 return Err("应用拒绝退出，自动流程已停止，请保存任务后重试。".into());
             }
             for _ in 0..20 {
-                let host_still_running = macos_process_list()
-                    .as_deref()
-                    .and_then(macos_codex_host_from_process_list)
-                    == Some(host);
+                let host_still_running = macos_target_present(macos_process_list().as_deref(), host)?;
                 if !host_still_running {
                     break;
                 }
                 thread::sleep(Duration::from_millis(150));
             }
-            if macos_process_list()
-                .as_deref()
-                .and_then(macos_codex_host_from_process_list)
-                == Some(host)
-            {
+            if macos_target_present(macos_process_list().as_deref(), host)? {
                 return Err("应用仍在运行，未完成重启；请保存任务后重试。".into());
             }
         }
 
+        if macos_target_present(macos_process_list().as_deref(), host)? {
+            return Err("无法确认旧桌面及后端完全退出，未写入语言。".into());
+        }
         language::apply_pending_checked(&codex_home()?, macos_codex_version(host).as_deref())?;
         let opened = Command::new("open")
             .arg(&app_path)

@@ -364,6 +364,11 @@ pub fn prepare(
     host_version: Option<&str>,
 ) -> Result<LanguageStatus, String> {
     let _guard = MUTATION.lock().map_err(|_| "Language transaction lock is unavailable.")?;
+    if !enable && managed_files::read_optional(&home.join(RECEIPT))?.is_none() {
+        return Ok(LanguageStatus { supported: host_version.is_some_and(supported_version),
+            applied: false, verified: false, pending: false, managed: false,
+            message: "未要求修改语言，保持当前设置。".into() });
+    }
     let state = State::load(home)?;
     let mut status = state.status();
     status.supported = host_version.is_some_and(supported_version);
@@ -442,6 +447,7 @@ pub fn prepare_restore(home: &Path) -> Result<LanguageStatus, String> {
 /// live host version. The saved version is an allowlist check, not live detection.
 pub fn apply_pending(home: &Path) -> Result<(), String> {
     let _guard = MUTATION.lock().map_err(|_| "Language transaction lock is unavailable.")?;
+    if managed_files::read_optional(&home.join(RECEIPT))?.is_none() { return Ok(()); }
     let state = State::load(home)?;
     let Some(mut receipt) = state.receipt.clone() else {
         return Ok(());
@@ -475,6 +481,7 @@ pub fn apply_pending(home: &Path) -> Result<(), String> {
 }
 
 pub fn apply_pending_checked(home: &Path, host_version: Option<&str>) -> Result<(), String> {
+    if managed_files::read_optional(&home.join(RECEIPT))?.is_none() { return Ok(()); }
     let state = State::load(home)?;
     if state.receipt.as_ref().is_some_and(|receipt| receipt.phase != Phase::Applied)
         && !host_version.is_some_and(supported_version)
@@ -577,6 +584,17 @@ mod tests {
         assert!(!home.0.join(RECEIPT).exists());
         apply_pending(&home.0).unwrap();
         assert_eq!(home.read(CONFIG), original);
+    }
+
+    #[test]
+    fn no_pending_language_does_not_block_an_unrelated_restart() {
+        let home = Home::new();
+        home.write(CONFIG, "[broken");
+        home.write(".codex-global-state.json", "broken");
+        assert!(prepare(&home.0, false, None).is_ok());
+        assert!(apply_pending_checked(&home.0, None).is_ok());
+        assert_eq!(home.read(CONFIG), "[broken");
+        assert!(!home.0.join(RECEIPT).exists());
     }
 
     #[test]

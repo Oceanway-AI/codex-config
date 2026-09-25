@@ -235,7 +235,8 @@ const statusRefresh = createStatusRefresh({
       }];
     }
     return Promise.all([
-      Promise.all([invoke("get_config_status"), invoke("get_image_mcp_status"), invoke("get_language_status")])
+      Promise.all([invoke("get_config_status"), invoke("get_image_mcp_status"),
+        invoke("get_language_status").catch(() => ({ error: true, message: '语言状态读取失败，尚未确认。' }))])
         .then(([status, imageMcpStatus, languageStatus]) => ({ ...status, imageMcpStatus, languageStatus })),
       invoke("get_system_info"),
     ]);
