@@ -4,6 +4,7 @@ version = "1.4.0-beta.5"
 description = "OceanWay Codex provider configuration tool"
 authors = ["OceanWay"]
 edition = "2021"
+rust-version = "1.89"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

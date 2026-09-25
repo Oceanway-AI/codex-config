@@ -2731,6 +2731,12 @@ fn macos_codex_host_from_process_list(process_list: &str) -> Option<MacosCodexHo
 #[cfg(target_os = "macos")]
 fn macos_codex_version(host: MacosCodexHost) -> Option<String> {
     let app_path = macos_app_path(host)?;
+    let info_plist = app_path.join("Contents/Info.plist");
+    if let Some(version) = command_output("/usr/libexec/PlistBuddy", &[
+        "-c", "Print :CFBundleShortVersionString", &display_path(&info_plist),
+    ]) {
+        return Some(version);
+    }
     let embedded_codex = app_path.join("Contents/Resources/codex");
     if embedded_codex.exists() {
         if let Some(version) = command_output(&display_path(&embedded_codex), &["--version"]) {
@@ -2972,7 +2978,11 @@ fn main() {
     if args.as_slice() == ["--image-mcp-stdio"] {
         let result = tokio::runtime::Builder::new_multi_thread().enable_all().build()
             .map_err(|_| "Cannot initialize image MCP runtime.".to_string())
-            .and_then(|runtime| runtime.block_on(mcp_stdio::serve_stdio()));
+            .and_then(|runtime| {
+                let result = runtime.block_on(mcp_stdio::serve_stdio());
+                runtime.shutdown_timeout(Duration::from_secs(5));
+                result
+            });
         if let Err(error) = result { eprintln!("{error}"); process::exit(1); }
         return;
     }

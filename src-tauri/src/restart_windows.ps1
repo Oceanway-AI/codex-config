@@ -100,7 +100,7 @@ if ($target.isolated) { $env:CODEX_HOME = $target.codexHome }
 if (!(Test-Path -LiteralPath $target.configurationApp -PathType Leaf)) {
     throw 'Language configuration helper is unavailable; not relaunching'
 }
-$env:OCEANWAY_LANGUAGE_HOST_VERSION = (Get-Item -LiteralPath $target.path).VersionInfo.ProductVersion
+$env:OCEANWAY_LANGUAGE_HOST_VERSION = Get-DesktopVersion $target.path
 $language = Start-Process -FilePath $target.configurationApp -ArgumentList '--apply-pending-language' -WindowStyle Hidden -PassThru
 if (!$language.WaitForExit(10000)) {
     throw 'Language configuration did not finish; not relaunching'

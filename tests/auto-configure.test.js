@@ -26,7 +26,7 @@ test('one action saves, handshakes, stages language and restarts without paid to
   const f = fixture();
   const result = await runAutoConfiguration(f);
   assert.deepEqual(f.calls, ['configure_provider', 'get_config_status', 'check_image_mcp',
-    'configure_language', 'restart_codex', 'get_language_status']);
+    'configure_language', 'restart_codex', 'get_config_status', 'get_language_status']);
   assert.deepEqual(f.stages, ['writing', 'checking', 'language', 'restarting', 'complete']);
   assert.equal(result.languageStatus.verified, false);
   assert.equal(f.calls.some(name => /test_image|generate/.test(name)), false);
@@ -34,7 +34,7 @@ test('one action saves, handshakes, stages language and restarts without paid to
 test('retrying a restart rechecks saved configuration but does not rewrite or restage', async () => {
   const f = fixture();
   await runAutoConfiguration({ ...f, resumeFrom: 'restarting' });
-  assert.deepEqual(f.calls, ['get_config_status', 'check_image_mcp', 'restart_codex', 'get_language_status']);
+  assert.deepEqual(f.calls, ['get_config_status', 'check_image_mcp', 'restart_codex', 'get_config_status', 'get_language_status']);
 });
 test('checking and language retries do not rewrite provider credentials', async () => {
   for (const resumeFrom of ['checking', 'language']) {
@@ -77,4 +77,15 @@ test('unchecking Chinese passes disabled without implicitly restoring a user lan
 test('legacy CLI readiness cannot satisfy MCP configuration readiness', async () => {
   const f = fixture({ get_config_status: { configured: true, hasApiKey: true, imagegenCliConfigured: true } });
   await assert.rejects(runAutoConfiguration({ ...f, resumeFrom: 'checking' }), /回读检查未通过/);
+});
+test('post-restart configuration drift cannot be reported as success', async () => {
+  const f = fixture();
+  let restarted = false;
+  const call = f.invoke;
+  await assert.rejects(runAutoConfiguration({ ...f, invoke: async (name, args) => {
+    if (name === 'restart_codex') restarted = true;
+    if (name === 'get_config_status' && restarted) return {};
+    return call(name, args);
+  } }), /重启后配置回读未通过/);
+  assert.equal(f.stages.includes('complete'), false);
 });

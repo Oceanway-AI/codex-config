@@ -31,3 +31,39 @@ function Get-DesktopProfile($command) {
     }
     return $null
 }
+
+function Get-DesktopVersion($path) {
+    if (!$path) { return $null }
+    try {
+        $absolute = [IO.Path]::GetFullPath($path)
+        foreach ($package in @(Get-AppxPackage -Name OpenAI.Codex -ErrorAction SilentlyContinue)) {
+            $prefix = [IO.Path]::GetFullPath($package.InstallLocation).TrimEnd('\') + '\'
+            if ($absolute.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+                return $package.Version.ToString()
+            }
+        }
+        # Electron's EXE version is Chromium's. Read only packaged app metadata
+        # for standalone installs; never execute or modify archive contents.
+        $archive = Join-Path ([IO.Path]::GetDirectoryName($absolute)) 'resources\app.asar'
+        $stream = [IO.File]::OpenRead($archive)
+        $reader = [IO.BinaryReader]::new($stream)
+        try {
+            if ($reader.ReadUInt32() -ne 4) { return $null }
+            $headerSize = $reader.ReadUInt32()
+            $null = $reader.ReadUInt32()
+            $jsonSize = $reader.ReadUInt32()
+            if ($headerSize -gt 16777216 -or $jsonSize -le 0 -or $jsonSize -gt ($headerSize - 8)) { return $null }
+            $header = [Text.Encoding]::UTF8.GetString($reader.ReadBytes($jsonSize)) | ConvertFrom-Json
+            $entry = $header.files.'package.json'
+            [long]$offset = 0
+            if (!$entry -or $entry.link -or $entry.unpacked -or $entry.size -le 0 -or $entry.size -gt 1048576 -or
+                ![long]::TryParse([string]$entry.offset, [ref]$offset) -or $offset -lt 0) { return $null }
+            $position = 8L + $headerSize + $offset
+            if ($position -gt $stream.Length -or $entry.size -gt ($stream.Length - $position)) { return $null }
+            $stream.Position = $position
+            $metadata = [Text.Encoding]::UTF8.GetString($reader.ReadBytes([int]$entry.size)) | ConvertFrom-Json
+            if ($metadata.name -ne 'openai-codex-electron' -or $metadata.version -notmatch '^\d+\.\d+\.\d+(?:\.\d+)?$') { return $null }
+            return [string]$metadata.version
+        } finally { $reader.Dispose(); $stream.Dispose() }
+    } catch { return $null }
+}

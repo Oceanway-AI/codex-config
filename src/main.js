@@ -320,14 +320,14 @@ async function configureProvider(event, resumeFrom = 'writing') {
   const actionButtons = [...document.querySelectorAll('#tools-panel button, [data-config-mutation], #configuration-recovery button, #refresh-status-button, #update-button, #confirm-restore-button, #confirm-restart-button')];
   const previousDisabled = actionButtons.map(button => button.disabled);
   actionButtons.forEach(button => { button.disabled = true; });
-  const onStage = (phase, message) => {
+  const onStage = (phase, message, details = {}) => {
     configurationPhase = phase;
     renderConfigurationProgress(phase);
     activationState.textContent = previewLabel(phase === 'complete' ? '配置完成' : '执行中');
-    activationState.dataset.kind = phase === 'complete' ? 'success' : 'warning';
+    activationState.dataset.kind = phase === 'complete' && !details.warning ? 'success' : 'warning';
     nextStepTitle.textContent = previewLabel(message);
     nextStepDetail.textContent = '';
-    setStatus(message, phase === 'complete' ? 'success' : '');
+    setStatus(message, details.warning ? 'warning' : phase === 'complete' ? 'success' : '');
   };
   try {
     const call = invoke || (async command => {

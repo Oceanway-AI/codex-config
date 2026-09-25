@@ -129,7 +129,7 @@ foreach ($name in @('ChatGPT', 'Codex')) {
         }
         $server = @($processes | Where-Object { $ids -contains [uint32]$_.ProcessId -and $_.Name -match '^codex(?:[-_].*)?\.exe$' -and $_.CommandLine -match '(?:^|\s)app-server(?:\s|$)' }).Count -gt 0
         $version = $null
-        if ($path) { try { $version = (Get-Item -LiteralPath $path).VersionInfo.ProductVersion } catch {} }
+        if ($path) { $version = Get-DesktopVersion $path }
         $result += @{name=$(if($name -eq 'Codex'){'Codex Desktop'}else{'ChatGPT'}); appId=$app.AppID; path=$path; version=$version; running=($live.Count -gt 0); serverRunning=$server}
     }
 }

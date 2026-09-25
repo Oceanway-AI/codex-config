@@ -21,10 +21,15 @@ export async function runAutoConfiguration({ invoke, values, onStage, onConfigur
   onStage('restarting', '配置和工具检查通过，正在重新启动 Codex…');
   const restart = await invoke('restart_codex');
   if (!restart.restarted) throw new Error(restart.message || '未能重新启动 Codex。');
+  const afterRestart = await invoke('get_config_status');
+  if (!afterRestart.configured || !afterRestart.hasApiKey || !afterRestart.directImageConfigured) {
+    throw new Error('重启后配置回读未通过，不能确认配置生效。请检查后重新配置。');
+  }
   language = await invoke('get_language_status');
-  onConfigured({ ...status, imageMcpStatus: mcp, languageStatus: language });
+  onConfigured({ ...afterRestart, imageMcpStatus: mcp, languageStatus: language });
   const languageNote = values.chineseInterface === false ? ''
     : language?.applied ? '中文设置已保存，界面待确认。' : '中文界面未应用，请查看语言状态。';
-  onStage('complete', `配置和 MCP 握手通过，Codex 已重启。${languageNote}实际生图未自动测试。`);
-  return { ...status, imageMcpStatus: mcp, languageStatus: language };
+  onStage('complete', `配置和 MCP 握手通过，Codex 已重启。${languageNote}实际生图未自动测试。`,
+    { warning: values.chineseInterface !== false && !language?.applied });
+  return { ...afterRestart, imageMcpStatus: mcp, languageStatus: language };
 }
