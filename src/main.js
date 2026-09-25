@@ -1,8 +1,11 @@
 import { createConfigurationLog, redactLogMessage } from './configuration-log.js';
 import { runAutoConfiguration } from './auto-configure.js';
 import { validateBaseUrl } from './validation.js';
+import { buildImageRequest, createImageEvidence, createImageJobController, imageTestBlockReason, retryableImageCount, safeImagePreview, imageJobHasWarnings } from './image-api.js';
 const DEFAULT_BASE_URL = "https://ocean-way.top";
 const invoke = window.__TAURI__?.core?.invoke;
+const simulated = !invoke || window.__IMAGE_API_SIMULATION__ === true;
+const previewLabel = message => simulated && message ? `模拟预览：${message}` : message;
 
 const $ = (selector) => document.querySelector(selector);
 const configForm = $("#config-form");
@@ -38,8 +41,8 @@ const diagnosticList = $("#diagnostic-list");
 const copyReportButton = $("#copy-report-button");
 const restartCodexButton = $("#restart-codex-button");
 const repairButton = $("#repair-button");
-const imagegenButton = $("#imagegen-button");
-const imagegenRowDetail = $("#imagegen-row-detail");
+const directImageButton = $("#direct-image-button");
+const directImageRowDetail = $("#direct-image-row-detail");
 const migrateHistoryButton = $("#migrate-history-button");
 const historyRowDetail = $("#history-row-detail");
 const openDirButton = $("#open-dir-button");
@@ -51,15 +54,14 @@ const restartDialogDetail = $("#restart-dialog-detail");
 const confirmRestartButton = $("#confirm-restart-button");
 const updateButton = $("#update-button");
 const updateStatus = $("#update-status");
-const setupPanel = $(".setup-panel");
-const sideColumn = $(".side-column");
-const healthPanel = $(".health-panel");
-const desktopLayoutQuery = window.matchMedia("(min-width: 761px)");
+const advancedDialog = $("#advanced-dialog");
+const configurationProgress = $("#configuration-progress");
+const mutationControls = '#config-form input, #config-form button, #tools-panel button, [data-config-mutation], #configuration-recovery button, #update-button, #confirm-restore-button, #confirm-restart-button';
 
 let currentStatus = {
   configured: false,
   hasApiKey: false,
-  imagegenCliConfigured: false,
+  directImageConfigured: false,
   chatgptLoginDetected: false,
 };
 let currentSystemInfo = null;
@@ -70,39 +72,31 @@ let configurationPhase = 'idle';
 let configuring = false;
 let formDirty = false;
 let maintenanceRunning = false;
-
-function syncColumnHeights() {
-  if (!desktopLayoutQuery.matches) {
-    sideColumn.style.removeProperty("height");
-    sideColumn.style.removeProperty("--control-panel-max-height");
-    return;
-  }
-
-  const setupHeight = Math.ceil(setupPanel.getBoundingClientRect().height);
-  const healthHeight = Math.ceil(healthPanel.getBoundingClientRect().height);
-  const columnGap = Number.parseFloat(getComputedStyle(sideColumn).gap) || 14;
-  const controlMaxHeight = Math.max(0, setupHeight - healthHeight - columnGap);
-  if (sideColumn.style.height !== `${setupHeight}px`) sideColumn.style.height = `${setupHeight}px`;
-  if (sideColumn.style.getPropertyValue('--control-panel-max-height') !== `${controlMaxHeight}px`) {
-    sideColumn.style.setProperty("--control-panel-max-height", `${controlMaxHeight}px`);
-  }
-}
-
-const layoutResizeObserver = new ResizeObserver(syncColumnHeights);
-layoutResizeObserver.observe(setupPanel);
-layoutResizeObserver.observe(healthPanel);
-desktopLayoutQuery.addEventListener("change", syncColumnHeights);
+let imageController;
+let imageAuxBusy = false;
+const imageEvidence = createImageEvidence();
+let imageReferencePaths = [];
+let imageJobRevision = 0;
+let nextImageJobRevision = 0;
+let imageJobId = null;
+let pendingImagePayment = null;
+let imageLockedControls = null;
+let lastRecordedImageJob = '';
 
 function setDot(element, kind) {
   element.dataset.kind = kind || "muted";
 }
 
 function setStatus(message, kind = "") {
+  message = previewLabel(message);
   message = redactLogMessage(message ?? '', [apiKeyInput.value.trim()]);
   configurationLog?.append(message, kind || 'info');
   statusMessage.textContent = message;
   statusBox.dataset.kind = kind;
-  statusBox.hidden = !message;
+  statusBox.hidden = !message || configuring;
+  $('#advanced-status').textContent = message;
+  $('#advanced-status').dataset.kind = kind;
+  $('#advanced-status').hidden = !message;
 }
 
 function setButtonBusy(button, busy, busyText) {
@@ -138,62 +132,65 @@ function readFormValues() {
 function authStrategyText(strategy) {
   return strategy === "chatgptBearerToken"
     ? "已保留 ChatGPT 登录态，并更新 OceanWay Provider。"
-    : "已保存 API Key，并启用 Codex Desktop 图片工具兼容配置。";
+    : "已保存 API Key，并安装直连图片 API 配置。";
 }
 
 function updateProgress(status) {
   if (configurationPhase !== 'idle') return;
   if (formDirty) return;
-  activationState.textContent = status.configured ? '配置已保存' : '等待配置';
-  activationState.dataset.kind = 'warning';
-  nextStepTitle.textContent = '点击一次，自动完成配置与重启';
-  nextStepDetail.textContent = '请先保存 Codex / ChatGPT 中的任务。执行进度显示在右侧配置日志，不需要逐步确认。';
+  activationState.textContent = previewLabel(status.configured ? '配置已保存' : '等待配置');
+  activationState.dataset.kind = status.configured ? 'success' : 'muted';
+  configurationProgress.hidden = true;
 }
 
 function renderConfigStatus(status) {
   const previousStatus = currentStatus;
   currentStatus = status;
-  const ready = status.configured && status.hasApiKey && status.imagegenCliConfigured;
+  const ready = status.configured && status.hasApiKey && status.directImageConfigured;
+  if (previousStatus.baseUrl && (previousStatus.baseUrl !== status.baseUrl || previousStatus.hasApiKey !== status.hasApiKey)) imageEvidence.invalidate();
   if (configurationPhase === 'complete' && (!ready || previousStatus.baseUrl !== status.baseUrl)) resetConfigurationProgress();
 
-  serviceStatus.textContent = status.configured ? "已配置" : "未配置";
+  serviceStatus.textContent = previewLabel(status.configured ? "已配置" : "未配置");
   setDot(serviceDot, status.configured ? "success" : "warning");
-  imageStatus.textContent = status.imagegenCliConfigured ? "已就绪" : "待同步";
-  setDot(imageDot, status.imagegenCliConfigured ? "success" : "warning");
+  imageStatus.textContent = previewLabel(status.directImageConfigured ? "已安装" : "待同步");
+  setDot(imageDot, status.directImageConfigured ? "success" : "warning");
 
   savedKeyState.hidden = !status.hasApiKey;
+  savedKeyState.lastChild.textContent = previewLabel('Key 已保存');
   apiKeyInput.required = !status.hasApiKey;
   apiKeyInput.placeholder = status.hasApiKey
     ? "已保存；留空继续使用，输入新 Key 可替换"
     : "请输入 OceanWay API Key";
-  keyHelperText.textContent = status.hasApiKey
+  keyHelperText.textContent = previewLabel(status.hasApiKey
     ? "Key 已保存在本机。留空继续使用，界面不会回显完整内容。"
-    : "Key 仅保存到本机 Codex 配置，不会在界面回显完整内容。";
+    : "Key 仅保存到本机 Codex 配置，不会在界面回显完整内容。");
 
   if (status.baseUrl && !formDirty && document.activeElement !== baseUrlInput) {
     baseUrlInput.value = status.baseUrl;
   }
 
-  imagegenButton.textContent = status.imagegenCliConfigured ? "重新同步" : "同步";
-  imagegenRowDetail.textContent = status.imagegenCliConfigured
-    ? "已同步；内置工具不可用时可使用 CLI 备用路径。"
-    : "尚未同步；完成主配置时会自动处理。";
+  directImageButton.textContent = status.directImageConfigured ? "重新同步" : "同步";
+  directImageRowDetail.textContent = previewLabel(status.directImageConfigured
+    ? "直连配置已安装；实际能力需单独测试。"
+    : "尚未同步；完成主配置时会自动处理。");
 
-  topbarStateText.textContent = ready
-    ? "核心配置已就绪"
+  topbarStateText.textContent = formDirty ? "修改未保存" : ready
+    ? "配置已保存"
     : status.configured
       ? "图片能力待同步"
       : "等待完成配置";
-  setDot(topbarStateDot, ready ? "success" : "warning");
+  setDot(topbarStateDot, ready && !formDirty ? "success" : "warning");
+  topbarStateText.textContent = previewLabel(topbarStateText.textContent);
   updateProgress(status);
+  renderImageControls();
 }
 
 function renderSystemInfo(info) {
   currentSystemInfo = info;
   const systemName = info.operatingSystem || info.osName || "";
   const systemRelease = info.operatingSystemVersion || info.osVersion || "";
-  systemVersion.textContent = [systemName, systemRelease].filter(Boolean).join(" ") || "未知";
-  codexVersion.textContent = info.codexDesktopVersion || info.codexCliVersion || info.codexVersion || "未检测到";
+  systemVersion.textContent = previewLabel([systemName, systemRelease].filter(Boolean).join(" ") || "未知");
+  codexVersion.textContent = previewLabel(info.codexDesktopVersion || info.codexCliVersion || info.codexVersion || "未检测到");
   codexStatus.textContent = info.runtimeDetectionError
     ? "检测失败"
     : info.codexRunning
@@ -204,6 +201,7 @@ function renderSystemInfo(info) {
   codexStatus.title = info.runtimeDetectionError || (info.hostRunning && !info.codexRunning
     ? "ChatGPT 已运行，尚未检测到内部 Codex 服务。请进入 Codex 并新建任务。" : "");
   setDot(codexDot, info.runtimeDetectionError ? "warning" : info.codexRunning ? "success" : "muted");
+  codexStatus.textContent = previewLabel(codexStatus.textContent);
 }
 
 function browserPreviewStatus() {
@@ -212,7 +210,7 @@ function browserPreviewStatus() {
     hasApiKey: true,
     chatgptLoginDetected: true,
     chatgptAccountLabel: "浏览器预览",
-    imagegenCliConfigured: true,
+    directImageConfigured: true,
     baseUrl: DEFAULT_BASE_URL,
   };
 }
@@ -229,7 +227,7 @@ async function refreshStatus() {
         codexHost: "ChatGPT",
         codexRunning: true,
       });
-      return;
+      return true;
     }
 
     const [status, info] = await Promise.all([
@@ -238,6 +236,7 @@ async function refreshStatus() {
     ]);
     renderConfigStatus(status);
     renderSystemInfo(info);
+    return true;
   } catch (error) {
     serviceStatus.textContent = "读取失败";
     imageStatus.textContent = "未知";
@@ -245,6 +244,7 @@ async function refreshStatus() {
     [serviceDot, imageDot, codexDot, topbarStateDot].forEach((dot) => setDot(dot, "error"));
     topbarStateText.textContent = "本机状态读取失败";
     setStatus(`读取本机状态失败：${error}`, "error");
+    return false;
   } finally {
     refreshStatusButton.disabled = false;
   }
@@ -261,13 +261,14 @@ function renderConfigurationProgress(phase, blocked = false) {
     step.classList.toggle('is-blocked', active && blocked);
     if (active) step.setAttribute('aria-current', 'step');
     else step.removeAttribute('aria-current');
-    step.querySelector('small').textContent = done ? '已完成' : active ? (blocked ? '已阻塞' : '执行中…') : '等待执行';
+    step.querySelector('small').textContent = previewLabel(done ? '已完成' : active ? (blocked ? '已阻塞' : '执行中…') : '等待执行');
   });
 }
 
 let blockedPhase = null;
 function resetConfigurationProgress() {
   configurationPhase = 'idle'; blockedPhase = null;
+  configurationProgress.hidden = true;
   $('#configuration-recovery').hidden = true;
   renderConfigurationProgress('idle');
   setStatus('');
@@ -275,37 +276,40 @@ function resetConfigurationProgress() {
 }
 
 async function runMaintenance(operation) {
-  if (configuring || maintenanceRunning) return;
+  if (configuring || maintenanceRunning || imageController?.locked || imageAuxBusy) return;
   maintenanceRunning = true;
-  const controls = [...document.querySelectorAll('#config-form input, #config-form button, #tools-panel button, #update-button')];
+  renderImageControls();
+  const controls = [...document.querySelectorAll(mutationControls)];
   const disabled = controls.map(control => control.disabled);
   controls.forEach(control => { control.disabled = true; });
   try { await operation(); } finally {
     maintenanceRunning = false;
     controls.forEach((control, index) => { control.disabled = disabled[index]; });
+    renderImageControls();
   }
 }
 async function configureProvider(event, resumeFrom = 'writing') {
   event.preventDefault();
-  if (configuring || maintenanceRunning) return;
+  if (configuring || maintenanceRunning || imageController?.locked || imageAuxBusy) return;
   const values = readFormValues();
   if (!values) return;
   configuring = true;
+  renderImageControls();
   blockedPhase = null;
   $('#configuration-recovery').hidden = true;
-  setTab($('#logs-tab'));
+  configurationProgress.hidden = false;
   setButtonBusy(configureButton, true, '自动配置中…');
   apiKeyInput.disabled = baseUrlInput.disabled = true;
-  const actionButtons = [...document.querySelectorAll('#tools-panel button, #test-button, #refresh-status-button, #update-button')];
+  const actionButtons = [...document.querySelectorAll('#tools-panel button, [data-config-mutation], #configuration-recovery button, #refresh-status-button, #update-button, #confirm-restore-button, #confirm-restart-button')];
   const previousDisabled = actionButtons.map(button => button.disabled);
   actionButtons.forEach(button => { button.disabled = true; });
   const onStage = (phase, message) => {
     configurationPhase = phase;
     renderConfigurationProgress(phase);
-    activationState.textContent = phase === 'complete' ? '配置完成' : '执行中';
+    activationState.textContent = previewLabel(phase === 'complete' ? '配置完成' : '执行中');
     activationState.dataset.kind = phase === 'complete' ? 'success' : 'warning';
-    nextStepTitle.textContent = message;
-    nextStepDetail.textContent = phase === 'complete' ? '无需继续确认。实际图片能力请在新任务使用时确认。' : '请稍候，详细进度见右侧配置日志。';
+    nextStepTitle.textContent = previewLabel(message);
+    nextStepDetail.textContent = '';
     setStatus(message, phase === 'complete' ? 'success' : '');
   };
   try {
@@ -319,14 +323,18 @@ async function configureProvider(event, resumeFrom = 'writing') {
       formDirty = false; renderConfigStatus(status);
     }, resumeFrom });
     apiKeyInput.value = ''; apiKeyInput.type = 'password';
+    toggleKeyButton.title = '显示 API Key';
+    toggleKeyButton.setAttribute('aria-label', toggleKeyButton.title);
+    configurationProgress.hidden = true;
   } catch (error) {
     blockedPhase = configurationPhase;
     renderConfigurationProgress(blockedPhase, true);
     configurationPhase = 'failed';
-    activationState.textContent = '配置未完成'; activationState.dataset.kind = 'error';
-    nextStepTitle.textContent = `自动流程已停止：${redactLogMessage(String(error), [values.apiKey].filter(Boolean))}`;
+    activationState.textContent = blockedPhase === 'restarting' ? '已保存，待重启' : '配置未完成';
+    activationState.dataset.kind = blockedPhase === 'restarting' ? 'warning' : 'error';
+    nextStepTitle.textContent = previewLabel(redactLogMessage(String(error), [values.apiKey].filter(Boolean)));
     nextStepDetail.textContent = blockedPhase === 'restarting'
-      ? '请保存任务并手动退出 Codex / ChatGPT，再点击“重试重启并继续”。不会重复写入配置。'
+      ? '配置已保存。请保存任务后手动重启目标 Codex；隔离环境不会重启你正在使用的 Codex。重试不会重复写入。'
       : blockedPhase === 'checking'
         ? '请在问题诊断中检查或修复配置，再点击“重新检查并继续”。'
         : '请检查 Key、地址及配置目录权限，修改后点击“重试写入并继续”。';
@@ -335,13 +343,16 @@ async function configureProvider(event, resumeFrom = 'writing') {
     setStatus(String(error), 'error');
   } finally {
     configuring = false;
+    statusBox.hidden = !statusMessage.textContent || configurationPhase === 'failed';
     apiKeyInput.disabled = baseUrlInput.disabled = false;
     actionButtons.forEach((button, index) => { button.disabled = previousDisabled[index]; });
     setButtonBusy(configureButton, false);
+    renderImageControls();
   }
 }
 
 async function testConnection() {
+  if (imageController?.locked || imageAuxBusy || configuring) return;
   const values = readFormValues();
   if (!values) return;
   setButtonBusy(testButton, true, "测试中…");
@@ -349,7 +360,7 @@ async function testConnection() {
   try {
     if (!invoke) {
       await new Promise((resolve) => window.setTimeout(resolve, 350));
-      setStatus(`连接测试通过。服务地址：${values.baseUrl}`, "success");
+      setStatus(`未执行真实连接测试。模拟服务地址：${values.baseUrl}`);
       return;
     }
     const result = await invoke("test_connection", values);
@@ -379,8 +390,8 @@ function renderDiagnosticReport(report) {
     const content = document.createElement("div");
     const title = document.createElement("strong");
     const detail = document.createElement("p");
-    title.textContent = check.label;
-    detail.textContent = check.detail;
+    title.textContent = previewLabel(check.label);
+    detail.textContent = previewLabel(check.detail);
     content.append(title, detail);
     item.append(state, content);
     diagnosticList.append(item);
@@ -398,7 +409,8 @@ function renderDiagnosticReport(report) {
     : warnings
       ? `诊断完成，${warnings} 项需留意`
       : "全部核心检查通过";
-  diagnosticSummaryDetail.textContent = `${passed} 项通过 · ${warnings} 项提醒 · ${failed} 项异常`;
+  diagnosticSummaryTitle.textContent = previewLabel(diagnosticSummaryTitle.textContent);
+  diagnosticSummaryDetail.textContent = previewLabel(`${passed} 项通过 · ${warnings} 项提醒 · ${failed} 项异常`);
   copyReportButton.disabled = false;
 }
 
@@ -410,7 +422,7 @@ function previewDiagnosticReport() {
     checks: [
       { label: "Provider 配置", status: "success", detail: "OceanWay Provider 已写入并设为当前渠道。" },
       { label: "API 凭据", status: "success", detail: "已检测到本机保存的凭据，报告不会包含完整 Key。" },
-      { label: "图片工具兼容", status: "success", detail: "内置图片工具与 CLI 备用配置已同步。" },
+      { label: "直连图片配置", status: "success", detail: "模拟配置已安装，未执行图片 API 测试。" },
       { label: "Codex 版本", status: "success", detail: "当前版本满足图片扩展最低要求。" },
       { label: "服务连通性", status: "success", detail: "OceanWay 服务连接正常。" },
       { label: "Codex 进程", status: "success", detail: "Codex Desktop 正在运行。" },
@@ -446,7 +458,7 @@ async function copySupportReport() {
       await invoke("copy_support_report");
     } else {
       await navigator.clipboard?.writeText(
-        `OceanWay Codex Config v1.3.0\n诊断通过 ${lastDiagnosticReport.passed ?? lastDiagnosticReport.passedCount ?? 0} 项\n敏感凭据：已脱敏`,
+        `模拟预览 OceanWay Codex Config v1.4.0-beta.3\n模拟诊断通过 ${lastDiagnosticReport.passed ?? lastDiagnosticReport.passedCount ?? 0} 项\n敏感凭据：已脱敏`,
       );
     }
     setStatus("脱敏诊断报告已复制，不包含完整 API Key 或访问令牌。", "success");
@@ -475,18 +487,18 @@ async function repairConfiguration() {
   }
 }
 
-async function configureImagegenCli() {
-  setButtonBusy(imagegenButton, true, "同步中…");
-  setStatus("正在同步图片备用配置…");
+async function configureDirectImageApi() {
+  setButtonBusy(directImageButton, true, "同步中…");
+  setStatus("正在同步直连图片配置…");
   try {
-    if (invoke) await invoke("configure_imagegen_cli");
+    if (invoke) await invoke("configure_direct_image_api");
     await refreshStatus();
     resetConfigurationProgress();
-    setStatus("图片备用配置已同步。请重启 Codex 并新建任务。", "success");
+    setStatus("直连图片配置已同步；生成与参考图能力尚需单独测试。", "success");
   } catch (error) {
-    setStatus(`图片备用配置失败：${error}`, "error");
+    setStatus(`直连图片配置失败：${error}`, "error");
   } finally {
-    setButtonBusy(imagegenButton, false);
+    setButtonBusy(directImageButton, false);
   }
 }
 
@@ -522,8 +534,9 @@ function historyProviderCountText(providerCounts = []) {
 }
 
 async function refreshHistoryStatus() {
+  historyRowDetail.hidden = false;
   if (!invoke) {
-    historyRowDetail.textContent = "历史记录已与当前 Provider 一致。";
+    historyRowDetail.textContent = "模拟预览：未读取真实历史记录。";
     return;
   }
   try {
@@ -594,6 +607,7 @@ function openRestoreDialog() {
 }
 
 async function restoreDefaults() {
+  imageEvidence.invalidate();
   restoreDialog.close();
   setButtonBusy(restoreButton, true, "恢复中…");
   setStatus("正在恢复首次使用本工具前的 Codex 配置…");
@@ -605,21 +619,24 @@ async function restoreDefaults() {
         ...browserPreviewStatus(),
         configured: false,
         hasApiKey: false,
-        imagegenCliConfigured: false,
+        directImageConfigured: false,
       });
-      setStatus("界面预览：默认配置恢复完成。", "success");
+      setStatus("界面预览：原配置恢复完成。", "success");
       return;
     }
     const result = await invoke("restore_defaults");
     apiKeyInput.value = "";
     formDirty = false;
     resetConfigurationProgress();
-    await refreshStatus();
+    const refreshed = await refreshStatus();
     const restored = result.historyMigrationRestore;
     const historyText = restored?.restoredBackups
       ? ` 同时撤销 ${restored.restoredSessionFiles} 个历史文件和 ${restored.sqliteRowsRestored} 行索引迁移。`
       : "";
-    setStatus(`已恢复默认配置。${historyText} 请重启 Codex。`, "success");
+    setStatus(refreshed
+      ? `已恢复原配置。${historyText} 请重启 Codex。`
+      : `已恢复原配置，但本机状态读取失败，尚未确认当前状态。${historyText} 请在高级中刷新状态。`,
+    refreshed ? "success" : "warning");
   } catch (error) {
     setStatus(`恢复失败：${error}`, "error");
   } finally {
@@ -629,15 +646,19 @@ async function restoreDefaults() {
 
 function setTab(button) {
   if (button.getAttribute('aria-selected') === 'true') return;
-  for (const tab of document.querySelectorAll(".tab-button")) {
+  for (const tab of advancedDialog.querySelectorAll(".tab-button")) {
     const active = tab === button;
     tab.classList.toggle("is-active", active);
     tab.setAttribute("aria-selected", String(active));
+    tab.tabIndex = active ? 0 : -1;
     const panel = document.getElementById(tab.getAttribute("aria-controls"));
     panel.hidden = !active;
   }
-  // Navigation only: history scanning is explicitly triggered by the migration action.
-  // ResizeObserver handles actual size changes without forcing layout on every tab click.
+}
+
+function openAdvanced(tab) {
+  if (tab) setTab(tab);
+  if (!advancedDialog.open) advancedDialog.showModal();
 }
 
 function toggleApiKeyVisibility() {
@@ -652,46 +673,301 @@ function toggleApiKeyVisibility() {
 }
 
 async function handleUpdate(options = {}) {
-  const silent = options?.silent === true;
-  if (!invoke) {
-    updateStatus.textContent = "当前已是最新版本";
-    return;
-  }
-  setButtonBusy(updateButton, true, availableUpdate ? "安装中…" : "检查中…");
-  try {
-    if (availableUpdate && !silent) {
-      updateStatus.textContent = `正在安装 v${availableUpdate.latestVersion}，完成后自动重启…`;
-      await invoke("install_update");
+  if (imageController?.locked || imageAuxBusy || configuring || maintenanceRunning) return;
+  return runMaintenance(async () => {
+    const silent = options?.silent === true;
+    if (!invoke) {
+      updateStatus.textContent = "模拟预览：未检查真实更新";
       return;
     }
-    const result = await invoke("check_for_updates");
-    if (result.available) {
-      availableUpdate = result;
-      updateStatus.textContent = `发现 v${result.latestVersion}`;
-      updateButton.dataset.label = `安装 v${result.latestVersion}`;
-      updateButton.textContent = updateButton.dataset.label;
-    } else {
-      updateStatus.textContent = "当前已是最新版本";
+    setButtonBusy(updateButton, true, availableUpdate ? "安装中…" : "检查中…");
+    try {
+      if (availableUpdate && !silent) {
+        updateStatus.textContent = previewLabel(`正在安装 v${availableUpdate.latestVersion}，完成后自动重启…`);
+        await invoke("install_update");
+        return;
+      }
+      const result = await invoke("check_for_updates");
+      if (result.available) {
+        availableUpdate = result;
+        updateStatus.textContent = previewLabel(`发现 v${result.latestVersion}`);
+        updateButton.dataset.label = `安装 v${result.latestVersion}`;
+        updateButton.textContent = updateButton.dataset.label;
+      } else {
+        updateStatus.textContent = previewLabel("当前已是最新版本");
+      }
+    } catch (error) {
+      updateStatus.textContent = previewLabel(String(error).includes('更新清单不可用') ? '更新通道不可用' : String(error).includes("404")
+        ? "更新通道尚未发布"
+        : "检查更新失败");
+      if (!silent) setStatus(`自动更新暂不可用：${error}`, "error");
+    } finally {
+      setButtonBusy(updateButton, false);
     }
-  } catch (error) {
-    updateStatus.textContent = String(error).includes('更新清单不可用') ? '更新通道不可用' : String(error).includes("404")
-      ? "更新通道尚未发布"
-      : "检查更新失败";
-    if (!silent) {
-      setStatus(`自动更新暂不可用：${error}`, "error");
-    }
-  } finally {
-    setButtonBusy(updateButton, false);
+  });
+}
+
+const evidenceLabels = {
+  untested: '未测试', checked: '已检查 / 可用', unavailable: '未列出',
+  verified: '已实测通过', partial: '部分通过', failed: '测试失败',
+  cancelled: '已取消 / 未通过', outdated: '已过期，需重测', running: '测试中',
+};
+const jobLabels = { running: '执行中', completed: '已完成', partial: '部分完成', failed: '失败', cancelled: '已取消' };
+const itemLabels = { queued: '排队中', running: '执行中', succeeded: '成功', failed: '失败', cancelled: '已取消' };
+
+function imageMessage(message) {
+  $('#image-operation-message').textContent = previewLabel(redactLogMessage(String(message), [apiKeyInput.value.trim()]));
+}
+
+function imageBlockReason() {
+  return imageTestBlockReason({
+    native: Boolean(invoke),
+    configured: currentStatus.configured && currentStatus.hasApiKey && currentStatus.directImageConfigured,
+    dirty: formDirty,
+    busy: configuring || maintenanceRunning,
+  });
+}
+
+function syncImageLock() {
+  const locked = imageController?.locked || imageAuxBusy;
+  if (locked && !imageLockedControls) {
+    const controls = [...document.querySelectorAll(mutationControls)];
+    imageLockedControls = controls.map(control => [control, control.disabled]);
+    controls.forEach(control => { control.disabled = true; });
+  } else if (!locked && imageLockedControls) {
+    imageLockedControls.forEach(([control, disabled]) => { control.disabled = disabled; });
+    imageLockedControls = null;
   }
 }
+
+function renderImageControls() {
+  const model = $('#image-model').value.trim();
+  const reason = imageBlockReason();
+  const locked = imageController?.locked || imageAuxBusy;
+  $('#image-block-reason').textContent = reason || (imageController?.locked ? '图片任务运行中，配置与维护已锁定。请保持应用窗口开启；关闭或重启应用后不会自动恢复任务。' : '');
+  $('#image-config-evidence').textContent = previewLabel(currentStatus.directImageConfigured ? '已安装（非实测）' : '未安装');
+  $('#image-rule-status').textContent = previewLabel(currentStatus.directImageConfigured
+    ? '规则配置已安装；会话内规则生效与自然触发待确认。'
+    : '规则配置未安装；会话内规则生效与自然触发待确认。');
+  for (const [mode, selector] of [['models', '#image-model-evidence'], ['generate', '#image-generate-evidence'], ['edit', '#image-edit-evidence']]) {
+    const activeJob = imageController?.job;
+    const state = activeJob?.status === 'running' && activeJob.model === model && activeJob.mode === mode ? 'running' : imageEvidence.status(model, mode);
+    $(selector).textContent = previewLabel(state === 'untested' && mode === 'models' ? '未检查' : evidenceLabels[state]);
+    $(selector).dataset.kind = state === 'verified' || state === 'checked' ? 'success' : state === 'failed' ? 'error' : 'muted';
+  }
+  $('#image-verification-summary').textContent = previewLabel(`生成：${evidenceLabels[imageEvidence.status(model, 'generate')]} · 参考图：${evidenceLabels[imageEvidence.status(model, 'edit')]}`);
+  $('#image-model').disabled = $('#image-count').disabled = $('#image-size').disabled = $('#image-prompt').disabled = Boolean(locked);
+  $('#start-image-test').disabled = $('#check-image-model').disabled = $('#pick-image-references').disabled = Boolean(reason || locked);
+  $('#cancel-image-test').disabled = imageController?.job?.status !== 'running' || $('#cancel-image-test').dataset.pending === 'true';
+  const job = imageController?.job;
+  $('#retry-image-test').hidden = !retryableImageCount(job);
+  $('#retry-image-test').disabled = Boolean(reason || locked || imageJobRevision !== imageEvidence.revision);
+  $('#retry-image-test').title = imageJobRevision !== imageEvidence.revision ? '连接信息已修改，请发起新测试。' : '仅重试失败或取消项，保留成功图片；将产生新的费用。';
+  for (const button of document.querySelectorAll('#image-references button')) button.disabled = Boolean(locked);
+  $('#open-image-test').disabled = configuring || maintenanceRunning;
+  $('#open-image-test').textContent = imageController?.locked ? '查看图片任务' : '测试图片 API';
+  syncImageLock();
+}
+
+function renderImageReferences() {
+  const list = $('#image-references');
+  list.replaceChildren();
+  imageReferencePaths.forEach((path, index) => {
+    const row = document.createElement('li');
+    const name = document.createElement('span');
+    name.textContent = `${index + 1}. ${path.split(/[\\/]/).pop() || path}`;
+    name.title = path;
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'icon-action';
+    remove.textContent = '×';
+    remove.title = `移除 ${name.textContent}`;
+    remove.setAttribute('aria-label', remove.title);
+    remove.addEventListener('click', () => {
+      if (imageController.locked || imageAuxBusy) return;
+      imageReferencePaths.splice(index, 1);
+      renderImageReferences();
+    });
+    row.append(name, remove);
+    list.append(row);
+  });
+  $('#image-mode').textContent = imageReferencePaths.length ? `参考图模式 · ${imageReferencePaths.length} 张参考图` : '纯生成 · 无参考图';
+  renderImageControls();
+}
+
+function renderImageJob({ job, pending, error }) {
+  $('#cancel-image-test').dataset.pending = String(pending);
+  renderImageControls();
+  if (!job) return;
+  if (job.id !== imageJobId) {
+    imageJobId = job.id;
+    imageJobRevision = nextImageJobRevision;
+  }
+  if (!pending && !error) imageMessage(job.status === 'running' ? '图片任务执行中，请保持应用窗口开启。取消仅停止待发请求，已发送请求仍可能计费。' : `图片任务${jobLabels[job.status]}。`);
+  $('#image-job-section').hidden = false;
+  $('#image-job-summary').textContent = previewLabel(`${jobLabels[job.status]} · ${job.model} · ${job.mode === 'edit' ? '参考图' : '纯生成'} · 成功 ${job.completed}/${job.total} · 失败 ${job.failed} · 取消 ${job.cancelled}`);
+  $('#image-job-progress').max = job.total || 1;
+  $('#image-job-progress').value = job.completed + job.failed + job.cancelled;
+  $('#image-job-message').textContent = previewLabel(redactLogMessage(job.message || '', [apiKeyInput.value.trim()]));
+  const list = $('#image-results');
+  // Keep successful image elements stable while queued slots continue polling.
+  const rows = new Map([...list.children].map(row => [Number(row.dataset.index), row]));
+  const indices = new Set(job.items.map(item => item.index));
+  for (const [index, row] of rows) if (!indices.has(index)) row.remove();
+  for (const item of job.items) {
+    let row = rows.get(item.index);
+    const signature = JSON.stringify(item);
+    if (row?.dataset.signature === signature) continue;
+    if (!row) { row = document.createElement('li'); list.append(row); }
+    row.dataset.index = String(item.index);
+    row.dataset.signature = signature;
+    row.dataset.kind = item.status;
+    row.replaceChildren();
+    const preview = document.createElement('div');
+    preview.className = 'image-result-preview';
+    const source = safeImagePreview(item.previewDataUrl);
+    if (source) {
+      const image = document.createElement('img');
+      image.src = source;
+      image.alt = previewLabel(`图片 ${item.index}`);
+      image.loading = 'lazy';
+      preview.append(image);
+    } else {
+      preview.textContent = previewLabel(item.status === 'succeeded' ? '图片已保存' : itemLabels[item.status]);
+    }
+    const title = document.createElement('strong');
+    title.textContent = previewLabel(`#${item.index} · ${itemLabels[item.status]}`);
+    const detail = document.createElement('p');
+    detail.textContent = previewLabel(redactLogMessage([
+      item.error, item.warning,
+      item.additionalPaths?.length ? `额外图片：${item.additionalPaths.join(' · ')}` : '',
+      item.requestId ? `Request ID: ${item.requestId}` : '',
+      item.elapsedMs != null ? `${(item.elapsedMs / 1000).toFixed(1)}s` : '', item.path,
+    ].filter(Boolean).join(' · '), [apiKeyInput.value.trim()]));
+    row.append(preview, title, detail);
+    if (item.status === 'succeeded') {
+      const open = document.createElement('button');
+      open.type = 'button';
+      open.className = 'copy-report-action';
+      open.textContent = simulated ? '模拟打开结果' : '打开结果';
+      open.addEventListener('click', async () => {
+        try { await invoke('open_image_result', { jobId: job.id, index: item.index }); }
+        catch (error) { imageMessage(`打开失败：${error}`); }
+      });
+      row.append(open);
+    }
+  }
+  const evidenceKey = `${job.id}:${job.status}:${job.completed}:${job.failed}:${job.cancelled}`;
+  if (!pending && job.status !== 'running' && evidenceKey !== lastRecordedImageJob) {
+    lastRecordedImageJob = evidenceKey;
+    const state = job.status === 'completed' && !imageJobHasWarnings(job) ? 'verified' : job.completed > 0 ? 'partial' : job.status === 'cancelled' ? 'cancelled' : 'failed';
+    imageEvidence.record(job.model, job.mode, state, imageJobRevision);
+    setStatus(`图片测试${jobLabels[job.status]}：成功 ${job.completed}/${job.total}，失败 ${job.failed}，取消 ${job.cancelled}。`, state === 'verified' ? 'success' : 'warning');
+    renderImageControls();
+  }
+}
+
+async function checkImageModels() {
+  if (imageBlockReason() || imageController.locked || imageAuxBusy) return;
+  const model = $('#image-model').value.trim();
+  if (!model) { imageMessage('请输入模型名称。'); return; }
+  const revision = imageEvidence.revision;
+  imageAuxBusy = true;
+  renderImageControls();
+  imageMessage('正在检查已保存服务的模型列表…');
+  try {
+    const result = await invoke('check_image_capabilities', { model });
+    imageEvidence.record(model, 'models', result.available ? 'checked' : 'unavailable', revision);
+    $('#image-model-options').replaceChildren(...result.models.map(name => {
+      const option = document.createElement('option');
+      option.value = name;
+      return option;
+    }));
+    $('#image-capability-message').textContent = previewLabel(redactLogMessage(`${result.model} · ${result.message} · ${result.endpoint}`, [apiKeyInput.value.trim()]));
+    imageMessage('模型列表检查结束；未执行付费生成。');
+  } catch (error) {
+    imageEvidence.record(model, 'models', 'failed', revision);
+    imageMessage(`模型列表检查失败：${error}`);
+  } finally {
+    imageAuxBusy = false;
+    renderImageControls();
+  }
+}
+
+async function pickImageReferences() {
+  if (imageBlockReason() || imageController.locked || imageAuxBusy) return;
+  imageAuxBusy = true;
+  renderImageControls();
+  try {
+    const paths = await invoke('pick_reference_images');
+    imageReferencePaths = [...imageReferencePaths, ...paths];
+  } catch (error) { imageMessage(`选择参考图失败：${error}`); }
+  finally { imageAuxBusy = false; renderImageReferences(); }
+}
+
+function requestImagePayment(retry = false) {
+  if (imageBlockReason() || imageController.locked || imageAuxBusy) return;
+  try {
+    const request = retry ? null : buildImageRequest({
+      model: $('#image-model').value, prompt: $('#image-prompt').value,
+      count: $('#image-count').value, size: $('#image-size').value, referencePaths: imageReferencePaths,
+    });
+    const job = imageController.job;
+    if (retry && (!job || imageJobRevision !== imageEvidence.revision)) return;
+    const count = retry ? retryableImageCount(job) : request.count;
+    if (!count) return;
+    pendingImagePayment = { retry, request, revision: imageEvidence.revision };
+    $('#image-payment-detail').textContent = previewLabel(`${retry ? '仅重试失败或取消的' : '将请求'} ${count} 张图片，模型 ${retry ? job.model : request.model}，${(retry ? job.mode === 'edit' : request.referencePaths.length > 0) ? '参考图' : '纯生成'}模式。使用已保存的 Key 和 Base URL，由后端以 2 个并发任务处理。${retry ? '成功项不会重新生成。' : ''}此操作可能产生费用。请保持应用窗口开启；进度记录不支持关闭或重启应用后自动恢复任务。取消仅停止待发请求，已发送请求仍可能计费。是否继续？`);
+    $('#image-payment-dialog').showModal();
+  } catch (error) { imageMessage(error.message); }
+}
+
+async function confirmImagePayment() {
+  const payment = pendingImagePayment;
+  pendingImagePayment = null;
+  $('#image-payment-dialog').close();
+  if (!payment || payment.revision !== imageEvidence.revision || imageBlockReason() || imageController.locked || imageAuxBusy) return;
+  nextImageJobRevision = imageEvidence.revision;
+  imageMessage('正在提交已确认的图片请求…');
+  await (payment.retry ? imageController.retry() : imageController.start(payment.request));
+}
+
+imageController = createImageJobController({
+  invoke: (command, args) => invoke(command, args),
+  onChange: renderImageJob,
+  onError: error => imageMessage(`图片操作失败：${error}。若任务仍在运行，将继续查询；可尝试取消。`),
+});
+$('#preview-notice').hidden = $('#image-simulation').hidden = !simulated;
+$('#open-image-test').addEventListener('click', () => { renderImageControls(); $('#image-test-dialog').showModal(); });
+$('#close-image-test').addEventListener('click', () => $('#image-test-dialog').close());
+$('#image-model').addEventListener('input', renderImageControls);
+$('#pick-image-references').addEventListener('click', pickImageReferences);
+$('#check-image-model').addEventListener('click', checkImageModels);
+$('#image-test-form').addEventListener('submit', event => { event.preventDefault(); requestImagePayment(); });
+$('#confirm-image-payment').addEventListener('click', confirmImagePayment);
+$('#image-payment-dialog').addEventListener('close', () => { pendingImagePayment = null; });
+$('#retry-image-test').addEventListener('click', () => requestImagePayment(true));
+$('#cancel-image-test').addEventListener('click', async () => {
+  imageMessage('正在请求停止待发请求；已发送请求仍可能计费，成功图片将保留。请保持应用窗口开启。');
+  await imageController.cancel();
+});
+window.addEventListener('pagehide', () => imageController.dispose());
 
 configurationLog = createConfigurationLog({ $, getSecret: () => apiKeyInput.value.trim() });
 configForm.addEventListener("submit", configureProvider);
 $('#retry-configuration').addEventListener('click', event => configureProvider(event, blockedPhase || 'writing'));
-$('#configuration-diagnostics').addEventListener('click', () => setTab($('#diagnosis-tab')));
+$('#configuration-diagnostics').addEventListener('click', () => openAdvanced($('#diagnosis-tab')));
+$('#view-configuration-log').addEventListener('click', () => openAdvanced($('#logs-tab')));
+$('#open-advanced-button').addEventListener('click', () => openAdvanced());
+$('#close-advanced-button').addEventListener('click', () => advancedDialog.close());
 // Edited inputs describe a new configuration, so an interrupted run cannot skip writing them.
 for (const input of [apiKeyInput, baseUrlInput]) input.addEventListener('input', () => {
   formDirty = true;
+  topbarStateText.textContent = previewLabel('修改未保存');
+  setDot(topbarStateDot, 'warning');
+  imageEvidence.invalidate();
+  $('#image-capability-message').textContent = '';
+  renderImageControls();
   if (!blockedPhase) {
     resetConfigurationProgress();
     activationState.textContent = '修改未保存'; activationState.dataset.kind = 'warning';
@@ -703,7 +979,7 @@ for (const input of [apiKeyInput, baseUrlInput]) input.addEventListener('input',
   $('#retry-configuration').textContent = '保存修改并继续';
   nextStepDetail.textContent = '输入已修改，继续时将重新写入并自动完成后续步骤。';
 });
-testButton.addEventListener("click", testConnection);
+testButton.addEventListener("click", () => runMaintenance(testConnection));
 toggleKeyButton.addEventListener("click", toggleApiKeyVisibility);
 refreshStatusButton.addEventListener("click", refreshStatus);
 runDiagnosticsButton.addEventListener("click", runDiagnostics);
@@ -711,17 +987,25 @@ copyReportButton.addEventListener("click", copySupportReport);
 restartCodexButton.addEventListener("click", openRestartDialog);
 confirmRestartButton.addEventListener("click", () => runMaintenance(restartCodex));
 repairButton.addEventListener("click", () => runMaintenance(repairConfiguration));
-imagegenButton.addEventListener("click", () => runMaintenance(configureImagegenCli));
+directImageButton.addEventListener("click", () => runMaintenance(configureDirectImageApi));
 migrateHistoryButton.addEventListener("click", () => runMaintenance(migrateHistoryVisibility));
 openDirButton.addEventListener("click", openConfigDirectory);
 restoreButton.addEventListener("click", openRestoreDialog);
 confirmRestoreButton.addEventListener("click", () => runMaintenance(restoreDefaults));
 updateButton.addEventListener("click", () => handleUpdate());
-for (const tab of document.querySelectorAll(".tab-button")) {
+const tabs = [...advancedDialog.querySelectorAll(".tab-button")];
+for (const [index, tab] of tabs.entries()) {
+  tab.tabIndex = tab.getAttribute('aria-selected') === 'true' ? 0 : -1;
   tab.addEventListener("click", () => setTab(tab));
+  tab.addEventListener('keydown', event => {
+    const next = { ArrowRight: (index + 1) % tabs.length, ArrowLeft: (index + tabs.length - 1) % tabs.length, Home: 0, End: tabs.length - 1 }[event.key];
+    if (next === undefined) return;
+    event.preventDefault();
+    setTab(tabs[next]);
+    tabs[next].focus();
+  });
 }
 
-syncColumnHeights();
 await refreshStatus();
 if (invoke) {
   window.setTimeout(() => handleUpdate({ silent: true }), 900);

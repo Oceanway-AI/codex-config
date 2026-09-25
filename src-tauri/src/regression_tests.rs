@@ -79,7 +79,7 @@ fn acceptance_real_write_repeat_restore_and_permissions() {
     .unwrap();
     let first = fs::read_to_string(&config).unwrap();
     assert!(first.contains("value = \"keep\""));
-    assert!(has_matching_imagegen_cli_environment(
+    assert!(has_matching_direct_http_environment(
         &first,
         Some("fake-test"),
         Some("https://example.invalid")
@@ -95,7 +95,7 @@ fn acceptance_real_write_repeat_restore_and_permissions() {
     )
     .unwrap();
     let repeated = fs::read_to_string(&config).unwrap();
-    assert!(has_matching_imagegen_cli_environment(
+    assert!(has_matching_direct_http_environment(
         &repeated,
         Some("fake-test"),
         Some("https://example.invalid")

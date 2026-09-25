@@ -20,6 +20,11 @@ use toml_edit::{value, DocumentMut, Item, Table, Value as TomlValue};
 
 #[cfg(any(target_os = "windows", test))]
 mod windows_host;
+mod direct_image_config;
+mod agent_rules;
+mod image_api;
+mod reference_picker;
+use image_api::ImageJobs;
 
 const PROVIDER_ID: &str = "OceanWay";
 const DEFAULT_BASE_URL: &str = "https://ocean-way.top";
@@ -30,7 +35,7 @@ const IMAGE_EXTENSION_ACTOR_AUTHORIZATION: &str = "local-image-extension";
 const BACKUP_DIR_NAME: &str = "oceanway-ai-backup";
 const HISTORY_MIGRATION_BACKUP_DIR_NAME: &str = "oceanway-history-migration-backup";
 const CODEX_STATE_DB_NAME: &str = "state_5.sqlite";
-const MINIMUM_IMAGE_EXTENSION_VERSION: &str = "0.143.0";
+const LEGACY_MINIMUM_CODEX_VERSION: &str = "0.143.0";
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -40,13 +45,13 @@ struct OperationResult {
     config_backup_path: Option<String>,
     auth_backup_path: Option<String>,
     auth_strategy: String,
-    imagegen_cli_configured: bool,
+    direct_image_configured: bool,
     history_migration_restore: Option<HistoryMigrationRestoreResult>,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ImagegenCliConfigResult {
+struct DirectImageConfigResult {
     config_path: String,
     base_url: String,
     configured: bool,
@@ -140,7 +145,7 @@ struct ConfigStatus {
     auth_strategy: String,
     chatgpt_login_detected: bool,
     chatgpt_account_label: Option<String>,
-    imagegen_cli_configured: bool,
+    direct_image_configured: bool,
     config_path: String,
     auth_path: String,
 }
@@ -254,7 +259,7 @@ fn get_config_status() -> Result<ConfigStatus, String> {
     let codex_home = codex_home()?;
     let config_path = codex_home.join("config.toml");
     let auth_path = codex_home.join("auth.json");
-    let config = fs::read_to_string(&config_path).unwrap_or_default();
+    let config = read_config_for_write(&config_path)?;
     let provider_id = read_root_string(&config, "model_provider");
     let base_url = read_provider_base_url(&config, PROVIDER_ID);
     let model = read_current_model_from_content(&config);
@@ -272,8 +277,10 @@ fn get_config_status() -> Result<ConfigStatus, String> {
         ProviderAuthStrategy::ApiKey
     };
     let oceanway_active = provider_id.as_deref() == Some(PROVIDER_ID);
-    let imagegen_cli_configured = oceanway_active
-        && has_matching_imagegen_cli_environment(
+    let direct_image_configured = oceanway_active
+        && direct_image_config::configured(&config)
+        && agent_rules::configured(&codex_home)
+        && has_matching_direct_http_environment(
             &config,
             provider_token.as_deref().or(auth_api_key.as_deref()),
             base_url.as_deref(),
@@ -292,7 +299,7 @@ fn get_config_status() -> Result<ConfigStatus, String> {
         auth_strategy: auth_strategy.as_str().to_string(),
         chatgpt_login_detected,
         chatgpt_account_label,
-        imagegen_cli_configured,
+        direct_image_configured,
         config_path: display_path(&config_path),
         auth_path: display_path(&auth_path),
     })
@@ -339,6 +346,7 @@ fn test_connection_internal(api_key: &str, base_url: &str) -> ConnectionTestResu
     let endpoints = model_endpoints(base_url);
     let client = match reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(12))
+        .redirect(reqwest::redirect::Policy::none())
         .build()
     {
         Ok(client) => client,
@@ -373,7 +381,7 @@ fn test_connection_internal(api_key: &str, base_url: &str) -> ConnectionTestResu
                 last_error = format!("HTTP {status}");
             }
             Err(err) => {
-                last_error = err.to_string();
+                last_error = err.without_url().to_string();
             }
         }
     }
@@ -452,7 +460,7 @@ async fn repair_configuration() -> Result<OperationResult, String> {
 fn repair_configuration_internal() -> Result<OperationResult, String> {
     let codex_home = codex_home()?;
     let config_path = codex_home.join("config.toml");
-    let config = fs::read_to_string(&config_path).unwrap_or_default();
+    let config = read_config_for_write(&config_path)?;
     let base_url = read_provider_base_url(&config, PROVIDER_ID)
         .unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
     configure_provider_internal(String::new(), base_url)
@@ -562,19 +570,19 @@ async fn configure_provider(api_key: String, base_url: String) -> Result<Operati
 }
 
 #[tauri::command]
-async fn configure_imagegen_cli() -> Result<ImagegenCliConfigResult, String> {
+async fn configure_direct_image_api() -> Result<DirectImageConfigResult, String> {
     tauri::async_runtime::spawn_blocking(|| {
         let codex_home = codex_home()?;
-        configure_imagegen_cli_in_home(&codex_home)
+        configure_direct_image_api_in_home(&codex_home)
     })
     .await
     .map_err(|_| "图片配置同步任务异常".to_string())?
 }
 
-fn configure_imagegen_cli_in_home(codex_home: &Path) -> Result<ImagegenCliConfigResult, String> {
+fn configure_direct_image_api_in_home(codex_home: &Path) -> Result<DirectImageConfigResult, String> {
     let config_path = codex_home.join("config.toml");
     let auth_path = codex_home.join("auth.json");
-    let config = fs::read_to_string(&config_path).unwrap_or_default();
+    let config = read_config_for_write(&config_path)?;
     if read_root_string(&config, "model_provider").as_deref() != Some(PROVIDER_ID) {
         return Err("请先使用“一键配置”将当前 provider 切换到 OceanWay。".to_string());
     }
@@ -588,9 +596,9 @@ fn configure_imagegen_cli_in_home(codex_home: &Path) -> Result<ImagegenCliConfig
             "未找到已保存的 OceanWay API Key，请重新输入并执行“一键配置”。".to_string()
         })?;
 
-    write_imagegen_cli_environment(&config_path, &api_key, &base_url)?;
+    write_direct_http_environment(&config_path, &api_key, &base_url)?;
 
-    Ok(ImagegenCliConfigResult {
+    Ok(DirectImageConfigResult {
         config_path: display_path(&config_path),
         base_url,
         configured: true,
@@ -656,7 +664,7 @@ fn configure_provider_internal(
         config_backup_path: config_backup_path.as_ref().map(|path| display_path(path)),
         auth_backup_path: auth_backup_path.as_ref().map(|path| display_path(path)),
         auth_strategy: auth_strategy.as_str().to_string(),
-        imagegen_cli_configured: true,
+        direct_image_configured: true,
         history_migration_restore: None,
     })
 }
@@ -700,12 +708,26 @@ fn restore_defaults_internal() -> Result<OperationResult, String> {
             set_private_permissions(&auth_path)?;
         }
     } else {
+        let current = read_config_for_write(&config_path)?;
+        let active = read_root_string(&current, "model_provider").as_deref() == Some(PROVIDER_ID);
+        let token = read_provider_bearer_token(&current, PROVIDER_ID);
+        let auth_key = read_auth_api_key(&auth_path);
+        let base = read_provider_base_url(&current, PROVIDER_ID);
+        let matching_environment = has_matching_direct_http_environment(
+            &current, token.as_deref().or(auth_key.as_deref()), base.as_deref(),
+        );
+        if !direct_image_config::configured(&current) && !(active && matching_environment) {
+            return Err("没有恢复快照，也未找到可确认由本工具管理的配置；未删除认证或 provider。".into());
+        }
+        remove_direct_http_environment_from_file(&config_path)?;
         remove_provider_from_config(&config_path, PROVIDER_ID)?;
-        remove_imagegen_cli_environment_from_file(&config_path)?;
-        remove_api_key_from_auth(&auth_path)?;
+        if active && token.is_none() && matching_environment {
+            remove_api_key_from_auth(&auth_path)?;
+        }
         set_private_permissions(&config_path)?;
         set_private_permissions(&auth_path)?;
     }
+    agent_rules::restore(&codex_home)?;
     let history_migration_restore = restore_history_migrations_lossy(&codex_home);
 
     Ok(OperationResult {
@@ -714,7 +736,7 @@ fn restore_defaults_internal() -> Result<OperationResult, String> {
         config_backup_path: config_backup_path.as_ref().map(|path| display_path(path)),
         auth_backup_path: auth_backup_path.as_ref().map(|path| display_path(path)),
         auth_strategy: "restore".to_string(),
-        imagegen_cli_configured: false,
+        direct_image_configured: false,
         history_migration_restore: Some(history_migration_restore),
     })
 }
@@ -749,7 +771,7 @@ fn write_config_toml(
     model: &str,
     bearer_token: Option<&str>,
     auth_strategy: ProviderAuthStrategy,
-    imagegen_api_key: Option<&str>,
+    direct_api_key: Option<&str>,
 ) -> Result<Option<PathBuf>, String> {
     validate_base_url(base_url)?;
     let codex_home = config_path
@@ -767,17 +789,17 @@ fn write_config_toml(
         model,
         bearer_token,
         auth_strategy,
-    );
-    if let Some(api_key) = imagegen_api_key.filter(|value| !value.trim().is_empty()) {
-        rendered = merge_imagegen_cli_environment(&rendered, api_key, base_url)?;
+    )?;
+    if let Some(api_key) = direct_api_key.filter(|value| !value.trim().is_empty()) {
+        rendered = merge_direct_http_environment(&rendered, api_key, base_url)?;
+        rendered = direct_image_config::merge(&rendered)?;
     }
 
-    write_private_atomic(config_path, rendered.as_bytes())
-        .map_err(|err| format!("无法写入 config.toml：{err}"))?;
+    agent_rules::write_with_config(codex_home, config_path, &rendered)?;
     Ok(backup_path)
 }
 
-fn write_imagegen_cli_environment(
+fn write_direct_http_environment(
     config_path: &Path,
     api_key: &str,
     base_url: &str,
@@ -791,10 +813,19 @@ fn write_imagegen_cli_environment(
 
     let backup_path = backup_file(config_path)?;
     let original = read_config_for_write(config_path)?;
-    let rendered = merge_imagegen_cli_environment(&original, api_key, base_url)?;
-    write_private_atomic(config_path, rendered.as_bytes())
-        .map_err(|err| format!("无法写入 config.toml：{err}"))?;
+    let rendered = direct_image_config::merge(
+        &merge_direct_http_environment(&original, api_key, base_url)?
+    )?;
+    agent_rules::write_with_config(codex_home, config_path, &rendered)?;
     Ok(backup_path)
+}
+
+fn verify_config_write(path: &Path, expected: &str) -> Result<(), String> {
+    let readback = read_config_for_write(path)?;
+    if readback != expected {
+        return Err("配置回读与写入内容不一致，请保留备份并重新检查。".into());
+    }
+    Ok(())
 }
 
 fn write_auth_json(
@@ -812,6 +843,10 @@ fn write_auth_json(
 
     write_private_atomic(auth_path, rendered.as_bytes())
         .map_err(|err| format!("无法写入 auth.json：{err}"))?;
+    let readback = fs::read_to_string(auth_path).map_err(|_| "无法回读 auth.json。")?;
+    if readback != rendered {
+        return Err("auth.json 回读与写入内容不一致，请保留备份。".into());
+    }
     Ok(backup_path)
 }
 
@@ -870,9 +905,9 @@ fn render_auth_json_content(
 }
 
 fn remove_provider_from_config(config_path: &Path, provider_id: &str) -> Result<(), String> {
-    let original = fs::read_to_string(config_path).unwrap_or_default();
-    let rendered = remove_provider_config(&original, provider_id);
-    fs::write(config_path, rendered).map_err(|err| format!("无法写入 config.toml：{err}"))
+    let original = read_config_for_write(config_path)?;
+    let rendered = remove_provider_config(&original, provider_id)?;
+    write_private_atomic(config_path, rendered.as_bytes()).map_err(|err| format!("无法写入 config.toml：{err}"))
 }
 
 fn remove_api_key_from_auth(auth_path: &Path) -> Result<(), String> {
@@ -1525,70 +1560,52 @@ fn merge_config(
     model: &str,
     bearer_token: Option<&str>,
     auth_strategy: ProviderAuthStrategy,
-) -> String {
-    let lines = original.split_inclusive('\n').collect::<Vec<_>>();
-    let (root_line_refs, table_lines) = split_root_and_tables(&lines);
-    let mut root_lines = root_line_refs
-        .into_iter()
-        .map(str::to_string)
-        .collect::<Vec<_>>();
-
-    root_lines = set_root_key(root_lines, "model_provider", &toml_string(provider_id));
-    root_lines = set_root_key(root_lines, "model", &toml_string(model));
-    root_lines = set_root_key(root_lines, "model_reasoning_effort", "\"high\"");
-    root_lines = set_root_key(root_lines, "disable_response_storage", "true");
-
-    let mut rendered = root_lines.join("");
-    if !rendered.ends_with("\n\n") {
-        if !rendered.ends_with('\n') {
-            rendered.push('\n');
+) -> Result<String, String> {
+    let mut doc = original.parse::<DocumentMut>()
+        .map_err(|_| "现有 config.toml 无法解析，未覆盖配置。".to_string())?;
+    doc["model_provider"] = value(provider_id);
+    doc["model"] = value(model);
+    doc["model_reasoning_effort"] = value("high");
+    doc["disable_response_storage"] = value(true);
+    // File-based API credentials must win over a previous ChatGPT/keyring login.
+    // The original choice is retained in the restore snapshot.
+    doc["cli_auth_credentials_store"] = value("file");
+    doc["forced_login_method"] = value("api");
+    let providers = ensure_table(doc.as_table_mut(), "model_providers")?;
+    providers.set_implicit(true);
+    let provider = ensure_table(providers, provider_id)?;
+    provider["name"] = value(provider_id);
+    provider["base_url"] = value(base_url);
+    provider["wire_api"] = value("responses");
+    // This form explicitly selects the provider credential; old env-based auth must not win.
+    provider.remove("env_key");
+    provider.remove("env_key_instructions");
+    match auth_strategy {
+        ProviderAuthStrategy::ApiKey => {
+            // Codex only reads auth.json for this provider when auth is required.
+            provider["requires_openai_auth"] = value(true);
+            provider.remove("experimental_bearer_token");
         }
-        rendered.push('\n');
+        ProviderAuthStrategy::ChatGptBearerToken => {
+            provider["requires_openai_auth"] = value(true);
+            if let Some(token) = bearer_token {
+                provider["experimental_bearer_token"] = value(token.trim());
+            }
+        }
     }
-
-    let rest = remove_provider_table_family(&table_lines, provider_id).join("");
-    let rest = rest.trim_start_matches('\n');
-    if !rest.trim().is_empty() {
-        rendered.push_str(rest.trim_end());
-        rendered.push_str("\n\n");
-    }
-
-    rendered.push_str(&render_provider_block(
-        provider_id,
-        base_url,
-        bearer_token,
-        auth_strategy,
-    ));
-    rendered
+    Ok(doc.to_string())
 }
 
-fn remove_provider_config(original: &str, provider_id: &str) -> String {
-    let lines = original.split_inclusive('\n').collect::<Vec<_>>();
-    let (root_line_refs, table_lines) = split_root_and_tables(&lines);
-    let mut root_lines = root_line_refs
-        .into_iter()
-        .map(str::to_string)
-        .collect::<Vec<_>>();
-
-    root_lines = remove_root_key_if_value(root_lines, "model_provider", provider_id);
-
-    let mut rendered = root_lines.join("");
-    let rest = remove_provider_table_family(&table_lines, provider_id).join("");
-    let rest = rest.trim_start_matches('\n');
-
-    if !rendered.trim().is_empty() && !rest.trim().is_empty() && !rendered.ends_with("\n\n") {
-        if !rendered.ends_with('\n') {
-            rendered.push('\n');
-        }
-        rendered.push('\n');
+fn remove_provider_config(original: &str, provider_id: &str) -> Result<String, String> {
+    let mut doc = original.parse::<DocumentMut>()
+        .map_err(|_| "现有 config.toml 无法解析，未移除 provider。".to_string())?;
+    if doc.get("model_provider").and_then(Item::as_str) == Some(provider_id) {
+        doc.remove("model_provider");
     }
-
-    if !rest.trim().is_empty() {
-        rendered.push_str(rest.trim_end());
-        rendered.push('\n');
+    if let Some(providers) = doc.get_mut("model_providers").and_then(Item::as_table_like_mut) {
+        providers.remove(provider_id);
     }
-
-    rendered
+    direct_image_config::remove(&doc.to_string())
 }
 
 fn render_provider_block(
@@ -1610,11 +1627,7 @@ fn render_provider_block(
     );
     match auth_strategy {
         ProviderAuthStrategy::ApiKey => {
-            rendered.push_str("requires_openai_auth = false\n");
-            rendered.push_str(&format!(
-                "http_headers = {{ \"x-openai-actor-authorization\" = {} }}\n",
-                toml_string(IMAGE_EXTENSION_ACTOR_AUTHORIZATION)
-            ));
+            rendered.push_str("requires_openai_auth = true\n");
         }
         ProviderAuthStrategy::ChatGptBearerToken => {
             if let Some(token) = bearer_token.filter(|token| !token.trim().is_empty()) {
@@ -1629,14 +1642,14 @@ fn render_provider_block(
     rendered
 }
 
-fn merge_imagegen_cli_environment(
+fn merge_direct_http_environment(
     content: &str,
     api_key: &str,
     base_url: &str,
 ) -> Result<String, String> {
     let mut document = content
         .parse::<DocumentMut>()
-        .map_err(|err| format!("现有 config.toml 无法解析，未写入 imagegen CLI 配置：{err}"))?;
+        .map_err(|_| "现有 config.toml 无法解析，未写入直接图片 API 配置。".to_string())?;
     let policy_was_missing = !document.as_table().contains_key("shell_environment_policy");
     let policy = ensure_table(document.as_table_mut(), "shell_environment_policy")?;
     if policy_was_missing {
@@ -1664,7 +1677,7 @@ fn ensure_table<'a>(parent: &'a mut Table, key: &str) -> Result<&'a mut Table, S
 
     let Some(inline) = item.as_value_mut().and_then(TomlValue::as_inline_table_mut) else {
         return Err(format!(
-            "config.toml 中的 {key} 不是表，无法安全写入 imagegen CLI 配置。"
+            "config.toml 中的 {key} 不是表，无法安全写入 直接图片 API 配置。"
         ));
     };
 
@@ -1688,7 +1701,7 @@ fn read_shell_environment_string(content: &str, key: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-fn has_matching_imagegen_cli_environment(
+fn has_matching_direct_http_environment(
     content: &str,
     api_key: Option<&str>,
     base_url: Option<&str>,
@@ -1705,10 +1718,10 @@ fn has_matching_imagegen_cli_environment(
             == Some(base_url.trim_end_matches('/'))
 }
 
-fn remove_imagegen_cli_environment(content: &str) -> Result<String, String> {
+fn remove_direct_http_environment(content: &str) -> Result<String, String> {
     let mut document = content
         .parse::<DocumentMut>()
-        .map_err(|err| format!("现有 config.toml 无法解析，未移除 imagegen CLI 配置：{err}"))?;
+        .map_err(|_| "现有 config.toml 无法解析，未移除直接图片 API 配置。".to_string())?;
     let Some(policy_item) = document.as_table_mut().get_mut("shell_environment_policy") else {
         return Ok(content.to_string());
     };
@@ -1742,10 +1755,17 @@ fn remove_imagegen_cli_environment(content: &str) -> Result<String, String> {
     Ok(document.to_string())
 }
 
-fn remove_imagegen_cli_environment_from_file(config_path: &Path) -> Result<(), String> {
-    let original = fs::read_to_string(config_path).unwrap_or_default();
-    let rendered = remove_imagegen_cli_environment(&original)?;
-    fs::write(config_path, rendered).map_err(|err| format!("无法写入 config.toml：{err}"))
+fn remove_direct_http_environment_from_file(config_path: &Path) -> Result<(), String> {
+    let original = read_config_for_write(config_path)?;
+    let token = read_provider_bearer_token(&original, PROVIDER_ID)
+        .or_else(|| config_path.parent().and_then(|home| read_auth_api_key(&home.join("auth.json"))));
+    let base = read_provider_base_url(&original, PROVIDER_ID);
+    // Without a snapshot, do not remove environment values belonging to another setup.
+    let rendered = if has_matching_direct_http_environment(&original, token.as_deref(), base.as_deref()) {
+        remove_direct_http_environment(&original)?
+    } else { original };
+    write_private_atomic(config_path, rendered.as_bytes())
+        .map_err(|err| format!("无法写入 config.toml：{err}"))
 }
 
 fn split_root_and_tables<'a>(lines: &[&'a str]) -> (Vec<&'a str>, Vec<&'a str>) {
@@ -1863,46 +1883,11 @@ fn read_current_model(config_path: &Path) -> Option<String> {
 }
 
 fn read_current_model_from_content(content: &str) -> Option<String> {
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with('#') || !trimmed.starts_with("model") {
-            continue;
-        }
-
-        let Some((key, value)) = trimmed.split_once('=') else {
-            continue;
-        };
-
-        if key.trim() != "model" {
-            continue;
-        }
-
-        let value = value.trim();
-        if let Some(stripped) = parse_quoted_toml_string(value) {
-            return Some(stripped);
-        }
-    }
-
-    None
+    read_root_string(content, "model")
 }
 
 fn read_root_string(content: &str, target_key: &str) -> Option<String> {
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with('#') || trimmed.starts_with('[') {
-            continue;
-        }
-
-        let Some((key, value)) = trimmed.split_once('=') else {
-            continue;
-        };
-
-        if key.trim() == target_key {
-            return parse_quoted_toml_string(value.trim());
-        }
-    }
-
-    None
+    content.parse::<DocumentMut>().ok()?.get(target_key)?.as_str().map(str::to_string)
 }
 
 fn read_provider_base_url(content: &str, provider_id: &str) -> Option<String> {
@@ -1914,50 +1899,18 @@ fn read_provider_bearer_token(content: &str, provider_id: &str) -> Option<String
 }
 
 fn read_provider_string(content: &str, provider_id: &str, target_key: &str) -> Option<String> {
-    read_provider_raw_value(content, provider_id, target_key)
-        .and_then(|value| parse_quoted_toml_string(&value))
+    content.parse::<DocumentMut>().ok()?.get("model_providers")?
+        .get(provider_id)?.get(target_key)?.as_str().map(str::to_string)
 }
 
 fn read_provider_bool(content: &str, provider_id: &str, target_key: &str) -> Option<bool> {
-    read_provider_raw_value(content, provider_id, target_key).and_then(|value| {
-        match value.as_str() {
-            "true" => Some(true),
-            "false" => Some(false),
-            _ => None,
-        }
-    })
+    content.parse::<DocumentMut>().ok()?.get("model_providers")?
+        .get(provider_id)?.get(target_key)?.as_bool()
 }
 
 fn read_provider_raw_value(content: &str, provider_id: &str, target_key: &str) -> Option<String> {
-    let mut in_provider = false;
-    let provider_header = format!("[model_providers.{provider_id}]");
-    let quoted_provider_header = format!("[model_providers.\"{provider_id}\"]");
-
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with('#') {
-            continue;
-        }
-
-        if trimmed.starts_with('[') {
-            in_provider = trimmed == provider_header || trimmed == quoted_provider_header;
-            continue;
-        }
-
-        if !in_provider {
-            continue;
-        }
-
-        let Some((key, value)) = trimmed.split_once('=') else {
-            continue;
-        };
-
-        if key.trim() == target_key {
-            return Some(value.trim().to_string());
-        }
-    }
-
-    None
+    Some(content.parse::<DocumentMut>().ok()?.get("model_providers")?
+        .get(provider_id)?.get(target_key)?.to_string())
 }
 
 fn choose_provider_auth_strategy(auth_path: &Path) -> ProviderAuthStrategy {
@@ -2268,7 +2221,7 @@ fn run_diagnostics_in_home(codex_home: &Path) -> Result<DiagnosticReport, String
         if provider_active {
             format!(
                 "当前 Base URL：{}",
-                base_url.as_deref().unwrap_or(DEFAULT_BASE_URL)
+                base_url.as_deref().filter(|url| validate_base_url(url).is_ok()).unwrap_or("无效地址，已隐藏")
             )
         } else {
             "当前 Codex 尚未切换到 OceanWay。".to_string()
@@ -2293,37 +2246,34 @@ fn run_diagnostics_in_home(codex_home: &Path) -> Result<DiagnosticReport, String
         !has_api_key,
     ));
 
-    let imagegen_ready = provider_active
-        && has_matching_imagegen_cli_environment(
+    let direct_ready = provider_active
+        && direct_image_config::configured(&config)
+        && has_matching_direct_http_environment(
             &config,
             api_key.map(String::as_str),
             base_url.as_deref(),
         );
     checks.push(diagnostic_check(
-        "imagegen",
-        "图片备用链路",
-        if imagegen_ready { "pass" } else { "warning" },
-        if imagegen_ready {
-            "CLI 备用环境与当前 Key、Base URL 一致。".to_string()
+        "direct-image-api",
+        "直接图片 API 规则",
+        if direct_ready { "pass" } else { "warning" },
+        if direct_ready {
+            "规则已保存，HTTP 环境与当前凭据一致；自然语言触发及生图仍需实测。".to_string()
         } else {
-            "图片备用环境缺失或已过期，可在运维工具中修复。".to_string()
+            "直接图片规则或 HTTP 环境缺失、已过期，可重新同步。".to_string()
         },
-        !imagegen_ready && provider_active && has_api_key,
+        !direct_ready && provider_active && has_api_key,
     ));
 
     let compatibility_ready = if chatgpt_login {
         provider_token.is_some()
             && read_provider_bool(&config, PROVIDER_ID, "requires_openai_auth") == Some(true)
     } else {
-        read_provider_bool(&config, PROVIDER_ID, "requires_openai_auth") == Some(false)
-            && read_provider_raw_value(&config, PROVIDER_ID, "http_headers").is_some_and(|value| {
-                value.contains("x-openai-actor-authorization")
-                    && value.contains(IMAGE_EXTENSION_ACTOR_AUTHORIZATION)
-            })
+        read_provider_bool(&config, PROVIDER_ID, "requires_openai_auth") == Some(true)
     };
     checks.push(diagnostic_check(
         "auth-mode",
-        "Codex 图片兼容模式",
+        "Provider 认证模式",
         if compatibility_ready {
             "pass"
         } else {
@@ -2333,10 +2283,10 @@ fn run_diagnostics_in_home(codex_home: &Path) -> Result<DiagnosticReport, String
             if chatgpt_login {
                 "已保留 ChatGPT 登录态并使用 provider 专用凭据。".to_string()
             } else {
-                "API Key 模式所需的本地图片扩展标记已就绪。".to_string()
+                "已配置 API Key 认证，不依赖本地图片扩展标记。".to_string()
             }
         } else {
-            "当前认证模式缺少图片工具所需的兼容字段。".to_string()
+            "当前 provider 认证字段不一致。".to_string()
         },
         !compatibility_ready && provider_active && has_api_key,
     ));
@@ -2345,18 +2295,9 @@ fn run_diagnostics_in_home(codex_home: &Path) -> Result<DiagnosticReport, String
         .codex_desktop_version
         .as_deref()
         .or(system.codex_cli_version.as_deref());
-    let version_status = match version_value {
-        Some(version) if version_at_least(version, MINIMUM_IMAGE_EXTENSION_VERSION) => "pass",
-        Some(_) => "warning",
-        None => "warning",
-    };
+    let version_status = "warning";
     let version_detail = match version_value {
-        Some(version) if version_status == "pass" => {
-            format!("检测到 Codex {version}，满足当前兼容要求。")
-        }
-        Some(version) => format!(
-            "检测到 Codex {version}；建议升级到 {MINIMUM_IMAGE_EXTENSION_VERSION} 或更高版本。"
-        ),
+        Some(version) => format!("检测到 Codex {version}；请在新任务验证 developer_instructions 与附件原图访问，版本号不代表已通过。"),
         None => "未检测到 Codex 版本，请确认 Codex Desktop 或 CLI 已安装。".to_string(),
     };
     checks.push(diagnostic_check(
@@ -2393,7 +2334,7 @@ fn run_diagnostics_in_home(codex_home: &Path) -> Result<DiagnosticReport, String
     checks.push(diagnostic_check(
         "codex-process",
         "Codex 生效状态",
-        if system.codex_running { "pass" } else { "warning" },
+        "warning",
         if let Some(error) = &system.runtime_detection_error {
             format!("运行状态检测失败：{error}")
         } else if system.codex_running {
@@ -2547,7 +2488,14 @@ fn read_restore_snapshot_created_at(codex_home: &Path) -> Option<String> {
 }
 
 fn command_output(command: &str, args: &[&str]) -> Option<String> {
-    let output = Command::new(command).args(args).output().ok()?;
+    let mut child = Command::new(command);
+    child.args(args);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        child.creation_flags(0x08000000);
+    }
+    let output = child.output().ok()?;
     if !output.status.success() {
         return None;
     }
@@ -2705,7 +2653,18 @@ fn macos_codex_version(host: MacosCodexHost) -> Option<String> {
     None
 }
 
+fn ensure_desktop_restart_home(override_home: Option<&std::ffi::OsStr>) -> Result<(), String> {
+    // HOME/USERPROFILE can also be overridden by an isolated launcher. Neither
+    // proves which home the globally detected desktop process actually uses.
+    if override_home.is_some() {
+        return Err("配置已保存。当前启动环境显式设置了 CODEX_HOME，无法确认桌面宿主使用同一目录，已阻止自动重启，不会关闭正在运行的 Codex。".into());
+    }
+    Ok(())
+}
+
 fn restart_codex_desktop() -> Result<RestartCodexResult, String> {
+    #[cfg(not(target_os = "windows"))]
+    ensure_desktop_restart_home(env::var_os("CODEX_HOME").as_deref())?;
     #[cfg(target_os = "macos")]
     {
         let process_list = macos_process_list().unwrap_or_default();
@@ -2927,10 +2886,18 @@ fn run_gui() {
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(PendingUpdate(Mutex::new(None)))
+        .manage(ImageJobs::default())
         .invoke_handler(tauri::generate_handler![
+            image_api::check_image_capabilities,
+            image_api::test_image_api,
+            image_api::get_image_test_status,
+            image_api::cancel_image_test,
+            image_api::retry_image_test,
+            image_api::open_image_result,
+            reference_picker::pick_reference_images,
             check_for_updates,
             copy_support_report,
-            configure_imagegen_cli,
+            configure_direct_image_api,
             configure_provider,
             get_account_access_status,
             get_config_status,
@@ -2969,7 +2936,7 @@ fn run_cli(args: &[String]) -> Result<(), String> {
         .model
         .or_else(|| read_current_model(&config_path))
         .unwrap_or_else(|| MODEL_FALLBACK.to_string());
-    let original_config = fs::read_to_string(&config_path).unwrap_or_default();
+    let original_config = read_config_for_write(&config_path)?;
     let dry_run_provider_token = if auth_strategy == ProviderAuthStrategy::ChatGptBearerToken {
         options.api_key.as_deref()
     } else {
@@ -2982,21 +2949,20 @@ fn run_cli(args: &[String]) -> Result<(), String> {
         &model,
         dry_run_provider_token,
         auth_strategy,
-    );
+    )?;
     if let Some(api_key) = options.api_key.as_deref() {
         rendered_config =
-            merge_imagegen_cli_environment(&rendered_config, api_key, &options.base_url)?;
+            merge_direct_http_environment(&rendered_config, api_key, &options.base_url)?;
+        rendered_config = direct_image_config::merge(&rendered_config)?;
     }
 
     if options.dry_run {
         println!("--- {} ---", display_path(&config_path));
-        print!("{rendered_config}");
-        if let Some(api_key) = options.api_key {
-            let original_auth = fs::read_to_string(&auth_path).unwrap_or_else(|_| "{}".to_string());
-            let rendered_auth = render_auth_json_content(&original_auth, &api_key, auth_strategy)?;
-            println!("--- {} ---", display_path(&auth_path));
-            print!("{rendered_auth}");
-        }
+        println!("Provider: {}", options.provider_id);
+        println!("Base URL: {}", options.base_url);
+        println!("Model: {model}");
+        println!("Direct image rules: {}", direct_image_config::configured(&rendered_config));
+        println!("仅显示公开配置摘要；认证、环境变量和原始指令已省略。dry-run 不写入文件。");
         return Ok(());
     }
 
@@ -3031,7 +2997,7 @@ fn run_cli(args: &[String]) -> Result<(), String> {
     match config_result {
         Ok(config_backup_path) => {
             println!("Configured provider: {}", options.provider_id);
-            println!("Configured imagegen CLI fallback environment.");
+            println!("Configured direct image API instructions and HTTP environment.");
             println!("Config: {}", display_path(&config_path));
             println!("Auth: {}", display_path(&auth_path));
             if let Some(path) = config_backup_path {
@@ -3103,6 +3069,9 @@ fn require_value(args: &[String], index: usize) -> Result<String, String> {
 }
 
 fn validate_provider_id(provider_id: &str) -> Result<(), String> {
+    if provider_id != PROVIDER_ID {
+        return Err("此版本的直接图片 API 配置仅支持 OceanWay provider ID。".into());
+    }
     if provider_id.is_empty() {
         return Err("provider id 不能为空".to_string());
     }
@@ -3126,13 +3095,13 @@ fn print_help() {
             "  codex-config --dry-run --provider custom --provider-id OceanWay --name OceanWay --base-url URL --model MODEL --api-key KEY\n\n",
             "Options:\n",
             "  --gui              打开图形界面\n",
-            "  --dry-run          只打印将写入的配置\n",
+            "  --dry-run          只打印脱敏配置摘要，不写入文件\n",
             "  --provider ID      兼容旧参数，当前不影响输出\n",
-            "  --provider-id ID   provider id，默认 OceanWay\n",
+            "  --provider-id ID   当前仅支持 OceanWay\n",
             "  --name NAME        兼容旧参数，当前不影响输出\n",
             "  --base-url URL     Base URL\n",
             "  --model MODEL      Codex model，默认沿用旧配置或 gpt-5.4\n",
-            "  --api-key KEY      写入认证配置，并同步 imagegen CLI 备用环境\n"
+            "  --api-key KEY      写入认证配置，并同步直接图片 API 规则\n"
         )
     );
 }
@@ -3153,7 +3122,7 @@ mod tests {
     fn version_compatibility_handles_cli_and_desktop_labels() {
         assert!(version_at_least(
             "codex-cli 0.143.0",
-            MINIMUM_IMAGE_EXTENSION_VERSION
+            LEGACY_MINIMUM_CODEX_VERSION
         ));
         assert!(version_at_least("0.144.1-beta.2", "0.143.0"));
         assert!(!version_at_least("Codex 0.142.9", "0.143.0"));
@@ -3248,7 +3217,7 @@ mod tests {
             MODEL_FALLBACK,
             None,
             ProviderAuthStrategy::ApiKey,
-        );
+        ).unwrap();
 
         assert!(rendered.contains("[model_providers.openrouter]"));
         assert!(rendered.contains("[model_providers.deepseek]"));
@@ -3256,11 +3225,8 @@ mod tests {
         assert!(!rendered.contains("http://64.188.30.215:8080/v1"));
         assert!(rendered.contains("model_provider = \"OceanWay\""));
         assert!(rendered.contains("model_reasoning_effort = \"high\""));
-        assert!(rendered.contains("requires_openai_auth = false"));
-        assert!(rendered.contains(concat!(
-            "http_headers = { \"x-openai-actor-authorization\" = ",
-            "\"local-image-extension\" }"
-        )));
+        assert_eq!(read_provider_bool(&rendered, PROVIDER_ID, "requires_openai_auth"), Some(true));
+        assert!(!rendered.contains("local-image-extension"));
     }
 
     #[test]
@@ -3272,7 +3238,7 @@ mod tests {
             MODEL_FALLBACK,
             Some("ow-secret-key"),
             ProviderAuthStrategy::ChatGptBearerToken,
-        );
+        ).unwrap();
 
         assert!(rendered.contains("model_provider = \"OceanWay\""));
         assert!(rendered.contains("experimental_bearer_token = \"ow-secret-key\""));
@@ -3281,7 +3247,7 @@ mod tests {
     }
 
     #[test]
-    fn merge_config_enables_local_image_extension_for_api_key_auth() {
+    fn merge_config_does_not_enable_old_image_extension() {
         let rendered = merge_config(
             "",
             PROVIDER_ID,
@@ -3289,14 +3255,20 @@ mod tests {
             MODEL_FALLBACK,
             None,
             ProviderAuthStrategy::ApiKey,
-        );
+        ).unwrap();
 
-        assert!(rendered.contains("requires_openai_auth = false"));
-        assert!(rendered.contains(concat!(
-            "http_headers = { \"x-openai-actor-authorization\" = ",
-            "\"local-image-extension\" }"
-        )));
+        assert_eq!(read_provider_bool(&rendered, PROVIDER_ID, "requires_openai_auth"), Some(true));
+        assert!(!rendered.contains("local-image-extension"));
         assert!(!rendered.contains("experimental_bearer_token"));
+    }
+
+    #[test]
+    fn isolated_home_cannot_restart_default_desktop() {
+        use std::ffi::OsStr;
+        assert!(ensure_desktop_restart_home(None).is_ok());
+        assert!(ensure_desktop_restart_home(Some(OsStr::new("/private/.codex"))).is_err());
+        assert!(ensure_desktop_restart_home(Some(OsStr::new("/home/user/.codex"))).is_err());
+        assert!(ensure_desktop_restart_home(Some(OsStr::new(""))).is_err());
     }
 
     #[test]
@@ -3355,9 +3327,9 @@ mod tests {
     }
 
     #[test]
-    fn imagegen_cli_environment_is_added_and_matches_provider_credentials() {
+    fn direct_http_environment_is_added_and_matches_provider_credentials() {
         let rendered =
-            merge_imagegen_cli_environment("", "ow-secret-key", "https://ocean-way.top/").unwrap();
+            merge_direct_http_environment("", "ow-secret-key", "https://ocean-way.top/").unwrap();
 
         assert_eq!(
             read_shell_environment_string(&rendered, CODEX_AUTH_KEY).as_deref(),
@@ -3367,7 +3339,7 @@ mod tests {
             read_shell_environment_string(&rendered, OPENAI_BASE_URL_ENV_KEY).as_deref(),
             Some("https://ocean-way.top")
         );
-        assert!(has_matching_imagegen_cli_environment(
+        assert!(has_matching_direct_http_environment(
             &rendered,
             Some("ow-secret-key"),
             Some("https://ocean-way.top/")
@@ -3375,16 +3347,16 @@ mod tests {
     }
 
     #[test]
-    fn imagegen_cli_environment_preserves_existing_inline_settings_and_updates_idempotently() {
+    fn direct_http_environment_preserves_existing_inline_settings_and_updates_idempotently() {
         let original = concat!(
             "[shell_environment_policy]\n",
             "inherit = \"core\"\n",
             "set = { EXISTING_FLAG = \"keep\" }\n",
         );
         let first =
-            merge_imagegen_cli_environment(original, "first-key", DEFAULT_BASE_URL).unwrap();
+            merge_direct_http_environment(original, "first-key", DEFAULT_BASE_URL).unwrap();
         let second =
-            merge_imagegen_cli_environment(&first, "second-key", DEFAULT_BASE_URL).unwrap();
+            merge_direct_http_environment(&first, "second-key", DEFAULT_BASE_URL).unwrap();
 
         assert_eq!(
             read_shell_environment_string(&second, "EXISTING_FLAG").as_deref(),
@@ -3399,7 +3371,7 @@ mod tests {
     }
 
     #[test]
-    fn removing_imagegen_cli_environment_keeps_other_shell_policy_settings() {
+    fn removing_direct_http_environment_keeps_other_shell_policy_settings() {
         let configured = concat!(
             "[shell_environment_policy]\n",
             "inherit = \"core\"\n",
@@ -3409,7 +3381,7 @@ mod tests {
             "OPENAI_API_KEY = \"ow-secret-key\"\n",
             "OPENAI_BASE_URL = \"https://ocean-way.top\"\n",
         );
-        let rendered = remove_imagegen_cli_environment(configured).unwrap();
+        let rendered = remove_direct_http_environment(configured).unwrap();
 
         assert_eq!(
             read_shell_environment_string(&rendered, "EXISTING_FLAG").as_deref(),
@@ -3422,14 +3394,14 @@ mod tests {
 
     #[test]
     fn imagegen_cli_status_detects_stale_key_or_base_url() {
-        let rendered = merge_imagegen_cli_environment("", "current-key", DEFAULT_BASE_URL).unwrap();
+        let rendered = merge_direct_http_environment("", "current-key", DEFAULT_BASE_URL).unwrap();
 
-        assert!(!has_matching_imagegen_cli_environment(
+        assert!(!has_matching_direct_http_environment(
             &rendered,
             Some("old-key"),
             Some(DEFAULT_BASE_URL)
         ));
-        assert!(!has_matching_imagegen_cli_environment(
+        assert!(!has_matching_direct_http_environment(
             &rendered,
             Some("current-key"),
             Some("https://other.example")
@@ -3456,11 +3428,11 @@ mod tests {
         )
         .unwrap();
 
-        let result = configure_imagegen_cli_in_home(&dir).unwrap();
+        let result = configure_direct_image_api_in_home(&dir).unwrap();
         let rendered = fs::read_to_string(&config_path).unwrap();
 
         assert!(result.configured);
-        assert!(has_matching_imagegen_cli_environment(
+        assert!(has_matching_direct_http_environment(
             &rendered,
             Some("saved-provider-key"),
             Some(DEFAULT_BASE_URL)
@@ -3486,7 +3458,7 @@ mod tests {
         )
         .unwrap();
 
-        let err = match configure_imagegen_cli_in_home(&dir) {
+        let err = match configure_direct_image_api_in_home(&dir) {
             Ok(_) => panic!("imagegen repair should require active OceanWay provider"),
             Err(err) => err,
         };
@@ -3511,7 +3483,7 @@ mod tests {
             "base_url = \"https://ocean-way.top\"\n",
         );
 
-        let rendered = remove_provider_config(original, PROVIDER_ID);
+        let rendered = remove_provider_config(original, PROVIDER_ID).unwrap();
 
         assert!(!rendered.contains("model_provider = \"OceanWay\""));
         assert!(rendered.contains("model = \"gpt-5.4\""));
@@ -3531,7 +3503,7 @@ mod tests {
             "base_url = \"https://ocean-way.top\"\n",
         );
 
-        let rendered = remove_provider_config(original, PROVIDER_ID);
+        let rendered = remove_provider_config(original, PROVIDER_ID).unwrap();
 
         assert!(rendered.contains("model_provider = \"openrouter\""));
         assert!(!rendered.contains("[model_providers.OceanWay]"));
