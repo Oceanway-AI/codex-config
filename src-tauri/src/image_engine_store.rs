@@ -3,7 +3,72 @@ use super::*;
 
 pub(super) const ENGINE_ID: &str = "oceanway-shared-image-engine";
 const STORE_DIRECTORY: &str = "oceanway-image-jobs";
-static STORE_LOCK: Mutex<()> = Mutex::new(());
+
+// File locking requires Rust 1.89+. Lock files are permanent rendezvous points:
+// unlinking/replacing one would let different processes lock different inodes.
+fn open_lock_file(directory: &Path, name: &str) -> Result<File, String> {
+    verify_directory(directory)?;
+    let path = directory.join(name);
+    let validate = || -> Result<(), String> {
+        let metadata = fs::symlink_metadata(&path).map_err(|_| "Image lock file is unavailable.".to_string())?;
+        if metadata.file_type().is_symlink() || !metadata.is_file()
+            || fs::canonicalize(&path).ok().as_deref() != Some(path.as_path())
+        {
+            return Err("Image lock path must be a regular contained file.".into());
+        }
+        Ok(())
+    };
+    match fs::symlink_metadata(&path) {
+        Ok(_) => validate()?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return Err("Image lock file is unavailable.".into()),
+    }
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        // Allow other lock handles, but not deletion/replacement while open.
+        options.share_mode(0x0000_0001 | 0x0000_0002);
+    }
+    let file = options.open(&path).map_err(|_| "Could not open the image coordination lock.".to_string())?;
+    validate()?;
+    Ok(file)
+}
+
+fn lock_index(directory: &Path) -> Result<File, String> {
+    let file = open_lock_file(directory, ".index.lock")?;
+    file.lock().map_err(|_| "Could not acquire the cross-process image index lock.".to_string())?;
+    Ok(file)
+}
+
+fn valid_job_id(id: &str) -> bool {
+    id.starts_with("image-") && id.len() > 6 && id.len() <= 160
+        && id[6..].bytes().all(|byte| byte.is_ascii_digit() || byte == b'-')
+}
+
+pub(super) fn try_job_ownership(home: &Path, id: &str) -> Result<Option<File>, String> {
+    if !valid_job_id(id) {
+        return Err("Invalid owned image job identity.".into());
+    }
+    let directory = index_directory(home, true)?
+        .ok_or_else(|| "Missing image index directory.".to_string())?;
+    let file = open_lock_file(&directory, &format!("{id}.lock"))?;
+    match file.try_lock() {
+        Ok(()) => Ok(Some(file)),
+        Err(fs::TryLockError::WouldBlock) => Ok(None),
+        Err(fs::TryLockError::Error(_)) => Err("Could not acquire the image job ownership lock.".into()),
+    }
+}
+
+pub(super) fn ensure_job_ownership(job: &StoredJob) -> Result<(), String> {
+    let mut ownership = job.ownership.lock().map_err(|_| "Image job ownership is unavailable.".to_string())?;
+    if ownership.is_none() {
+        *ownership = Some(try_job_ownership(&job.input.provider.home, &job.id)?
+            .ok_or_else(|| "Image job belongs to another live service; no progress was changed.".to_string())?);
+    }
+    Ok(())
+}
 
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -73,7 +138,9 @@ fn read_index(home: &Path, directory: &Path) -> Result<EngineIndex, String> {
 
 fn write_index(directory: &Path, index: &EngineIndex) -> Result<(), String> {
     verify_directory(directory)?;
-    let temporary = directory.join(format!(".index-{}.tmp", SEQUENCE.fetch_add(1, Ordering::Relaxed)));
+    let temporary = directory.join(format!(
+        ".index-{}-{}.tmp", std::process::id(), SEQUENCE.fetch_add(1, Ordering::Relaxed),
+    ));
     let mut file = OpenOptions::new().write(true).create_new(true).open(&temporary)
         .map_err(|_| "Could not create the owned image index record.".to_string())?;
     let result = (|| {
@@ -96,9 +163,12 @@ fn write_index(directory: &Path, index: &EngineIndex) -> Result<(), String> {
 }
 
 pub(super) fn register_manifest(job: &StoredJob) -> Result<(), String> {
-    let _guard = STORE_LOCK.lock().map_err(|_| "Owned image index is unavailable.".to_string())?;
+    ensure_job_ownership(job)?;
     let home = &job.input.provider.home;
     let directory = index_directory(home, true)?.ok_or_else(|| "Missing image index directory.".to_string())?;
+    // Read-modify-replace is one short cross-process transaction. This lock is
+    // never held while waiting for a job lock or doing recovery/image readback.
+    let _guard = lock_index(&directory)?;
     let mut index = read_index(home, &directory)?;
     if index.jobs.contains_key(&job.id) {
         return Err("An owned image index entry already exists for this job.".into());
@@ -111,8 +181,7 @@ pub(super) fn register_manifest(job: &StoredJob) -> Result<(), String> {
 }
 
 fn validate_owned_directory(home: &Path, id: &str, entry: &OwnedManifest) -> Result<(), String> {
-    if !id.starts_with("image-") || id.len() > 160
-        || !id[6..].bytes().all(|byte| byte.is_ascii_digit() || byte == b'-')
+    if !valid_job_id(id)
         || entry.directory.file_name().and_then(|name| name.to_str()) != Some(id)
         || entry.ownership_token.len() != 64
     {
@@ -130,11 +199,16 @@ fn validate_owned_directory(home: &Path, id: &str, entry: &OwnedManifest) -> Res
 }
 
 pub(super) fn recover_jobs(home: &Path) -> Result<BTreeMap<String, StoredJob>, String> {
-    let _guard = STORE_LOCK.lock().map_err(|_| "Owned image index is unavailable.".to_string())?;
     let Some(directory) = index_directory(home, false)? else { return Ok(BTreeMap::new()) };
-    let index = read_index(home, &directory)?;
+    let index = {
+        let _guard = lock_index(&directory)?;
+        read_index(home, &directory)?
+    };
     let mut jobs = BTreeMap::new();
     for (id, entry) in index.jobs {
+        // Never even read a live owner's manifest. A process exit releases the
+        // kernel lock; the next recovery can then own and classify that record.
+        let Some(ownership) = try_job_ownership(home, &id)? else { continue };
         validate_owned_directory(home, &id, &entry)?;
         let manifest: JobManifest = serde_json::from_slice(
             &read_regular(&entry.directory.join("manifest.json"), JSON_BYTES)?
@@ -168,6 +242,7 @@ pub(super) fn recover_jobs(home: &Path) -> Result<BTreeMap<String, StoredJob>, S
             directory: entry.directory,
         };
         let mut job = StoredJob::new(id.clone(), input);
+        job.ownership = Mutex::new(Some(ownership));
         job.reference_hashes = manifest.job.reference_hashes;
         job.ownership_token = manifest.ownership_token;
         job.leased = manifest.leased;

@@ -210,6 +210,9 @@ struct StoredJob {
     paused: bool,
     recovered: bool,
     revision: u64,
+    // The kernel lock lives as long as this registry entry, including while
+    // cancellation drains admitted requests. It is never cloned or serialized.
+    ownership: Mutex<Option<File>>,
 }
 
 impl StoredJob {
@@ -235,6 +238,7 @@ impl StoredJob {
             paused: false,
             recovered: false,
             revision: 0,
+            ownership: Mutex::new(None),
         }
     }
 
@@ -463,6 +467,7 @@ fn redact_manifest(value: &mut Value, key: &str) {
 }
 
 fn persist_manifest(job: &StoredJob) -> Result<(), String> {
+    ensure_job_ownership(job)?;
     verify_directory(&job.input.directory)?;
     let mut snapshot = job.snapshot();
     for item in &mut snapshot.items {
@@ -496,7 +501,7 @@ fn persist_manifest(job: &StoredJob) -> Result<(), String> {
     // enter this disk record. The provider/config snapshot is never serialized.
     redact_manifest(&mut manifest, &job.input.provider.key);
     let temporary = job.input.directory.join(format!(
-        ".manifest-{}.tmp", SEQUENCE.fetch_add(1, Ordering::Relaxed),
+        ".manifest-{}-{}.tmp", std::process::id(), SEQUENCE.fetch_add(1, Ordering::Relaxed),
     ));
     let mut file = OpenOptions::new().write(true).create_new(true).open(&temporary)
         .map_err(|_| "Could not create the image progress record.".to_string())?;
@@ -700,7 +705,7 @@ fn worker(pool: Arc<WorkerPool>) {
             shared.wake.notify_all();
         } else {
             return;
-        }
+        };
     }
 }
 

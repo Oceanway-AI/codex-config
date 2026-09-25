@@ -1147,11 +1147,13 @@ fn task_output_layout_ordered_original_hashes_and_result_metadata_survive_recove
     persist_manifest(&job).unwrap();
     register_manifest(&job).unwrap();
     assert_eq!(directory, workspace.0.join("output").join("images").join(&id));
+    let reference_paths = job.input.request.reference_paths.clone();
+    drop(job);
     let reopened = ImageJobs::new(&home.0).unwrap();
     let saved = reopened.status(&id).unwrap();
     assert_eq!(saved.status, "completed");
     assert_eq!(saved.reference_hashes, vec![hash(&png(5, 7)), hash(&original), hash(&png(5, 7))]);
-    assert_eq!(saved.reference_paths, job.input.request.reference_paths);
+    assert_eq!(saved.reference_paths, reference_paths);
     assert_eq!(saved.output_directory, directory.to_string_lossy());
     let item = &saved.items[0];
     assert_eq!((item.width, item.height), (Some(320), Some(160)));
@@ -1186,6 +1188,7 @@ fn sha256_is_the_standard_digest_and_extra_outputs_have_individual_evidence() {
     finish_item(&mut job, slot, Ok(result), 1);
     persist_manifest(&job).unwrap();
     register_manifest(&job).unwrap();
+    drop(job);
     let reopened = ImageJobs::new(&home.0).unwrap();
     let snapshot = reopened.status(&id).unwrap();
     assert_eq!(snapshot.status, "completed_with_warnings");
@@ -1216,6 +1219,7 @@ fn recovery_marks_running_unknown_and_only_explicit_retry_posts_missing_slots_wi
     job.items.get_mut(&2).unwrap().post_started = true;
     persist_manifest(&job).unwrap();
     register_manifest(&job).unwrap();
+    drop(job);
     let service = ImageJobs::new(&home.0).unwrap();
     let recovered = service.status(&id).unwrap();
     assert_eq!(recovered.status, "interrupted");
@@ -1250,6 +1254,7 @@ fn recovery_hash_failure_blocks_reposting_even_after_output_is_removed() {
     persist_manifest(&job).unwrap();
     register_manifest(&job).unwrap();
     fs::write(&output, png(1, 1)).unwrap();
+    drop(job);
     let reopened = ImageJobs::new(&home.0).unwrap();
     let snapshot = reopened.status(&id).unwrap();
     assert_eq!((snapshot.completed, snapshot.failed), (0, 1));
@@ -1298,6 +1303,7 @@ fn interrupted_slot_with_uncommitted_output_is_preserved_and_never_reposted() {
     register_manifest(&job).unwrap();
     let orphan = job.input.directory.join("1.png");
     fs::write(&orphan, png(9, 11)).unwrap();
+    drop(job);
     let recovered = ImageJobs::new(&home.0).unwrap();
     let snapshot = recovered.status(&id).unwrap();
     assert_eq!(snapshot.outcome_unknown, 1);
@@ -1322,6 +1328,7 @@ fn recovery_only_reads_index_referenced_owned_manifests() {
     register_manifest(&job).unwrap();
     let path = job.input.directory.join("manifest.json");
     let original = fs::read(&path).unwrap();
+    drop(job);
     for (key, value) in [
         ("ownershipToken", json!("wrong owner")),
         ("codexHome", json!(home.0.join("another-home"))),
@@ -1749,4 +1756,183 @@ fn final_dispatch_rebinds_current_auth_json_key_after_body_and_manifest_prefligh
         assert!(!manifest.contains(key));
     }
     assert_eq!(mock.count(), 2);
+}
+
+#[test]
+fn independent_job_handles_cannot_write_or_recover_a_live_registry_entry() {
+    let home = TempHome::new();
+    let mock = Mock::new(|_, _| panic!("ownership test must not POST"));
+    let (id, input) = input(&home, &mock, 2);
+    let duplicate = StoredJob::new(id.clone(), input.clone());
+    let directory = input.directory.clone();
+    let owner = ImageJobs::default();
+    record_without_workers(&owner, id.clone(), input, false);
+    let manifest = directory.join("manifest.json");
+    let before = fs::read(&manifest).unwrap();
+    assert!(try_job_ownership(&home.0, &id).unwrap().is_none());
+    assert!(persist_manifest(&duplicate).is_err());
+    assert!(register_manifest(&duplicate).is_err());
+    let observer = ImageJobs::new(&home.0).unwrap();
+    assert!(observer.status(&id).is_err());
+    observer.cancel_all();
+    assert_eq!(fs::read(&manifest).unwrap(), before);
+    owner.cancel_all();
+    assert!(try_job_ownership(&home.0, &id).unwrap().is_none(),
+        "shutdown must retain ownership until the registry lifecycle ends");
+    let clone = owner.clone();
+    drop(owner);
+    assert!(try_job_ownership(&home.0, &id).unwrap().is_none());
+    drop(clone);
+    let recovered = ImageJobs::new(&home.0).unwrap();
+    assert!(recovered.status(&id).is_ok());
+    assert!(!recovered.has_active_requests());
+    assert_eq!(mock.count(), 0);
+}
+
+struct LockTestChild(Option<std::process::Child>);
+
+impl LockTestChild {
+    fn spawn(home: &Path, mode: &str) -> Self {
+        use std::process::{Command, Stdio};
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command.args(["--exact", "image_api::tests::cross_process_image_lock_helper", "--nocapture"])
+            .env("OCEANWAY_LOCK_TEST_HOME", home)
+            .env("OCEANWAY_LOCK_TEST_MODE", mode)
+            .current_dir(home)
+            .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x0800_0000);
+        }
+        Self(Some(command.spawn().unwrap()))
+    }
+
+    fn id(&self) -> u32 {
+        self.0.as_ref().unwrap().id()
+    }
+
+    fn finish(&mut self) {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while self.0.as_mut().unwrap().try_wait().unwrap().is_none() {
+            assert!(Instant::now() < deadline, "image lock test child did not finish");
+            thread::sleep(Duration::from_millis(10));
+        }
+        let output = self.0.take().unwrap().wait_with_output().unwrap();
+        assert!(output.status.success(), "child failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    }
+
+    fn kill_and_wait(&mut self) {
+        let mut child = self.0.take().unwrap();
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
+}
+
+impl Drop for LockTestChild {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.0.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+// Invoked only by this executable's subprocess tests. No ImageJobs workers or
+// network clients are started, and all paths are explicit temporary fixtures.
+#[test]
+fn cross_process_image_lock_helper() {
+    let Some(home) = std::env::var_os("OCEANWAY_LOCK_TEST_HOME").map(PathBuf::from) else { return };
+    let mode = std::env::var("OCEANWAY_LOCK_TEST_MODE").unwrap();
+    assert!(mode == "hold" || mode == "write");
+    let make_job = || {
+        let (id, directory) = create_directory(&home).unwrap();
+        StoredJob::new(id, Input {
+            request: request(2),
+            provider: SavedProvider {
+                home: home.clone(), config: String::new(), api_base: "https://example.invalid/v1".into(),
+                key: MOCK_KEY.into(), local_mock: true,
+            },
+            references: Vec::new(), directory,
+        })
+    };
+    if mode == "hold" {
+        let mut job = make_job();
+        job.claim().unwrap();
+        job.items.get_mut(&1).unwrap().post_started = true;
+        persist_manifest(&job).unwrap();
+        register_manifest(&job).unwrap();
+        fs::write(home.join("held.json.tmp"), json!({
+            "id": job.id, "directory": job.input.directory,
+        }).to_string()).unwrap();
+        fs::rename(home.join("held.json.tmp"), home.join("held.json")).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !home.join("release").is_file() {
+            assert!(Instant::now() < deadline, "parent did not release lock holder");
+            thread::sleep(Duration::from_millis(10));
+        }
+        drop(job);
+    } else {
+        fs::write(home.join(format!("ready-{}", std::process::id())), b"ready").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !home.join("go").is_file() {
+            assert!(Instant::now() < deadline, "parent did not start index writers");
+            thread::sleep(Duration::from_millis(10));
+        }
+        for _ in 0..8 {
+            let job = make_job();
+            persist_manifest(&job).unwrap();
+            register_manifest(&job).unwrap();
+        }
+    }
+}
+
+#[test]
+fn live_process_manifest_is_unchanged_and_crash_releases_job_ownership() {
+    let home = TempHome::new();
+    let mut child = LockTestChild::spawn(&home.0, "hold");
+    wait_until(|| home.0.join("held.json").is_file());
+    let held: Value = serde_json::from_slice(&fs::read(home.0.join("held.json")).unwrap()).unwrap();
+    let id = held["id"].as_str().unwrap();
+    let manifest = Path::new(held["directory"].as_str().unwrap()).join("manifest.json");
+    let before = fs::read(&manifest).unwrap();
+    let observer = ImageJobs::new(&home.0).unwrap();
+    assert!(observer.status(id).is_err());
+    observer.cancel_all();
+    assert_eq!(fs::read(&manifest).unwrap(), before, "live owner manifest was modified");
+    assert!(try_job_ownership(&home.0, id).unwrap().is_none());
+    child.kill_and_wait();
+    let recovered = ImageJobs::new(&home.0).unwrap();
+    let status = recovered.status(id).unwrap();
+    assert_eq!(status.status, "interrupted");
+    assert_eq!(status.outcome_unknown, 1);
+    assert_eq!(status.items[0].status, "uncertain");
+    assert!(!recovered.has_active_requests());
+    assert_eq!(lock(&recovered.shared).unwrap().workers, 0);
+    assert!(try_job_ownership(&home.0, id).unwrap().is_none(),
+        "recovered registry must now own the job lock");
+}
+
+#[test]
+fn independent_process_index_writers_preserve_every_new_job() {
+    let home = TempHome::new();
+    let directory = home.0.join("oceanway-image-jobs");
+    fs::create_dir(&directory).unwrap();
+    fs::write(directory.join(".index-0.tmp"), b"stale old-format temporary").unwrap();
+    let mut children: Vec<_> = (0..4).map(|_| LockTestChild::spawn(&home.0, "write")).collect();
+    wait_until(|| children.iter().all(|child| home.0.join(format!("ready-{}", child.id())).is_file()));
+    fs::write(home.0.join("go"), b"start").unwrap();
+    for child in &mut children {
+        child.finish();
+    }
+    let index: Value = serde_json::from_slice(&fs::read(directory.join("index.json")).unwrap()).unwrap();
+    assert_eq!(index["jobs"].as_object().unwrap().len(), 32);
+    assert_eq!(fs::read(directory.join(".index-0.tmp")).unwrap(), b"stale old-format temporary");
+    let recovered = ImageJobs::new(&home.0).unwrap();
+    assert_eq!(lock(&recovered.shared).unwrap().jobs.len(), 32);
+    assert!(!recovered.has_active_requests());
+    for id in index["jobs"].as_object().unwrap().keys() {
+        assert_eq!(recovered.status(id).unwrap().status, "interrupted");
+    }
 }
