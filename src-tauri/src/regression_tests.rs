@@ -1,5 +1,42 @@
 use super::*;
 #[test]
+fn logged_in_keyring_user_gets_file_api_auth_and_keeps_original_tokens() {
+    let auth = render_auth_json_content(
+        r#"{"auth_mode":"chatgpt","OPENAI_API_KEY":null,"tokens":{"access_token":"fake-account-token"},"keep":true}"#,
+        "fake-provider-key", ProviderAuthStrategy::ApiKey,
+    ).unwrap();
+    let parsed: Value = serde_json::from_str(&auth).unwrap();
+    assert_eq!(parsed["OPENAI_API_KEY"], "fake-provider-key");
+    assert!(parsed.get("auth_mode").is_none());
+    assert_eq!(parsed["tokens"]["access_token"], "fake-account-token");
+    assert_eq!(parsed["keep"], true);
+    let config = merge_config(
+        "cli_auth_credentials_store = 'keyring'\nforced_login_method = 'chatgpt'\ndeveloper_instructions = '''Keep [my instructions].'''\n",
+        PROVIDER_ID, "https://example.invalid/v1", "gpt-5.6-sol", None, ProviderAuthStrategy::ApiKey,
+    ).unwrap();
+    assert_eq!(read_root_string(&config, "cli_auth_credentials_store").as_deref(), Some("file"));
+    assert_eq!(read_root_string(&config, "forced_login_method").as_deref(), Some("api"));
+    assert_eq!(read_provider_bool(&config, PROVIDER_ID, "requires_openai_auth"), Some(true));
+    assert!(!config.contains("experimental_bearer_token"));
+    assert!(!config.contains("local-image-extension"));
+    assert_eq!(read_root_string(&config, "developer_instructions").as_deref(), Some("Keep [my instructions]."));
+}
+
+#[test]
+fn broken_agent_rules_do_not_write_config_or_auth() {
+    let dir = fixture("broken-agent-rules");
+    let config = dir.join("config.toml");
+    let auth = dir.join("auth.json");
+    fs::write(&config, "model='old'\n").unwrap();
+    fs::write(&auth, "{\"OPENAI_API_KEY\":\"fake-old\"}").unwrap();
+    fs::write(dir.join("AGENTS.md"), "<!-- OCEANWAY:DIRECT-IMAGE-API:BEGIN -->").unwrap();
+    assert!(write_config_toml(&config, PROVIDER_ID, "https://example.invalid", "new", None,
+        ProviderAuthStrategy::ApiKey, Some("fake-new")).is_err());
+    assert_eq!(fs::read_to_string(config).unwrap(), "model='old'\n");
+    assert_eq!(fs::read_to_string(auth).unwrap(), "{\"OPENAI_API_KEY\":\"fake-old\"}");
+}
+
+#[test]
 fn corrupt_config_is_never_replaced() {
     for bytes in [vec![0xff, 0xfe], b"[broken".to_vec()] {
         let dir = fixture("corrupt-config");

@@ -35,7 +35,8 @@ fn powershell(script: &str) -> Result<String, String> {
     };
     // EncodedCommand preserves Unicode paths and avoids shell interpolation.
     use base64::{engine::general_purpose::STANDARD, Engine};
-    let script = format!("$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); {script}");
+    let script = format!("$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);\n{}\n{script}",
+        include_str!("windows_process_helpers.ps1"));
     let bytes: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
     let mut child = Command::new("powershell.exe")
         .args([
@@ -101,7 +102,8 @@ foreach ($name in @('ChatGPT', 'Codex')) {
     $exe = "$name.exe"
     $live = @($processes | Where-Object {
         $_.Name -ieq $exe -and $_.ExecutablePath -match '\\(?:app|Codex)\\' -and
-        $_.CommandLine -notmatch '(?:^|\s)--type(?:=|\s)|app-server|--version|(?:^|\s)--user-data-dir(?:=|\s)' -and
+        $_.CommandLine -notmatch '(?:^|\s)--type(?:=|\s)|app-server|--version' -and
+        !(Get-DesktopProfile $_.CommandLine) -and
         (Invoke-CimMethod -InputObject $_ -MethodName GetOwnerSid).Sid -eq $sid
     })
     $app = $apps | Where-Object { $_.Name -ieq $name } | Select-Object -First 1
@@ -140,79 +142,49 @@ pub fn discover() -> Result<Option<Host>, String> {
     Ok(select_host(&hosts).cloned())
 }
 
-fn restart_script(host: &Host) -> Result<String, String> {
-    let executable = if host.name == "ChatGPT" {
-        "ChatGPT"
-    } else {
-        "Codex"
-    };
-    // Legacy CLI and desktop share a process name: only close the discovered desktop path.
-    let path_filter = if host.name == "Codex Desktop" {
-        let path = host
-            .path
-            .as_deref()
-            .ok_or("无法确认旧版 Codex 的桌面进程路径，请手动重启。")?;
-        format!(" -and $_.Path -ieq '{}'", path.replace('\'', "''"))
-    } else {
-        String::new()
-    };
-    let launch = if let Some(id) = host.app_id.as_deref().filter(|id| !id.is_empty()) {
-        format!(
-            "Start-Process 'shell:AppsFolder\\{}'",
-            id.replace('\'', "''")
-        )
-    } else if let Some(path) = host.path.as_deref() {
-        format!("Start-Process -FilePath '{}'", path.replace('\'', "''"))
-    } else {
-        return Err("已检测到应用，但无法确定启动入口，请手动重启。".into());
-    };
-    // Do not force-kill: a save prompt or tray-only host must stop the workflow.
-    let script = format!(
-        r#"
-$session = (Get-Process -Id $PID).SessionId
-$old = @(Get-Process -Name '{executable}' -ErrorAction SilentlyContinue | Where-Object {{ $_.SessionId -eq $session{path_filter} }})
-foreach ($p in $old) {{ if ($p.MainWindowHandle -ne 0) {{ $null = $p.CloseMainWindow() }} }}
-$deadline = [DateTime]::UtcNow.AddSeconds(12)
-do {{
-    $remaining = @($old | Where-Object {{ !$_.HasExited }})
-    if (!$remaining.Count) {{ break }}
-    Start-Sleep -Milliseconds 250
-}} while ([DateTime]::UtcNow -lt $deadline)
-if ($remaining.Count) {{ throw 'Host did not exit' }}
-{launch}
-$deadline = [DateTime]::UtcNow.AddSeconds(12)
-do {{
-    $new = @(Get-Process -Name '{executable}' -ErrorAction SilentlyContinue | Where-Object {{ $_.SessionId -eq $session{path_filter} }})
-    if ($new.Count) {{ 'started'; exit 0 }}
-    Start-Sleep -Milliseconds 250
-}} while ([DateTime]::UtcNow -lt $deadline)
-throw 'Host did not start'
-"#
-    );
-    Ok(script)
-}
-
 #[cfg(target_os = "windows")]
 pub fn restart() -> Result<super::RestartCodexResult, String> {
     use serde_json::json;
-    let target = if std::env::var_os("CODEX_HOME").is_some() {
+    let target = if std::env::var_os("CODEX_HOME").is_some()
+        || std::env::var_os("OCEANWAY_RESTART_TARGET").is_some()
+        || std::env::var_os("CODEX_ELECTRON_USER_DATA_PATH").is_some() {
         // Test mode is explicit and fail-closed; it never falls back to normal discovery.
-        let home = super::codex_home()?;
-        let manifest = home.join("oceanway-test-desktop.json");
+        if std::env::var_os("CODEX_HOME").is_none() {
+            return Err("隔离重启未指定 CODEX_HOME，未操作桌面。".into());
+        }
+        let home = super::codex_home()?.canonicalize().map_err(|_| "隔离配置目录不可用。")?;
+        let manifest = std::env::var_os("OCEANWAY_RESTART_TARGET")
+            .map(std::path::PathBuf::from)
+            .ok_or("配置已保存。自定义目录没有显式绑定测试桌面，未操作日常 Codex。")?
+            .canonicalize().map_err(|_| "隔离桌面清单不可用，未操作日常 Codex。")?;
+        if manifest != home.join("oceanway-test-desktop.json") {
+            return Err("隔离桌面清单路径不匹配。".into());
+        }
         let text = std::fs::read_to_string(&manifest)
             .map_err(|_| "配置已保存。自定义 CODEX_HOME 未绑定隔离桌面，已阻止重启，不会关闭现有 Codex。")?;
         let mut target: serde_json::Value = serde_json::from_str(&text)
             .map_err(|_| "隔离桌面清单无效，未关闭任何窗口。")?;
         let profile = target["userData"].as_str().ok_or("隔离桌面缺少独立数据目录。")?;
         let root = home.parent().ok_or("隔离目录无效。")?;
-        if target["isolated"] != true || target["codexHome"].as_str() != home.to_str()
-            || !std::path::Path::new(profile).is_absolute()
-            || !std::path::Path::new(profile).starts_with(root)
+        let profile_path = std::path::Path::new(profile).canonicalize().map_err(|_| "隔离桌面目录不可用。")?;
+        let declared_home = target["codexHome"].as_str().and_then(|p| std::path::Path::new(p).canonicalize().ok());
+        let marker: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(root.join(".oceanway-isolation.json")).map_err(|_| "缺少隔离验收目录标记。")?
+        ).map_err(|_| "隔离目录标记无效。")?;
+        if marker["purpose"] != "oceanway-codex-isolated-acceptance"
+            || target["isolated"] != true || declared_home.as_ref() != Some(&home)
+            || home != root.join("codex-home") || profile_path != root.join("desktop-profile")
             || target["pid"].as_u64().is_none()
             || target["started"].as_str().is_none()
-            || target["engine"].as_str().is_none()
+            || !target["engine"].as_str().is_some_and(|p| std::path::Path::new(p).is_file())
+            || !target["path"].as_str().is_some_and(|p| std::path::Path::new(p).is_file())
             || !target["port"].as_u64().is_some_and(|port| (1024..=65535).contains(&port)) {
             return Err("隔离桌面清单与本次配置目录不匹配，未关闭任何窗口。".into());
+        }
+        target["protectedPids"] = marker["protectedPids"].clone();
+        if !target["protectedPids"].as_array().is_some_and(|pids| !pids.is_empty()
+            && pids.iter().all(|p| p.as_u64().is_some())) {
+            return Err("缺少需要保护的日常桌面身份，未执行测试重启。".into());
         }
         target["manifest"] = json!(manifest.to_string_lossy());
         target
@@ -251,35 +223,24 @@ mod tests {
         let hosts = [host("Codex Desktop", true), host("ChatGPT", false)];
         assert_eq!(select_host(&hosts).unwrap().name, "Codex Desktop");
     }
-    #[test]
-    fn store_launch_and_safe_close_are_generated() {
-        let mut app = host("ChatGPT", true);
-        app.app_id = Some("OpenAI.ChatGPT_example!App".into());
-        let script = restart_script(&app).unwrap();
-        assert!(script.contains("shell:AppsFolder\\OpenAI.ChatGPT_example!App"));
-        assert!(script.contains("CloseMainWindow"));
-        assert!(script.contains("if ($remaining.Count) { throw"));
-        assert!(script.contains("throw 'Host did not start'"));
-        assert!(!script.contains("taskkill"));
-        assert!(!script.contains("Stop-Process"));
-    }
-    #[test]
-    fn executable_launch_escapes_paths_and_scopes_legacy_processes() {
-        let mut app = host("Codex Desktop", true);
-        assert!(restart_script(&app).is_err());
-        app.path = Some("C:\\Users\\O'Brien\\Codex\\Codex.exe".into());
-        let script = restart_script(&app).unwrap();
-        assert!(script.contains("O''Brien"));
-        assert_eq!(script.matches("$_.Path -ieq").count(), 2);
-    }
     #[cfg(target_os = "windows")]
     #[test]
     fn powershell_scripts_parse_without_running_app_operations() {
-        let mut app = host("ChatGPT", true);
-        app.app_id = Some("OpenAI.ChatGPT_example!App".into());
         for source in [DISCOVER.to_string(), include_str!("restart_windows.ps1").to_string()] {
             let check = format!("$tokens=$null; $errors=$null; $null=[System.Management.Automation.Language.Parser]::ParseInput('{}',[ref]$tokens,[ref]$errors); if($errors.Count){{throw 'Syntax error'}}; 'ok'", source.replace('\'', "''"));
             assert_eq!(powershell(&check).unwrap().trim(), "ok");
+        }
+    }
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_argv_handles_both_quoted_profile_forms() {
+        for command in [
+            r#""C:\App\ChatGPT.exe" "--user-data-dir=C:\private profile""#,
+            r#""C:\App\ChatGPT.exe" --user-data-dir="C:\private profile""#,
+            r#""C:\App\ChatGPT.exe" --user-data-dir "C:\private profile""#,
+        ] {
+            let script = format!("Get-DesktopProfile '{}'", command.replace('\'', "''"));
+            assert_eq!(powershell(&script).unwrap().trim(), r"C:\private profile");
         }
     }
     #[test]

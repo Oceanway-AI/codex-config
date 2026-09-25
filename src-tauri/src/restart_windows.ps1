@@ -10,8 +10,8 @@ function IsRoot($p) {
     $p.CommandLine -notmatch '(?:^|\s)--type(?:=|\s)|(?:^|\s)app-server(?:\s|$)' -and (IsOwned $p)
 }
 function HasProfile($p) {
-    $escaped = [regex]::Escape($target.userData)
-    $p.CommandLine -match ('(?:^|\s)--user-data-dir(?:=|\s)"?' + $escaped + '"?(?:\s|$)')
+    $profile = Get-DesktopProfile $p.CommandLine
+    $profile -and [IO.Path]::GetFullPath($profile) -ieq [IO.Path]::GetFullPath($target.userData)
 }
 function BindProcess($p) {
     $handle = Get-Process -Id $p.ProcessId -ErrorAction Stop
@@ -25,6 +25,7 @@ function BindProcess($p) {
 }
 $all = Inventory
 $protected = @([uint32]$PID)
+if ($target.isolated) { $protected += @($target.protectedPids | ForEach-Object { [uint32]$_ }) }
 $ancestor = [uint32]$PID
 for ($i=0; $i -lt 64; $i++) {
     $p = $all | Where-Object { $_.ProcessId -eq $ancestor } | Select-Object -First 1
@@ -43,7 +44,7 @@ if ($target.isolated) {
     }
 } else {
     # Never include explicitly isolated instances in normal discovery/restart.
-    $roots = @($all | Where-Object { (IsRoot $_) -and $_.CommandLine -notmatch '(?:^|\s)--user-data-dir(?:=|\s)' })
+    $roots = @($all | Where-Object { (IsRoot $_) -and !(Get-DesktopProfile $_.CommandLine) })
     if ($roots.Count -gt 1) { throw 'More than one desktop instance; restart manually' }
     $root = if ($roots.Count) { BindProcess $roots[0] } else { $null }
 }
@@ -65,12 +66,19 @@ if ($root) {
     foreach ($p in $all | Where-Object { $ids -contains [uint32]$_.ProcessId }) {
         $server = $p.Name -match '^codex(?:[-_].*)?\.exe$' -and $p.CommandLine -match '(?:^|\s)app-server(?:\s|$)'
         if ($p.ExecutablePath -ine $target.path -and !$server) { continue }
+        if ($p.CreationDate.ToUniversalTime() -lt $root.StartTime.ToUniversalTime().AddMilliseconds(-1)) {
+            throw 'Descendant predates the selected desktop'
+        }
         if (!(IsOwned $p) -or $protected -contains [uint32]$p.ProcessId) { throw 'Unsafe process scope' }
         $old += BindProcess $p
         if ($server) { $hadServer = $true }
     }
-    if ($root.MainWindowHandle -ne 0) { $null = $root.CloseMainWindow() }
-    $null = $root.WaitForExit(2000)
+    if ($root.MainWindowHandle -ne 0 -and !$root.CloseMainWindow()) { throw 'Desktop refused to close' }
+    $null = $root.WaitForExit(5000)
+    $root.Refresh()
+    if (!$root.HasExited -and $root.MainWindowHandle -ne 0) {
+        throw 'Desktop still has a visible window or save prompt; finish work and quit manually'
+    }
 }
 $forced = $false
 # Close-to-tray is not exit. The UI warned the user to save before this action.
@@ -85,13 +93,14 @@ if ($target.isolated) {
     $env:CODEX_HOME = $target.codexHome
     $env:CODEX_ELECTRON_USER_DATA_PATH = $target.userData
     $env:CODEX_CLI_PATH = $target.engine
-    $arguments = @('--user-data-dir="' + $target.userData + '"', '--remote-debugging-address=127.0.0.1',
-        '--remote-debugging-port=' + $target.port)
+    $arguments = @(('--user-data-dir="' + $target.userData + '"'), '--remote-debugging-address=127.0.0.1',
+        ('--remote-debugging-port=' + $target.port))
     $launched = Start-Process -FilePath $target.path -ArgumentList $arguments -PassThru
 } else {
     $launched = Start-Process -FilePath $target.path -PassThru
 }
 $deadline = [DateTime]::UtcNow.AddSeconds(15)
+$manifestUpdated = $false
 do {
     Start-Sleep -Milliseconds 350
     $launched.Refresh()
@@ -100,6 +109,14 @@ do {
     $new = $all | Where-Object { $_.ProcessId -eq $launched.Id } | Select-Object -First 1
     if (!$new -or !(IsRoot $new)) { continue }
     if ($target.isolated -and !(HasProfile $new)) { throw 'New desktop lost its isolated profile' }
+    if ($target.isolated -and !$manifestUpdated) {
+        $target.pid = $launched.Id
+        $target.started = $launched.StartTime.ToUniversalTime().Ticks.ToString()
+        $staging = $target.manifest + '.next'
+        [IO.File]::WriteAllText($staging, ($target | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
+        [IO.File]::Replace($staging, $target.manifest, $null)
+        $manifestUpdated = $true
+    }
     $ids = @([uint32]$new.ProcessId)
     for ($i=0; $i -lt 24; $i++) {
         $children = @($all | Where-Object { $ids -contains [uint32]$_.ParentProcessId -and $ids -notcontains [uint32]$_.ProcessId } |
@@ -111,12 +128,10 @@ do {
     if ($launched.MainWindowHandle -ne 0 -and (!$hadServer -or $serverReady)) {
         if ($target.isolated) {
             $listener = @(Get-NetTCPConnection -State Listen -LocalPort $target.port -ErrorAction SilentlyContinue)
-            if (!$listener.Count -or @($listener | Where-Object { $ids -notcontains [uint32]$_.OwningProcess }).Count) {
+            if (!$listener.Count) { continue }
+            if (@($listener | Where-Object { $ids -notcontains [uint32]$_.OwningProcess }).Count) {
                 throw 'Debug listener ownership mismatch'
             }
-            $target.pid = $launched.Id
-            $target.started = $launched.StartTime.ToUniversalTime().Ticks.ToString()
-            [IO.File]::WriteAllText($target.manifest, ($target | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
         }
         @{ pid=$launched.Id; backendReady=$serverReady; forced=$forced; wasRunning=($null -ne $root) } |
             ConvertTo-Json -Compress
