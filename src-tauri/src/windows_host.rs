@@ -68,20 +68,18 @@ fn powershell(script: &str) -> Result<String, String> {
         text
     });
     let mut input = child.stdin.take().ok_or("无法发送 Windows 操作脚本。")?;
-    use std::io::Write;
-    if input.write_all(script.as_bytes()).is_err() {
-        drop(input);
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err("无法发送 Windows 操作脚本，操作未完成。".into());
-    }
-    drop(input);
     let start = Instant::now();
+    // A stalled child must not block the deadline while its input pipe fills.
+    let writer = thread::spawn(move || {
+        use std::io::Write;
+        input.write_all(script.as_bytes())
+    });
     loop {
         if let Some(status) = child
             .try_wait()
             .map_err(|_| "无法读取 Windows 检测进程状态。")?
         {
+            let sent = writer.join().is_ok_and(|result| result.is_ok());
             let output = reader
                 .join()
                 .map_err(|_| "读取检测结果失败。")?
@@ -92,6 +90,7 @@ fn powershell(script: &str) -> Result<String, String> {
                 return Err(format!("Windows 重启未完成，配置已保存：{}", detail.chars().take(1200).collect::<String>()));
             }
             let _ = error_reader.join();
+            if !sent { return Err("Windows 操作脚本未完整传入，无法确认操作完成。".into()); }
             return String::from_utf8(output).map_err(|_| "Windows 检测结果编码无效。".into());
         }
         if start.elapsed() > Duration::from_secs(60) {
