@@ -32,6 +32,9 @@
     if (failure === name) throw new Error('模拟故障 sk-fake-acceptance');
     if (name === 'configure_provider') { saved = true; baseUrl = args.baseUrl; return {}; }
     if (name === 'get_config_status') return { configured:saved, hasApiKey:saved, directImageConfigured:saved, baseUrl };
+    if (name === 'get_image_mcp_status' || name === 'check_image_mcp') return { configured: saved, toolsAvailable: name === 'check_image_mcp' && saved, message: '模拟工具状态，非真实验证' };
+    if (name === 'get_language_status') return { supported: true, applied: false, verified: false, message: '模拟语言状态，非真实验证' };
+    if (name === 'configure_language' || name === 'restore_language') return { pending: true };
     if (name === 'restart_codex') return { restarted: scenario.restart, message: scenario.restart ? '模拟重启' : '模拟：配置已保存，隔离环境不重启全局 Codex' };
     if (name === 'restore_defaults') {
       saved = false;

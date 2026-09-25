@@ -67,12 +67,26 @@ pub(super) fn configured(content: &str) -> bool {
 pub(super) fn remove(content: &str) -> Result<String, String> {
     let mut doc = content.parse::<DocumentMut>()
         .map_err(|_| "config.toml 无法解析，未撤销规则。".to_string())?;
-    if let Some(existing) = doc.get("developer_instructions").and_then(Item::as_str) {
+    if let Some(item) = doc.get("developer_instructions") {
+        let existing = item.as_str().ok_or("developer_instructions 不是字符串，未覆盖现有值。")?;
         let remaining = without_managed_block(existing)?;
         if remaining.is_empty() { doc.remove("developer_instructions"); }
         else { doc["developer_instructions"] = value(remaining); }
     }
+    remove_owned_legacy_header(&mut doc)?;
     Ok(doc.to_string())
+}
+
+pub(super) fn migrate(content: &str, auth_key: Option<&str>) -> Result<String, String> {
+    let token = read_provider_bearer_token(content, PROVIDER_ID);
+    let base = read_provider_base_url(content, PROVIDER_ID);
+    let owned = configured(content);
+    let cleaned = if owned && has_matching_direct_http_environment(
+        content, token.as_deref().or(auth_key), base.as_deref(),
+    ) {
+        remove_direct_http_environment(content)?
+    } else { content.to_owned() };
+    remove(&cleaned)
 }
 
 #[cfg(test)]

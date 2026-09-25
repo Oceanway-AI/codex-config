@@ -73,23 +73,19 @@ requires_openai_auth = true
 
 Existing ChatGPT tokens are retained, but `auth_mode` is removed so the new API key is selected. The original auth file and credential-store preference are backed up for restore. No actor-authorization image-extension header is added.
 
-## Direct Image API
+## Native Image MCP
 
 The conversational model is preserved. Images default to `gpt-image-2`; an explicitly requested image model takes precedence. Generation uses `/images/generations`, while references use `/images/edits` with original image bytes. Multiple requested images are scheduled with at most two requests in flight, not a fixed total-image limit.
 
-Versioned instructions are merged into `developer_instructions` and the effective global `AGENTS.md` or `AGENTS.override.md`. This second route is necessary because desktop task-level developer instructions can replace the configured value. Existing text is preserved; malformed or duplicate ownership markers stop the write. Restore removes only the managed AGENTS block, preserving user additions.
+The installer deploys a hashed native executable under `CODEX_HOME/oceanway-runtime` and registers `oceanway_images`. The server exposes `generate_images`, `get_image_job`, `cancel_image_job`, and `retry_image_job`. No Node, Python, imagegen skill, or user-facing image CLI is required.
 
-The tool subprocess environment also receives:
+Three versioned routing rules are saved in the effective global `AGENTS.md` or `AGENTS.override.md`, never both. User text is preserved. Confirmed legacy image rules and credential environment entries are migrated; unrelated instructions and MCP entries are not overwritten. An unowned or user-modified `oceanway_images` entry stops configuration.
 
-```toml
-[shell_environment_policy.set]
-OPENAI_API_KEY = "user-api-key"
-OPENAI_BASE_URL = "https://ocean-way.top"
-```
+The server reads the saved current provider and credential for each submission. Keys are not tool arguments or routing text. Switching away from OceanWay stops new requests to the old provider. Jobs and file manifests are persisted; recovery never automatically resubmits paid requests. Timeouts have uncertain outcomes; retry is explicit. Cancellation stops the queue and allows in-flight results to be saved. After 120 seconds without polling, leased queued work pauses.
 
-These are not operating-system-wide environment variables. Instructions resolve the current provider before use and never send ChatGPT tokens to it. Keep the Key input empty to reuse the saved credential. Tools can access the configured Key, so use trusted projects and prompts.
+One-click configuration includes atomic saves, readback and a non-billing MCP handshake, then restarts Codex. Start a new task to discover the tools. Saved rules, tool discovery and `/models` visibility do not establish successful natural-language generation. The optional image-test panel makes paid requests only when explicitly submitted and shares the same image engine.
 
-After saving, fully restart Codex and create a new task. Saved rules and `/models` visibility do not establish successful natural-language generation. Higher-priority task policies and attachment-byte availability still apply. The optional image-test panel makes paid requests only when explicitly submitted, and is separate from conversation routing.
+Chinese UI is checked by default. For the source-verified 26.917 desktop family, the adapter stages only `[desktop].localeOverride = "zh-CN"` and saves it after the confirmed host exits, before its normal launch. It never patches installed resources, feature flags, or chat text. Unsupported versions are reported; saving this preference is not proof that localized UI is active. Language changes have a separate ownership receipt and restore action.
 
 Windows restart binds process identity, excludes explicitly isolated instances, waits for old processes to exit and a new visible window to appear. A visible save dialog stops restart. Custom `CODEX_HOME` blocks automatic restart unless the dedicated acceptance harness explicitly binds an isolated desktop; it never falls back to the normal desktop.
 
@@ -115,7 +111,7 @@ On first configuration, the app stores a snapshot in:
 ~/.codex/oceanway-ai-backup/
 ```
 
-When the user clicks restore, the app restores that original snapshot. This lets users who already had a custom Codex setup return to their previous state, while users who had no config return to an empty/default state.
+Restore returns provider and authentication to that original snapshot, removes owned image MCP/routing rules, and preserves other MCP entries, user instructions and the current language. Sessions and generated images are never removed. Other configuration retains the established snapshot semantics. "Restore original language" independently reverts only the language value still owned by this tool and refuses to overwrite a later manual choice.
 
 Restore also undoes recorded history visibility migrations by using the migration manifest. It only restores files and database rows that were changed by this tool, so sessions created after the migration are left alone. The app does not provide a default flow for migrating OceanWay-created sessions into OpenAI Official.
 

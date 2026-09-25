@@ -1,6 +1,7 @@
 import { createConfigurationLog, redactLogMessage } from './configuration-log.js';
 import { runAutoConfiguration } from './auto-configure.js';
 import { validateBaseUrl } from './validation.js';
+import { createStatusRefresh } from './status-refresh.js';
 import { buildImageRequest, createImageEvidence, createImageJobController, imageTestBlockReason, retryableImageCount, safeImagePreview, imageJobHasWarnings } from './image-api.js';
 const DEFAULT_BASE_URL = "https://ocean-way.top";
 const invoke = window.__TAURI__?.core?.invoke;
@@ -11,6 +12,7 @@ const $ = (selector) => document.querySelector(selector);
 const configForm = $("#config-form");
 const apiKeyInput = $("#api-key");
 const baseUrlInput = $("#base-url");
+const chineseInterfaceInput = $("#chinese-interface");
 const toggleKeyButton = $("#toggle-key-button");
 const configureButton = $("#configure-button");
 const testButton = $("#test-button");
@@ -126,13 +128,13 @@ function readFormValues() {
     apiKeyInput.focus();
     return null;
   }
-  return { apiKey, baseUrl };
+  return { apiKey, baseUrl, chineseInterface: chineseInterfaceInput.checked };
 }
 
 function authStrategyText(strategy) {
   return strategy === "chatgptBearerToken"
     ? "已保留 ChatGPT 登录态，并更新 OceanWay Provider。"
-    : "已保存 API Key，并安装直连图片 API 配置。";
+    : "已保存 API Key，并安装原生图片 MCP。";
 }
 
 function updateProgress(status) {
@@ -154,6 +156,12 @@ function renderConfigStatus(status) {
   setDot(serviceDot, status.configured ? "success" : "warning");
   imageStatus.textContent = previewLabel(status.directImageConfigured ? "已安装" : "待同步");
   setDot(imageDot, status.directImageConfigured ? "success" : "warning");
+  const mcp = status.imageMcpStatus;
+  $('#mcp-handshake-status').textContent = previewLabel(mcp?.toolsAvailable
+    ? '图片工具握手通过，真实生图未因此判定通过。'
+    : mcp?.message || '工具握手未检查');
+  const language = status.languageStatus;
+  $('#language-status').textContent = previewLabel(language?.message || '中文界面尚未应用');
 
   savedKeyState.hidden = !status.hasApiKey;
   savedKeyState.lastChild.textContent = previewLabel('Key 已保存');
@@ -171,7 +179,7 @@ function renderConfigStatus(status) {
 
   directImageButton.textContent = status.directImageConfigured ? "重新同步" : "同步";
   directImageRowDetail.textContent = previewLabel(status.directImageConfigured
-    ? "直连配置已安装；实际能力需单独测试。"
+    ? "原生 MCP 与短规则已保存；实际能力需单独测试。"
     : "尚未同步；完成主配置时会自动处理。");
 
   topbarStateText.textContent = formDirty ? "修改未保存" : ready
@@ -215,43 +223,49 @@ function browserPreviewStatus() {
   };
 }
 
-async function refreshStatus() {
-  refreshStatusButton.disabled = true;
-  try {
+const statusRefresh = createStatusRefresh({
+  read: async () => {
     if (!invoke) {
-      renderConfigStatus(browserPreviewStatus());
-      renderSystemInfo({
+      return [browserPreviewStatus(), {
         osName: "macOS",
         osVersion: "macOS 15.5",
         codexVersion: "0.143.0",
         codexHost: "ChatGPT",
         codexRunning: true,
-      });
-      return true;
+      }];
     }
-
-    const [status, info] = await Promise.all([
-      invoke("get_config_status"),
+    return Promise.all([
+      Promise.all([invoke("get_config_status"), invoke("get_image_mcp_status"), invoke("get_language_status")])
+        .then(([status, imageMcpStatus, languageStatus]) => ({ ...status, imageMcpStatus, languageStatus })),
       invoke("get_system_info"),
     ]);
+  },
+  apply: ([status, info]) => {
     renderConfigStatus(status);
     renderSystemInfo(info);
-    return true;
-  } catch (error) {
+  },
+  onError: error => {
+    imageEvidence.invalidate();
+    currentSystemInfo = null;
+    renderConfigStatus({ configured: false, hasApiKey: false, directImageConfigured: false });
     serviceStatus.textContent = "读取失败";
     imageStatus.textContent = "未知";
     codexStatus.textContent = "未知";
     [serviceDot, imageDot, codexDot, topbarStateDot].forEach((dot) => setDot(dot, "error"));
     topbarStateText.textContent = "本机状态读取失败";
     setStatus(`读取本机状态失败：${error}`, "error");
-    return false;
-  } finally {
-    refreshStatusButton.disabled = false;
-  }
+  },
+  onPending: pending => {
+    refreshStatusButton.disabled = pending || configuring || maintenanceRunning;
+  },
+});
+
+async function refreshStatus({ allowDuringMutation = false } = {}) {
+  return await statusRefresh.refresh({ allowDuringMutation }) === 'applied';
 }
 
 function renderConfigurationProgress(phase, blocked = false) {
-  const phases = ['writing', 'checking', 'restarting', 'complete'];
+  const phases = ['writing', 'checking', 'language', 'restarting', 'complete'];
   const current = phases.indexOf(phase);
   document.querySelectorAll('.setup-progress li').forEach((step, index) => {
     const done = index < current || phase === 'complete';
@@ -278,6 +292,7 @@ function resetConfigurationProgress() {
 async function runMaintenance(operation) {
   if (configuring || maintenanceRunning || imageController?.locked || imageAuxBusy) return;
   maintenanceRunning = true;
+  statusRefresh.setMutationActive(true);
   renderImageControls();
   const controls = [...document.querySelectorAll(mutationControls)];
   const disabled = controls.map(control => control.disabled);
@@ -285,6 +300,7 @@ async function runMaintenance(operation) {
   try { await operation(); } finally {
     maintenanceRunning = false;
     controls.forEach((control, index) => { control.disabled = disabled[index]; });
+    statusRefresh.setMutationActive(false);
     renderImageControls();
   }
 }
@@ -294,12 +310,13 @@ async function configureProvider(event, resumeFrom = 'writing') {
   const values = readFormValues();
   if (!values) return;
   configuring = true;
+  statusRefresh.setMutationActive(true);
   renderImageControls();
   blockedPhase = null;
   $('#configuration-recovery').hidden = true;
   configurationProgress.hidden = false;
   setButtonBusy(configureButton, true, '自动配置中…');
-  apiKeyInput.disabled = baseUrlInput.disabled = true;
+  apiKeyInput.disabled = baseUrlInput.disabled = chineseInterfaceInput.disabled = true;
   const actionButtons = [...document.querySelectorAll('#tools-panel button, [data-config-mutation], #configuration-recovery button, #refresh-status-button, #update-button, #confirm-restore-button, #confirm-restart-button')];
   const previousDisabled = actionButtons.map(button => button.disabled);
   actionButtons.forEach(button => { button.disabled = true; });
@@ -316,10 +333,13 @@ async function configureProvider(event, resumeFrom = 'writing') {
     const call = invoke || (async command => {
       if (command === 'get_config_status') return { ...browserPreviewStatus(), baseUrl: values.baseUrl };
       if (command === 'restart_codex') return { restarted: true };
+      if (command === 'check_image_mcp') return { toolsAvailable: true, message: '模拟工具握手，非真实验证' };
+      if (command === 'get_language_status') return { applied: false, verified: false, message: '模拟预览不读取语言设置' };
       return {};
     });
     if (!invoke) setStatus('界面预览：下面仅模拟流程，不写入文件、不重启应用。');
     await runAutoConfiguration({ invoke: call, values, onStage, onConfigured: status => {
+      statusRefresh.invalidate();
       formDirty = false; renderConfigStatus(status);
     }, resumeFrom });
     apiKeyInput.value = ''; apiKeyInput.type = 'password';
@@ -335,17 +355,18 @@ async function configureProvider(event, resumeFrom = 'writing') {
     nextStepTitle.textContent = previewLabel(redactLogMessage(String(error), [values.apiKey].filter(Boolean)));
     nextStepDetail.textContent = blockedPhase === 'restarting'
       ? '配置已保存。请保存任务后手动重启目标 Codex；隔离环境不会重启你正在使用的 Codex。重试不会重复写入。'
-      : blockedPhase === 'checking'
+        : ['checking', 'language'].includes(blockedPhase)
         ? '请在问题诊断中检查或修复配置，再点击“重新检查并继续”。'
         : '请检查 Key、地址及配置目录权限，修改后点击“重试写入并继续”。';
-    $('#retry-configuration').textContent = { writing: '重试写入并继续', checking: '重新检查并继续', restarting: '重试重启并继续' }[blockedPhase];
+    $('#retry-configuration').textContent = { writing: '重试写入并继续', checking: '重新检查并继续', language: '重试语言设置', restarting: '重试重启并继续' }[blockedPhase];
     $('#configuration-recovery').hidden = false;
     setStatus(String(error), 'error');
   } finally {
     configuring = false;
     statusBox.hidden = !statusMessage.textContent || configurationPhase === 'failed';
-    apiKeyInput.disabled = baseUrlInput.disabled = false;
+    apiKeyInput.disabled = baseUrlInput.disabled = chineseInterfaceInput.disabled = false;
     actionButtons.forEach((button, index) => { button.disabled = previousDisabled[index]; });
+    statusRefresh.setMutationActive(false);
     setButtonBusy(configureButton, false);
     renderImageControls();
   }
@@ -422,7 +443,7 @@ function previewDiagnosticReport() {
     checks: [
       { label: "Provider 配置", status: "success", detail: "OceanWay Provider 已写入并设为当前渠道。" },
       { label: "API 凭据", status: "success", detail: "已检测到本机保存的凭据，报告不会包含完整 Key。" },
-      { label: "直连图片配置", status: "success", detail: "模拟配置已安装，未执行图片 API 测试。" },
+      { label: "图片 MCP", status: "warning", detail: "模拟配置，未检查真实工具或图片 API。" },
       { label: "Codex 版本", status: "success", detail: "当前版本满足图片扩展最低要求。" },
       { label: "服务连通性", status: "success", detail: "OceanWay 服务连接正常。" },
       { label: "Codex 进程", status: "success", detail: "Codex Desktop 正在运行。" },
@@ -477,9 +498,10 @@ async function repairConfiguration() {
       return;
     }
     const result = await invoke("repair_configuration");
-    await refreshStatus();
+    const checked = await refreshStatus({ allowDuringMutation: true });
     resetConfigurationProgress();
-    setStatus(result.message || '配置已修复，请重新执行一键配置以检查并重启。', "success");
+    setStatus(checked ? result.message || '配置已修复，请重新执行一键配置以检查并重启。'
+      : '修复写入已结束，但回读失败，尚不能确认配置状态。请重新刷新或运行诊断。', checked ? "success" : "warning");
   } catch (error) {
     setStatus(`配置修复失败：${error}`, "error");
   } finally {
@@ -489,14 +511,15 @@ async function repairConfiguration() {
 
 async function configureDirectImageApi() {
   setButtonBusy(directImageButton, true, "同步中…");
-  setStatus("正在同步直连图片配置…");
+  setStatus("正在同步图片 MCP 与短规则…");
   try {
     if (invoke) await invoke("configure_direct_image_api");
-    await refreshStatus();
+    const checked = await refreshStatus({ allowDuringMutation: true });
     resetConfigurationProgress();
-    setStatus("直连图片配置已同步；生成与参考图能力尚需单独测试。", "success");
+    setStatus(checked ? "图片 MCP 与规则已同步；生成与参考图能力尚需单独测试。"
+      : "图片配置写入已结束，但回读失败，尚不能确认同步状态。请重新刷新或运行诊断。", checked ? "success" : "warning");
   } catch (error) {
-    setStatus(`直连图片配置失败：${error}`, "error");
+    setStatus(`图片 MCP 配置失败：${error}`, "error");
   } finally {
     setButtonBusy(directImageButton, false);
   }
@@ -628,13 +651,13 @@ async function restoreDefaults() {
     apiKeyInput.value = "";
     formDirty = false;
     resetConfigurationProgress();
-    const refreshed = await refreshStatus();
+    const refreshed = await refreshStatus({ allowDuringMutation: true });
     const restored = result.historyMigrationRestore;
     const historyText = restored?.restoredBackups
       ? ` 同时撤销 ${restored.restoredSessionFiles} 个历史文件和 ${restored.sqliteRowsRestored} 行索引迁移。`
       : "";
     setStatus(refreshed
-      ? `已恢复原配置。${historyText} 请重启 Codex。`
+      ? `已恢复原配置，语言设置保留。${historyText} 请重启 Codex。`
       : `已恢复原配置，但本机状态读取失败，尚未确认当前状态。${historyText} 请在高级中刷新状态。`,
     refreshed ? "success" : "warning");
   } catch (error) {
@@ -642,6 +665,20 @@ async function restoreDefaults() {
   } finally {
     setButtonBusy(restoreButton, false);
   }
+}
+
+async function restoreOriginalLanguage() {
+  if (!window.confirm('将恢复本工具应用中文前的语言并重启 Codex。请先保存正在进行的任务。')) return;
+  if (!invoke) { setStatus('模拟预览：未修改真实语言或重启。'); return; }
+  try {
+    const result = await invoke('restore_language');
+    if (result.pending) {
+      const restart = await invoke('restart_codex');
+      if (!restart.restarted) throw new Error(restart.message);
+    }
+    await refreshStatus({ allowDuringMutation: true });
+    setStatus('语言恢复操作已完成，请确认 Codex 界面；供应商与会话未更改。', 'success');
+  } catch (error) { setStatus(`语言恢复未完成：${error}`, 'error'); }
 }
 
 function setTab(button) {
@@ -712,8 +749,8 @@ const evidenceLabels = {
   verified: '已实测通过', partial: '部分通过', failed: '测试失败',
   cancelled: '已取消 / 未通过', outdated: '已过期，需重测', running: '测试中',
 };
-const jobLabels = { running: '执行中', completed: '已完成', partial: '部分完成', failed: '失败', cancelled: '已取消' };
-const itemLabels = { queued: '排队中', running: '执行中', succeeded: '成功', failed: '失败', cancelled: '已取消' };
+const jobLabels = { running: '执行中', completed: '已完成', completed_with_warnings: '完成但有异常', partial: '部分完成', failed: '失败', cancelled: '已取消', paused: '已暂停', interrupted: '已中断' };
+const itemLabels = { queued: '排队中', running: '执行中', succeeded: '成功', failed: '失败', cancelled: '已取消', paused: '已暂停', uncertain: '结果不确定', integrity_failed: '文件校验失败' };
 
 function imageMessage(message) {
   $('#image-operation-message').textContent = previewLabel(redactLogMessage(String(message), [apiKeyInput.value.trim()]));
@@ -744,7 +781,7 @@ function renderImageControls() {
   const model = $('#image-model').value.trim();
   const reason = imageBlockReason();
   const locked = imageController?.locked || imageAuxBusy;
-  $('#image-block-reason').textContent = reason || (imageController?.locked ? '图片任务运行中，配置与维护已锁定。请保持应用窗口开启；关闭或重启应用后不会自动恢复任务。' : '');
+  $('#image-block-reason').textContent = reason || (imageController?.locked ? '图片任务运行中，配置与维护已锁定。进度会保存；重启后不会自动重发请求。' : '');
   $('#image-config-evidence').textContent = previewLabel(currentStatus.directImageConfigured ? '已安装（非实测）' : '未安装');
   $('#image-rule-status').textContent = previewLabel(currentStatus.directImageConfigured
     ? '规则配置已安装；会话内规则生效与自然触发待确认。'
@@ -992,6 +1029,7 @@ migrateHistoryButton.addEventListener("click", () => runMaintenance(migrateHisto
 openDirButton.addEventListener("click", openConfigDirectory);
 restoreButton.addEventListener("click", openRestoreDialog);
 confirmRestoreButton.addEventListener("click", () => runMaintenance(restoreDefaults));
+$('#restore-language-button').addEventListener('click', () => runMaintenance(restoreOriginalLanguage));
 updateButton.addEventListener("click", () => handleUpdate());
 const tabs = [...advancedDialog.querySelectorAll(".tab-button")];
 for (const [index, tab] of tabs.entries()) {

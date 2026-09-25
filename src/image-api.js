@@ -1,7 +1,8 @@
 export const DEFAULT_IMAGE_MODEL = 'gpt-image-2';
 
 export function imageJobHasWarnings(job) {
-  return Boolean(job?.items?.some(item => item.warning || item.additionalPaths?.length));
+  return Boolean(job?.countMismatch || job?.persistenceError || job?.warnings?.length
+    || job?.items?.some(item => item.warning || item.additionalPaths?.length || item.countMismatch));
 }
 
 export function buildImageRequest({ model, prompt, count, referencePaths = [], size = '1024x1024' }) {
@@ -17,7 +18,7 @@ export function retryableImageCount(job) {
   const items = job.items || [];
   return Math.max(
     (job.failed || 0) + (job.cancelled || 0),
-    items.filter(item => item.status === 'failed' || item.status === 'cancelled').length,
+    items.filter(item => !item.retryBlocked && ['failed', 'cancelled', 'uncertain', 'paused'].includes(item.status)).length,
   );
 }
 
@@ -25,7 +26,7 @@ export function imageTestBlockReason({ native, configured, dirty, busy }) {
   if (!native) return '浏览器预览：未连接本机后端，不能执行真实图片测试。';
   if (busy) return '配置或维护正在进行，请稍后测试。';
   if (dirty) return '连接信息有未保存修改，请先保存配置。测试仅使用已保存的 Key 和 Base URL。';
-  if (!configured) return '请先保存并同步直连图片 API 配置。';
+  if (!configured) return '请先保存并同步图片 MCP 配置。';
   return '';
 }
 
@@ -63,7 +64,7 @@ export function createImageJobController({ invoke, onChange = () => {}, onError 
     if (job?.status === 'running') timer = schedule(poll, interval);
   };
   const accept = result => {
-    if (!result?.id || !Array.isArray(result.items) || !['running', 'completed', 'partial', 'failed', 'cancelled'].includes(result.status)) {
+    if (!result?.id || !Array.isArray(result.items) || !['running', 'completed', 'completed_with_warnings', 'partial', 'failed', 'cancelled', 'paused', 'interrupted'].includes(result.status)) {
       throw new Error('图片任务返回格式无效。');
     }
     // Retries replace failed or cancelled slots; keep successful outputs visible.

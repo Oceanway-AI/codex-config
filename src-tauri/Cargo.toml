@@ -1,6 +1,6 @@
 [package]
 name = "codex-config"
-version = "1.4.0-beta.4"
+version = "1.4.0-beta.5"
 description = "OceanWay Codex provider configuration tool"
 authors = ["OceanWay"]
 edition = "2021"
@@ -18,4 +18,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri = { version = "2", features = [] }
 tauri-plugin-updater = "2"
-toml_edit = "0.25"
+toml_edit = { version = "0.25", features = ["serde"] }
+sha2 = "0.10"
+rmcp = { version = "=3.4.1", default-features = false, features = ["server", "client", "macros", "transport-io", "transport-child-process"] }
+tokio = { version = "1", features = ["rt-multi-thread", "io-std", "process", "time", "sync", "macros"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }

@@ -145,7 +145,7 @@ pub fn discover() -> Result<Option<Host>, String> {
 #[cfg(target_os = "windows")]
 pub fn restart() -> Result<super::RestartCodexResult, String> {
     use serde_json::json;
-    let target = if std::env::var_os("CODEX_HOME").is_some()
+    let mut target = if std::env::var_os("CODEX_HOME").is_some()
         || std::env::var_os("OCEANWAY_RESTART_TARGET").is_some()
         || std::env::var_os("CODEX_ELECTRON_USER_DATA_PATH").is_some() {
         // Test mode is explicit and fail-closed; it never falls back to normal discovery.
@@ -193,6 +193,8 @@ pub fn restart() -> Result<super::RestartCodexResult, String> {
         let path = host.path.ok_or("无法确认桌面可执行文件，请手动打开应用后重试。")?;
         json!({"isolated":false,"path":path})
     };
+    target["configurationApp"] = json!(std::env::current_exe()
+        .map_err(|_| "无法定位语言配置程序。")?.to_string_lossy());
     let serialized = serde_json::to_string(&target).map_err(|_| "无法建立重启目标。")?;
     let script = format!("$target = '{}' | ConvertFrom-Json\n{}", serialized.replace('\'', "''"),
         include_str!("restart_windows.ps1"));

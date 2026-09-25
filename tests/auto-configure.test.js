@@ -1,59 +1,80 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { runAutoConfiguration } from '../src/auto-configure.js';
-const ready = { configured:true,hasApiKey:true,directImageConfigured:true };
-test('resume checks saved configuration before restart without rewriting', async () => {
- for (const resumeFrom of ['checking', 'restarting']) {
-  const calls=[];
-  await runAutoConfiguration({resumeFrom, values:{},invoke:async name=>{
-   calls.push(name);return name==='get_config_status'?ready:{restarted:true};
-  },onStage:()=>{},onConfigured:()=>{}});
-  assert.deepEqual(calls,['get_config_status','restart_codex']);
- }
+
+const ready = { configured: true, hasApiKey: true, directImageConfigured: true };
+function fixture(overrides = {}) {
+  const calls = [], stages = [], args = [];
+  return {
+    calls, stages, args, values: {}, onStage: phase => stages.push(phase), onConfigured: () => {},
+    invoke: async (name, input) => {
+      calls.push(name); args.push(input);
+      if (name in overrides) {
+        if (overrides[name] instanceof Error) throw overrides[name];
+        return overrides[name];
+      }
+      if (name === 'get_config_status') return ready;
+      if (name === 'check_image_mcp') return { toolsAvailable: true };
+      if (name === 'get_language_status') return { applied: true, verified: false };
+      if (name === 'restart_codex') return { restarted: true };
+      return {};
+    },
+  };
+}
+
+test('one action saves, handshakes, stages language and restarts without paid tools', async () => {
+  const f = fixture();
+  const result = await runAutoConfiguration(f);
+  assert.deepEqual(f.calls, ['configure_provider', 'get_config_status', 'check_image_mcp',
+    'configure_language', 'restart_codex', 'get_language_status']);
+  assert.deepEqual(f.stages, ['writing', 'checking', 'language', 'restarting', 'complete']);
+  assert.equal(result.languageStatus.verified, false);
+  assert.equal(f.calls.some(name => /test_image|generate/.test(name)), false);
 });
-test('resume cannot bypass a failed configuration check', async () => {
- const calls=[];
- await assert.rejects(runAutoConfiguration({resumeFrom:'restarting',values:{},invoke:async name=>{
-  calls.push(name);return {};
- },onStage:()=>{},onConfigured:()=>{}}));
- assert.deepEqual(calls,['get_config_status']);
+test('retrying a restart rechecks saved configuration but does not rewrite or restage', async () => {
+  const f = fixture();
+  await runAutoConfiguration({ ...f, resumeFrom: 'restarting' });
+  assert.deepEqual(f.calls, ['get_config_status', 'check_image_mcp', 'restart_codex', 'get_language_status']);
 });
-test('one action writes, checks and restarts in order without confirmation', async () => {
- const calls=[], stages=[];
- await runAutoConfiguration({values:{apiKey:'fake'},invoke:async name=>{
-  calls.push(name);return name==='get_config_status'?ready:{restarted:true};
- },onStage:phase=>stages.push(phase),onConfigured:()=>{}});
- assert.deepEqual(calls,['configure_provider','get_config_status','restart_codex']);
- assert.deepEqual(stages,['writing','checking','restarting','complete']);
+test('checking and language retries do not rewrite provider credentials', async () => {
+  for (const resumeFrom of ['checking', 'language']) {
+    const f = fixture();
+    await runAutoConfiguration({ ...f, resumeFrom });
+    assert.equal(f.calls.includes('configure_provider'), false);
+    assert.equal(f.calls.filter(name => name === 'configure_language').length, 1);
+  }
 });
-test('write or readback failure stops restart and never announces completion', async () => {
- for (const failWrite of [false,true]) {
-  const calls=[], stages=[];
-  await assert.rejects(runAutoConfiguration({values:{},invoke:async name=>{
-   calls.push(name);if(failWrite)throw new Error('write failed');return {};
-  },onStage:phase=>stages.push(phase),onConfigured:()=>{}}));
-  assert.ok(!calls.includes('restart_codex'));assert.ok(!stages.includes('complete'));
- }
+test('failed write, readback or handshake prevents restart and fake completion', async () => {
+  for (const overrides of [
+    { configure_provider: new Error('write failed') },
+    { get_config_status: {} },
+    { check_image_mcp: { toolsAvailable: false, message: 'handshake failed' } },
+  ]) {
+    const f = fixture(overrides);
+    await assert.rejects(runAutoConfiguration(f));
+    assert.equal(f.calls.includes('restart_codex'), false);
+    assert.equal(f.stages.includes('complete'), false);
+  }
 });
-test('restart failure is surfaced without retry or fake success',async()=>{
- const stages=[],calls=[];
- await assert.rejects(runAutoConfiguration({values:{},invoke:async name=>{
-  calls.push(name);return name==='get_config_status'?ready:{restarted:false,message:'quit refused'};
- },onStage:phase=>stages.push(phase),onConfigured:()=>{}}),/quit refused/);
- assert.equal(calls.filter(x=>x==='restart_codex').length,1);
- assert.ok(!stages.includes('complete'));
+test('restart failure is surfaced without automatic retry', async () => {
+  const f = fixture({ restart_codex: { restarted: false, message: 'quit refused' } });
+  await assert.rejects(runAutoConfiguration(f), /quit refused/);
+  assert.equal(f.calls.filter(name => name === 'restart_codex').length, 1);
+  assert.equal(f.stages.includes('complete'), false);
 });
-test('transactional image configuration failure stops readback and restart', async () => {
- const calls = [];
- await assert.rejects(runAutoConfiguration({ values:{}, invoke:async name=>{
-  calls.push(name);
-  if(name === 'configure_provider') throw new Error('sync failed');
-  return {};
- }, onStage:()=>{}, onConfigured:()=>{} }), /sync failed/);
- assert.deepEqual(calls, ['configure_provider']);
+test('unsupported language does not discard usable provider and MCP setup', async () => {
+  const f = fixture({ configure_language: { supported: false }, get_language_status: { applied: false } });
+  let last = '';
+  await runAutoConfiguration({ ...f, onStage: (_, message) => { last = message; } });
+  assert.ok(last.includes('中文界面未应用'));
 });
-test('legacy CLI readiness cannot satisfy direct image readiness', async () => {
- await assert.rejects(runAutoConfiguration({resumeFrom:'checking',values:{},invoke:async()=>({
-  configured:true,hasApiKey:true,imagegenCliConfigured:true,
- }),onStage:()=>{},onConfigured:()=>{}}), /回读检查未通过/);
+test('unchecking Chinese passes disabled without implicitly restoring a user language', async () => {
+  const f = fixture();
+  await runAutoConfiguration({ ...f, values: { chineseInterface: false } });
+  assert.deepEqual(f.args[f.calls.indexOf('configure_language')], { enabled: false });
+  assert.equal(f.calls.includes('restore_language'), false);
+});
+test('legacy CLI readiness cannot satisfy MCP configuration readiness', async () => {
+  const f = fixture({ get_config_status: { configured: true, hasApiKey: true, imagegenCliConfigured: true } });
+  await assert.rejects(runAutoConfiguration({ ...f, resumeFrom: 'checking' }), /回读检查未通过/);
 });

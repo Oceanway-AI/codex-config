@@ -49,9 +49,11 @@ fn logged_in_user_full_configuration_repeat_key_rotation_and_restore() {
         assert!(result.direct_image_configured);
         assert_eq!(read_auth_api_key(&dir.join("auth.json")).as_deref(), Some(key));
         let config = fs::read_to_string(dir.join("config.toml")).unwrap();
-        assert!(direct_image_config::configured(&config));
+        assert!(mcp_config::status(&dir, &config).configured);
         assert!(agent_rules::configured(&dir));
-        assert_eq!(config.matches("OCEANWAY:DIRECT-IMAGE-API:BEGIN").count(), 1);
+        assert_eq!(config.matches("OCEANWAY:DIRECT-IMAGE-API:BEGIN").count(), 0);
+        assert_eq!(config.matches("[mcp_servers.oceanway_images]").count(), 1);
+        assert!(!config.contains("shell_environment_policy"));
         assert!(read_root_string(&config, "developer_instructions").unwrap().contains("Keep my developer rules"));
     }
     let good_config = fs::read(dir.join("config.toml")).unwrap();
@@ -148,11 +150,8 @@ fn acceptance_real_write_repeat_restore_and_permissions() {
     .unwrap();
     let first = fs::read_to_string(&config).unwrap();
     assert!(first.contains("value = \"keep\""));
-    assert!(has_matching_direct_http_environment(
-        &first,
-        Some("fake-test"),
-        Some("https://example.invalid")
-    ));
+    assert!(mcp_config::status(&dir, &first).configured);
+    assert!(!first.contains("shell_environment_policy"));
     write_config_toml(
         &config,
         PROVIDER_ID,
@@ -164,11 +163,7 @@ fn acceptance_real_write_repeat_restore_and_permissions() {
     )
     .unwrap();
     let repeated = fs::read_to_string(&config).unwrap();
-    assert!(has_matching_direct_http_environment(
-        &repeated,
-        Some("fake-test"),
-        Some("https://example.invalid")
-    ));
+    assert!(mcp_config::status(&dir, &repeated).configured);
     assert_eq!(repeated.matches("[model_providers.OceanWay]").count(), 1);
     assert_eq!(repeated.matches("[unrelated]").count(), 1);
     assert!(repeated.contains("value = \"keep\""));
@@ -184,7 +179,7 @@ fn acceptance_real_write_repeat_restore_and_permissions() {
             0o600
         );
     }
-    assert!(restore_from_snapshot(&dir, &config, &auth).unwrap());
+    restore_defaults_in_home(&dir).unwrap();
     assert_eq!(fs::read_to_string(&config).unwrap(), original);
     assert_eq!(fs::read_to_string(&auth).unwrap(), "{\"existing\":true}");
 }
@@ -280,4 +275,73 @@ fn acceptance_snapshot_secrets_have_private_permissions() {
             "snapshot retains world-readable source mode"
         );
     }
+}
+
+#[test]
+fn restore_preserves_later_mcp_user_rules_language_and_outputs() {
+    let dir = fixture("restore-independent");
+    fs::write(dir.join("config.toml"), "model='original'\n").unwrap();
+    fs::write(dir.join("AGENTS.md"), "Existing rules").unwrap();
+    configure_provider_in_home(&dir, "fake-key".into(), "https://example.invalid/v1".into()).unwrap();
+    let path = dir.join("config.toml");
+    let mut current = read_config_for_write(&path).unwrap().parse::<DocumentMut>().unwrap();
+    current["developer_instructions"] = value("Later developer rules");
+    current["desktop"] = Item::Table(Table::new());
+    current["desktop"]["localeOverride"] = value("zh-CN");
+    current["mcp_servers"]["other"] = Item::Table(Table::new());
+    current["mcp_servers"]["other"]["command"] = value("keep-user-tool");
+    fs::write(&path, current.to_string()).unwrap();
+    let agents = fs::read_to_string(dir.join("AGENTS.md")).unwrap();
+    fs::write(dir.join("AGENTS.md"), format!("{agents}\nLater rules")).unwrap();
+    fs::create_dir(dir.join("sessions")).unwrap();
+    fs::write(dir.join("sessions/keep.jsonl"), "not touched").unwrap();
+    fs::create_dir(dir.join("output")).unwrap();
+    fs::write(dir.join("output/image.png"), "not touched").unwrap();
+    restore_defaults_in_home(&dir).unwrap();
+    let restored = read_config_for_write(&path).unwrap();
+    assert_eq!(read_root_string(&restored, "model").as_deref(), Some("original"));
+    assert!(restored.contains("keep-user-tool"));
+    assert!(restored.contains("zh-CN"));
+    assert!(restored.contains("Later developer rules"));
+    assert!(!restored.contains("oceanway_images"));
+    assert_eq!(fs::read_to_string(dir.join("AGENTS.md")).unwrap(), "Existing rules\nLater rules");
+    assert!(!dir.join(mcp_config::RECEIPT).exists());
+    assert_eq!(fs::read_to_string(dir.join("sessions/keep.jsonl")).unwrap(), "not touched");
+    assert_eq!(fs::read_to_string(dir.join("output/image.png")).unwrap(), "not touched");
+}
+
+#[test]
+fn owned_legacy_rules_migrate_without_duplicate_credentials_or_instructions() {
+    let dir = fixture("legacy-migration");
+    let old = merge_config("", PROVIDER_ID, "https://example.invalid/v1", "keep-model",
+        None, ProviderAuthStrategy::ApiKey).unwrap();
+    let old = direct_image_config::merge(&merge_direct_http_environment(
+        &old, "fake-old", "https://example.invalid/v1").unwrap()).unwrap();
+    fs::write(dir.join("config.toml"), old).unwrap();
+    fs::write(dir.join("auth.json"), r#"{"OPENAI_API_KEY":"fake-old"}"#).unwrap();
+    fs::write(dir.join("AGENTS.md"), format!("{}\n\nKeep user rules", direct_image_config::RULES.trim_end())).unwrap();
+    configure_provider_in_home(&dir, "fake-new".into(), "https://example.invalid/v1".into()).unwrap();
+    let config = read_config_for_write(&dir.join("config.toml")).unwrap();
+    assert!(!config.contains("fake-old"));
+    assert!(!config.contains("shell_environment_policy"));
+    assert!(!config.contains("OCEANWAY:DIRECT-IMAGE-API"));
+    let instructions = fs::read_to_string(dir.join("AGENTS.md")).unwrap();
+    assert!(instructions.starts_with(agent_rules::RULES.trim_end()));
+    assert!(instructions.ends_with("Keep user rules"));
+    assert_eq!(instructions.matches("OCEANWAY:IMAGE-MCP-ROUTING:BEGIN").count(), 1);
+}
+
+#[test]
+fn foreign_mcp_and_linked_auth_stop_configuration_before_any_write() {
+    let dir = fixture("foreign-mcp");
+    let config = "[mcp_servers.oceanway_images]\ncommand='user-managed'\n";
+    fs::write(dir.join("config.toml"), config).unwrap();
+    assert!(configure_provider_in_home(&dir, "fake".into(), DEFAULT_BASE_URL.into()).is_err());
+    assert_eq!(read_config_for_write(&dir.join("config.toml")).unwrap(), config);
+    assert!(!dir.join("auth.json").exists());
+    let linked = fixture("linked-auth");
+    fs::write(linked.join("source.json"), "{}").unwrap();
+    fs::hard_link(linked.join("source.json"), linked.join("auth.json")).unwrap();
+    assert!(configure_provider_in_home(&linked, "fake".into(), DEFAULT_BASE_URL.into()).is_err());
+    assert_eq!(fs::read_to_string(linked.join("source.json")).unwrap(), "{}");
 }

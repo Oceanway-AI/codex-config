@@ -73,6 +73,7 @@
               </svg>
               <span id="key-helper-text">Key 仅保存到本机 Codex 配置，不会在界面回显完整内容。</span>
             </p>
+            <label class="language-choice"><input id="chinese-interface" type="checkbox" checked />中文界面</label>
             <p class="field-help restart-notice">将重启 Codex / ChatGPT，请先保存正在进行的任务。</p>
 
             <div class="form-actions">
@@ -93,8 +94,9 @@
             <ol class="setup-progress" aria-label="执行步骤">
               <li data-phase="writing"><span>1</span><div><strong>写入配置</strong><small>等待执行</small></div></li>
               <li data-phase="checking"><span>2</span><div><strong>检查配置</strong><small>等待执行</small></div></li>
-              <li data-phase="restarting"><span>3</span><div><strong>重启 Codex</strong><small>等待执行</small></div></li>
-              <li data-phase="complete"><span>4</span><div><strong>完成</strong><small>等待执行</small></div></li>
+              <li data-phase="language"><span>3</span><div><strong>界面语言</strong><small>等待执行</small></div></li>
+              <li data-phase="restarting"><span>4</span><div><strong>重启 Codex</strong><small>等待执行</small></div></li>
+              <li data-phase="complete"><span>5</span><div><strong>完成</strong><small>等待执行</small></div></li>
             </ol>
             <div class="activation-next">
               <strong id="next-step-title"></strong>
@@ -168,7 +170,7 @@
                 <span class="health-icon health-image" aria-hidden="true">
                   <svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2" /><circle cx="9" cy="10" r="1.3" /><path d="m6 17 4-4 3 3 2-2 3 3" /></svg>
                 </span>
-                <div><strong>图片配置</strong><span id="image-status">正在读取</span></div>
+                <div><strong>图片 MCP</strong><span id="image-status">正在读取</span></div>
                 <span id="image-dot" class="state-dot" aria-hidden="true"></span>
               </article>
               <article class="health-item">
@@ -179,6 +181,8 @@
                 <span id="codex-dot" class="state-dot" aria-hidden="true"></span>
               </article>
             </div>
+            <p id="mcp-handshake-status" class="field-help">工具握手未检查</p>
+            <p id="language-status" class="field-help">正在读取语言状态</p>
             <div class="image-health-action">
               <span id="image-verification-summary">实际图片能力未测试</span>
               <button id="open-image-test" type="button" class="copy-report-action">测试图片 API</button>
@@ -262,7 +266,7 @@
                   <span class="tool-icon" aria-hidden="true">
                     <svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2" /><path d="m6 17 4-4 3 3 2-2 3 3" /></svg>
                   </span>
-                  <div><strong>直连图片 API</strong><p id="direct-image-row-detail">检查并同步直连图片配置。</p></div>
+                  <div><strong>图片 MCP</strong><p id="direct-image-row-detail">检查并同步图片工具。</p></div>
                   <button id="direct-image-button" type="button">同步</button>
                 </article>
                 <article class="tool-row">
@@ -271,6 +275,11 @@
                   </span>
                   <div><strong>配置与备份目录</strong><p>查看 Codex 配置、初始快照和迁移备份。</p></div>
                   <button id="open-dir-button" type="button">打开</button>
+                </article>
+                <article class="tool-row">
+                  <span class="tool-icon" aria-hidden="true">Aa</span>
+                  <div><strong>原语言</strong><p>仅撤销本工具设置的中文界面，不修改供应商或会话。</p></div>
+                  <button id="restore-language-button" type="button">恢复</button>
                 </article>
               </div>
               <p class="machine-info">
@@ -300,7 +309,7 @@
 
       <footer class="status-footer">
         <span>OceanWay AI</span>
-        <span>v1.4.0-beta.4</span>
+        <span>v1.4.0-beta.5</span>
       </footer>
     </main>
 
@@ -308,7 +317,7 @@
       <form method="dialog">
         <div class="dialog-icon danger" aria-hidden="true">!</div>
         <h2 id="restore-title">恢复原配置？</h2>
-        <p>将恢复首次使用本工具前的配置和认证，并撤销本工具记录的历史迁移。备份之后的手动配置修改也会被覆盖。</p>
+        <p>将恢复首次配置前的供应商和认证，移除本工具的图片 MCP 与规则，并按原规则撤销已记录的历史迁移。保留语言设置、其他 MCP、用户指令、会话及图片。其他配置仍按初始快照恢复。</p>
         <div class="dialog-actions">
           <button id="cancel-restore-button" value="cancel" type="submit">取消</button>
           <button id="confirm-restore-button" value="default" type="button" class="danger-button">确认恢复</button>
@@ -318,7 +327,7 @@
 
     <dialog id="image-test-dialog" class="image-dialog" aria-labelledby="image-test-title">
       <header class="image-dialog-heading">
-        <h2 id="image-test-title">直连图片 API 测试</h2>
+        <h2 id="image-test-title">图片 API 测试</h2>
         <button id="close-image-test" class="icon-action" type="button" title="关闭" aria-label="关闭">×</button>
       </header>
       <div class="image-dialog-body">

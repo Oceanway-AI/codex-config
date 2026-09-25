@@ -2,30 +2,24 @@
 //! AGENTS is a separate supported input; only our marker-delimited block is owned.
 use super::*;
 
-const BEGIN: &str = "<!-- OCEANWAY:DIRECT-IMAGE-API:BEGIN -->";
-const END: &str = "<!-- OCEANWAY:DIRECT-IMAGE-API:END -->";
+const BEGIN: &str = "<!-- OCEANWAY:IMAGE-MCP-ROUTING:BEGIN v1 -->";
+const END: &str = "<!-- OCEANWAY:IMAGE-MCP-ROUTING:END -->";
+const LEGACY_BEGIN: &str = "<!-- OCEANWAY:DIRECT-IMAGE-API:BEGIN -->";
+const LEGACY_END: &str = "<!-- OCEANWAY:DIRECT-IMAGE-API:END -->";
+pub(super) const RULES: &str = include_str!("image-mcp-instructions.md");
 const NAMES: [&str; 2] = ["AGENTS.md", "AGENTS.override.md"];
 
 fn read(path: &Path) -> Result<Option<String>, String> {
-    if let Ok(metadata) = fs::symlink_metadata(path) {
-        if metadata.file_type().is_symlink() || !metadata.is_file() {
-            return Err("全局任务指令不是普通文件，未修改配置。".into());
-        }
-    }
-    match fs::read_to_string(path) {
-        Ok(text) => Ok(Some(text)),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(_) => Err("无法读取全局任务指令，未覆盖原文件。".into()),
-    }
+    managed_files::text(path)
 }
 
-fn strip(text: &str) -> Result<String, String> {
-    match (text.find(BEGIN), text.find(END)) {
+fn strip_block(text: &str, begin: &str, end_marker: &str) -> Result<String, String> {
+    match (text.find(begin), text.find(end_marker)) {
         (None, None) => Ok(text.to_string()),
         (Some(start), Some(end)) if end > start => {
-            let finish = end + END.len();
-            if text[start + BEGIN.len()..end].contains(BEGIN)
-                || text[finish..].contains(BEGIN) || text[finish..].contains(END) {
+            let finish = end + end_marker.len();
+            if text[start + begin.len()..end].contains(begin)
+                || text[finish..].contains(begin) || text[finish..].contains(end_marker) {
                 return Err("全局任务指令中的图片规则标记重复，未覆盖。".into());
             }
             // The prefix and its separator are always inserted together.
@@ -34,6 +28,10 @@ fn strip(text: &str) -> Result<String, String> {
         }
         _ => Err("全局任务指令中的图片规则标记损坏，未覆盖。".into()),
     }
+}
+
+fn strip(text: &str) -> Result<String, String> {
+    strip_block(&strip_block(text, LEGACY_BEGIN, LEGACY_END)?, BEGIN, END)
 }
 
 pub(super) fn target(home: &Path) -> Result<PathBuf, String> {
@@ -48,24 +46,36 @@ pub(super) fn target(home: &Path) -> Result<PathBuf, String> {
 pub(super) fn configured(home: &Path) -> bool {
     target(home).and_then(|path| read(&path))
         .ok().flatten()
-        .is_some_and(|text| text.starts_with(direct_image_config::RULES.trim_end()))
+        .is_some_and(|text| text.starts_with(RULES.trim_end()))
 }
 
 pub(super) fn prepare(home: &Path) -> Result<(PathBuf, Option<String>, String), String> {
+    validate_restore(home)?;
     let path = target(home)?;
     let previous = read(&path)?;
     let remaining = strip(previous.as_deref().unwrap_or(""))?;
-    let next = format!("{}\n\n{remaining}", direct_image_config::RULES.trim_end());
+    let next = format!("{}\n\n{remaining}", RULES.trim_end());
     Ok((path, previous, next))
 }
 
 pub(super) fn write_with_config(home: &Path, config: &Path, rendered: &str) -> Result<(), String> {
-    let (agents, previous, next) = prepare(home)?;
-    let old_config = if config.exists() {
-        Some(fs::read(config).map_err(|_| "无法读取配置以建立写入事务。")?)
-    } else { None };
+    let (agents, _, next) = prepare(home)?;
+    let transaction = managed_files::Snapshot::capture(home, &["config.toml", "AGENTS.md", "AGENTS.override.md"])?;
     backup_file(&agents)?;
     let operation = (|| {
+        // Remove our old block from the inactive file as well; never duplicate rules.
+        for name in NAMES {
+            let path = home.join(name);
+            if path == agents { continue; }
+            if let Some(content) = read(&path)? {
+                let remaining = strip(&content)?;
+                if remaining != content {
+                    backup_file(&path)?;
+                    write_private_atomic(&path, remaining.as_bytes())
+                        .map_err(|_| "无法迁移旧图片任务指令。")?;
+                }
+            }
+        }
         write_private_atomic(&agents, next.as_bytes()).map_err(|_| "无法保存全局图片任务指令。")?;
         write_private_atomic(config, rendered.as_bytes()).map_err(|_| "无法保存 config.toml。")?;
         verify_config_write(config, rendered)?;
@@ -75,22 +85,7 @@ pub(super) fn write_with_config(home: &Path, config: &Path, rendered: &str) -> R
         Ok(())
     })();
     if let Err(error) = operation {
-        let mut failed = Vec::new();
-        for (path, bytes) in [
-            (agents.as_path(), previous.as_ref().map(|s| s.as_bytes())),
-            (config, old_config.as_deref()),
-        ] {
-            let restored = match bytes {
-                Some(bytes) => write_private_atomic(path, bytes),
-                None => fs::remove_file(path).or_else(|e| {
-                    if e.kind() == std::io::ErrorKind::NotFound { Ok(()) } else { Err(e) }
-                }),
-            };
-            if restored.is_err() { failed.push(display_path(path)); }
-        }
-        return Err(if failed.is_empty() { error } else {
-            format!("{error} 回滚失败，请使用备份恢复：{}", failed.join(", "))
-        });
+        return Err(transaction.rollback(error));
     }
     Ok(())
 }
@@ -129,7 +124,7 @@ mod tests {
     #[test]
     fn preserve_existing_instructions_and_later_edits_exactly() {
         let original = "Keep my settings.\r\n";
-        let merged = format!("{}\n\n{original}", direct_image_config::RULES.trim_end());
+        let merged = format!("{}\n\n{original}", RULES.trim_end());
         assert_eq!(strip(&merged).unwrap(), original);
         assert_eq!(strip(&format!("{merged}New instructions.")).unwrap(),
             format!("{original}New instructions."));

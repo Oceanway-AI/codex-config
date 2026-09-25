@@ -71,8 +71,23 @@ jobs:
         run: cargo test
         working-directory: src-tauri
 
+      - name: Preserve resolved dependency lock
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: Cargo-lock-${{ matrix.platform }}
+          path: src-tauri/Cargo.lock
+
       - name: Build Tauri bundle
         run: npm exec tauri -- build ${{ matrix.bundle_args }}
+
+      - name: Verify packaged Windows MCP without billing
+        if: matrix.platform == 'windows-x64'
+        run: node tests/mcp-bundle-smoke.mjs src-tauri/target/release/codex-config.exe
+
+      - name: Verify packaged macOS MCP without billing
+        if: matrix.platform == 'macos-arm64'
+        run: node tests/mcp-bundle-smoke.mjs src-tauri/target/aarch64-apple-darwin/release/codex-config
 
       - name: Package macOS app
         if: startsWith(matrix.platform, 'macos-')

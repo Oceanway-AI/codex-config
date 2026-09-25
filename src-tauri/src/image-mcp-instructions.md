@@ -1,0 +1,5 @@
+<!-- OCEANWAY:IMAGE-MCP-ROUTING:BEGIN v1 -->
+1. When the user asks to generate or edit images, use oceanway_images.generate_images and poll get_image_job until finished; use its saved output files. Do not use imagegen, an image CLI, or local drawing as a substitute. Analysis-only and prompt-writing requests must not generate images.
+2. Honor the requested model, number, size, and ordered original reference files; default to gpt-image-2, one image, and 1024x1024 only when unspecified. Use prompts for different subjects or styles, and use the actual previous output file for further edits. Never substitute a description for an unavailable reference file.
+3. Preserve and display successful images, report missing results and errors honestly, and never silently change models or resubmit paid requests. Use retry_image_job only when the user explicitly requests a retry; use cancel_image_job when the user requests stopping, explaining that in-flight requests may still finish or be billed.
+<!-- OCEANWAY:IMAGE-MCP-ROUTING:END -->

@@ -22,6 +22,10 @@ use toml_edit::{value, DocumentMut, Item, Table, Value as TomlValue};
 mod windows_host;
 mod direct_image_config;
 mod agent_rules;
+mod managed_files;
+mod mcp_config;
+mod mcp_stdio;
+mod language;
 mod image_api;
 mod reference_picker;
 use image_api::ImageJobs;
@@ -36,6 +40,9 @@ const BACKUP_DIR_NAME: &str = "oceanway-ai-backup";
 const HISTORY_MIGRATION_BACKUP_DIR_NAME: &str = "oceanway-history-migration-backup";
 const CODEX_STATE_DB_NAME: &str = "state_5.sqlite";
 const LEGACY_MINIMUM_CODEX_VERSION: &str = "0.143.0";
+const CONFIG_TRANSACTION_FILES: &[&str] = &[
+    "config.toml", "auth.json", "AGENTS.md", "AGENTS.override.md", mcp_config::RECEIPT,
+];
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -278,13 +285,7 @@ fn get_config_status() -> Result<ConfigStatus, String> {
     };
     let oceanway_active = provider_id.as_deref() == Some(PROVIDER_ID);
     let direct_image_configured = oceanway_active
-        && direct_image_config::configured(&config)
-        && agent_rules::configured(&codex_home)
-        && has_matching_direct_http_environment(
-            &config,
-            provider_token.as_deref().or(auth_api_key.as_deref()),
-            base_url.as_deref(),
-        );
+        && mcp_config::status(&codex_home, &config).configured;
     let configured = oceanway_active
         && base_url
             .as_deref()
@@ -612,6 +613,36 @@ fn configure_provider_internal(
     configure_provider_in_home(&codex_home()?, api_key, base_url)
 }
 
+#[tauri::command]
+fn get_image_mcp_status() -> Result<mcp_config::McpStatus, String> {
+    let home = codex_home()?;
+    Ok(mcp_config::status(&home, &read_config_for_write(&home.join("config.toml"))?))
+}
+
+#[tauri::command]
+async fn check_image_mcp() -> Result<mcp_config::McpStatus, String> {
+    mcp_stdio::check(&codex_home()?).await
+}
+
+#[tauri::command]
+fn get_language_status() -> Result<language::LanguageStatus, String> {
+    language::status(&codex_home()?)
+}
+
+#[tauri::command]
+async fn configure_language(enabled: bool) -> Result<language::LanguageStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let home = codex_home()?;
+        let info = collect_system_info(&home);
+        language::prepare(&home, enabled, info.codex_desktop_version.as_deref())
+    }).await.map_err(|_| "语言配置任务异常。".to_string())?
+}
+
+#[tauri::command]
+fn restore_language() -> Result<language::LanguageStatus, String> {
+    language::prepare_restore(&codex_home()?)
+}
+
 fn configure_provider_in_home(
     codex_home: &Path, api_key: String, base_url: String,
 ) -> Result<OperationResult, String> {
@@ -631,14 +662,13 @@ fn configure_provider_in_home(
     fs::create_dir_all(&codex_home).map_err(|err| format!("无法创建 Codex 目录：{err}"))?;
     let auth_strategy = choose_provider_auth_strategy(&auth_path);
 
-    let old_auth = if auth_path.exists() {
-        Some(fs::read(&auth_path).map_err(|err| format!("无法读取旧 auth.json：{err}"))?)
-    } else {
-        None
-    };
+    let transaction = managed_files::Snapshot::capture(codex_home, CONFIG_TRANSACTION_FILES)?;
+    let old_auth = managed_files::read_optional(&auth_path)?;
 
     // Validate all user-owned inputs before creating the first restore snapshot.
-    read_config_for_write(&config_path)?;
+    let original_config = read_config_for_write(&config_path)?;
+    mcp_config::preflight(codex_home, &original_config)?;
+    direct_image_config::migrate(&original_config, read_auth_api_key(&auth_path).as_deref())?;
     let original_auth = old_auth.as_deref().unwrap_or(b"{}");
     render_auth_json_content(
         std::str::from_utf8(original_auth).map_err(|_| "auth.json 编码无效，未写入。")?,
@@ -646,10 +676,6 @@ fn configure_provider_in_home(
     )?;
     agent_rules::prepare(codex_home)?;
     ensure_restore_snapshot(codex_home, &config_path, &auth_path)?;
-    let auth_backup_path = match write_auth_json(&auth_path, &api_key, auth_strategy) {
-        Ok(path) => path,
-        Err(error) => { rollback_auth(&auth_path, old_auth); return Err(error); }
-    };
     let model = read_current_model(&config_path).unwrap_or_else(|| MODEL_FALLBACK.to_string());
     let provider_token = if auth_strategy == ProviderAuthStrategy::ChatGptBearerToken {
         Some(api_key.as_str())
@@ -669,9 +695,12 @@ fn configure_provider_in_home(
     let config_backup_path = match config_result {
         Ok(path) => path,
         Err(err) => {
-            rollback_auth(&auth_path, old_auth);
-            return Err(err);
+            return Err(transaction.rollback(err));
         }
+    };
+    let auth_backup_path = match write_auth_json(&auth_path, &api_key, auth_strategy) {
+        Ok(path) => path,
+        Err(error) => return Err(transaction.rollback(error)),
     };
 
     Ok(OperationResult {
@@ -716,22 +745,25 @@ fn restore_defaults_in_home(codex_home: &Path) -> Result<OperationResult, String
     let auth_path = codex_home.join("auth.json");
     fs::create_dir_all(&codex_home).map_err(|err| format!("无法创建 Codex 目录：{err}"))?;
     agent_rules::validate_restore(codex_home)?;
-    let originals = ["config.toml", "auth.json", "AGENTS.md", "AGENTS.override.md"]
-        .iter().map(|name| {
-            let path = codex_home.join(name);
-            let bytes = match fs::read(&path) {
-                Ok(bytes) => Some(bytes),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-                Err(_) => return Err("无法建立恢复事务，未改动当前配置。".to_string()),
-            };
-            Ok((path, bytes))
-        }).collect::<Result<Vec<_>, String>>()?;
+    let transaction = managed_files::Snapshot::capture(codex_home, CONFIG_TRANSACTION_FILES)?;
+    let current = read_config_for_write(&config_path)?;
+    mcp_config::preflight(codex_home, &current)?;
+    let had_mcp = mcp_config::status(codex_home, &current).runtime_verified;
 
     let config_backup_path = backup_file(&config_path)?;
     let auth_backup_path = backup_file(&auth_path)?;
 
     let restoration = (|| -> Result<(), String> {
       agent_rules::restore(codex_home)?;
+      let without_mcp = mcp_config::remove(codex_home, &current)?;
+      if without_mcp != current {
+          write_private_atomic(&config_path, without_mcp.as_bytes())
+              .map_err(|_| "无法撤销图片 MCP 配置。")?;
+      }
+      if codex_home.join(mcp_config::RECEIPT).exists() {
+          fs::remove_file(codex_home.join(mcp_config::RECEIPT))
+              .map_err(|_| "无法撤销图片 MCP 所有权记录。")?;
+      }
       if !restore_from_snapshot(&codex_home, &config_path, &auth_path)? {
         let current = read_config_for_write(&config_path)?;
         let active = read_root_string(&current, "model_provider").as_deref() == Some(PROVIDER_ID);
@@ -741,12 +773,12 @@ fn restore_defaults_in_home(codex_home: &Path) -> Result<OperationResult, String
         let matching_environment = has_matching_direct_http_environment(
             &current, token.as_deref().or(auth_key.as_deref()), base.as_deref(),
         );
-        if !direct_image_config::configured(&current) && !(active && matching_environment) {
+        if !had_mcp && !direct_image_config::configured(&current) && !(active && matching_environment) {
             return Err("没有恢复快照，也未找到可确认由本工具管理的配置；未删除认证或 provider。".into());
         }
         remove_direct_http_environment_from_file(&config_path)?;
         remove_provider_from_config(&config_path, PROVIDER_ID)?;
-        if active && token.is_none() && matching_environment {
+        if active && token.is_none() && (matching_environment || had_mcp) {
             remove_api_key_from_auth(&auth_path)?;
         }
         set_private_permissions(&config_path)?;
@@ -755,17 +787,7 @@ fn restore_defaults_in_home(codex_home: &Path) -> Result<OperationResult, String
       Ok(())
     })();
     if let Err(error) = restoration {
-        let mut failed = Vec::new();
-        for (path, bytes) in originals {
-            let result = match bytes {
-                Some(bytes) => write_private_atomic(&path, &bytes),
-                None => fs::remove_file(&path).or_else(|e|
-                    if e.kind() == std::io::ErrorKind::NotFound { Ok(()) } else { Err(e) }),
-            };
-            if result.is_err() { failed.push(display_path(&path)); }
-        }
-        return Err(if failed.is_empty() { format!("{error} 已回滚到恢复前配置。") }
-            else { format!("{error} 回滚失败，请保留备份：{}", failed.join(", ")) });
+        return Err(transaction.rollback(error));
     }
     let history_migration_restore = restore_history_migrations_lossy(&codex_home);
 
@@ -821,20 +843,29 @@ fn write_config_toml(
 
     let backup_path = backup_file(config_path)?;
     let original = read_config_for_write(config_path)?;
+    let transaction = managed_files::Snapshot::capture(codex_home, CONFIG_TRANSACTION_FILES)?;
+    mcp_config::preflight(codex_home, &original)?;
+    agent_rules::prepare(codex_home)?;
+    let migrated = direct_image_config::migrate(&original, read_auth_api_key(&auth_path).as_deref())?;
     let mut rendered = merge_config(
-        &original,
+        &migrated,
         provider_id,
         base_url,
         model,
         bearer_token,
         auth_strategy,
     )?;
-    if let Some(api_key) = direct_api_key.filter(|value| !value.trim().is_empty()) {
-        rendered = merge_direct_http_environment(&rendered, api_key, base_url)?;
-        rendered = direct_image_config::merge(&rendered)?;
-    }
-
-    agent_rules::write_with_config(codex_home, config_path, &rendered)?;
+    let result = (|| {
+        if direct_api_key.is_some_and(|key| !key.trim().is_empty()) {
+            rendered = mcp_config::install(codex_home, &rendered)?;
+            agent_rules::write_with_config(codex_home, config_path, &rendered)?;
+        } else {
+            write_private_atomic(config_path, rendered.as_bytes()).map_err(|_| "无法保存配置。")?;
+            verify_config_write(config_path, &rendered)?;
+        }
+        Ok::<(), String>(())
+    })();
+    if let Err(error) = result { return Err(transaction.rollback(error)); }
     Ok(backup_path)
 }
 
@@ -852,10 +883,14 @@ fn write_direct_http_environment(
 
     let backup_path = backup_file(config_path)?;
     let original = read_config_for_write(config_path)?;
-    let rendered = direct_image_config::merge(
-        &merge_direct_http_environment(&original, api_key, base_url)?
-    )?;
-    agent_rules::write_with_config(codex_home, config_path, &rendered)?;
+    let transaction = managed_files::Snapshot::capture(codex_home, CONFIG_TRANSACTION_FILES)?;
+    agent_rules::prepare(codex_home)?;
+    let result = (|| {
+        let migrated = direct_image_config::migrate(&original, Some(api_key))?;
+        let rendered = mcp_config::install(codex_home, &migrated)?;
+        agent_rules::write_with_config(codex_home, config_path, &rendered)
+    })();
+    if let Err(error) = result { return Err(transaction.rollback(error)); }
     Ok(backup_path)
 }
 
@@ -872,11 +907,7 @@ fn write_auth_json(
     api_key: &str,
     strategy: ProviderAuthStrategy,
 ) -> Result<Option<PathBuf>, String> {
-    let content = match fs::read_to_string(auth_path) {
-        Ok(content) => content,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => "{}".to_string(),
-        Err(_) => return Err("无法读取 auth.json，已停止写入，请检查权限。".into()),
-    };
+    let content = managed_files::text(auth_path)?.unwrap_or_else(|| "{}".to_string());
     let rendered = render_auth_json_content(&content, api_key, strategy)?;
     let backup_path = backup_file(auth_path)?;
 
@@ -890,11 +921,7 @@ fn write_auth_json(
 }
 
 fn read_config_for_write(path: &Path) -> Result<String, String> {
-    let content = match fs::read_to_string(path) {
-        Ok(content) => content,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(_) => return Err("无法读取 config.toml，已停止写入，请检查编码与权限。".into()),
-    };
+    let content = managed_files::text(path)?.unwrap_or_default();
     content
         .parse::<DocumentMut>()
         .map_err(|_| "config.toml 格式损坏，已停止写入。".to_string())?;
@@ -1039,23 +1066,32 @@ fn restore_from_snapshot(
         return Ok(false);
     }
 
-    let meta_content = fs::read_to_string(&meta_path)
-        .map_err(|err| format!("无法读取 OceanWay 备份元数据：{err}"))?;
+    let meta_content = managed_files::text(&meta_path)?.ok_or("缺少恢复快照元数据。")?;
     let meta = serde_json::from_str::<RestoreSnapshotMeta>(&meta_content)
         .map_err(|err| format!("OceanWay 备份元数据无效：{err}"))?;
 
-    if meta.config_existed {
-        let bytes = fs::read(snapshot_dir.join("config.toml"))
-            .map_err(|_| "无法读取原始 config.toml 快照。")?;
-        write_private_atomic(config_path, &bytes)
-            .map_err(|err| format!("无法恢复 config.toml 初始快照：{err}"))?;
+    let current = read_config_for_write(config_path)?;
+    let original = if meta.config_existed {
+        managed_files::text(&snapshot_dir.join("config.toml"))?
+            .ok_or("无法读取原始 config.toml 快照。")?
+    } else { String::new() };
+    let restored = preserve_independent_settings(&original, &current)?;
+    let original_auth = if meta.auth_existed {
+        let bytes = managed_files::read_optional(&snapshot_dir.join("auth.json"))?
+            .ok_or("无法读取原始 auth.json 快照。")?;
+        let parsed: Value = serde_json::from_slice(&bytes).map_err(|_| "原始 auth.json 快照损坏。")?;
+        if !parsed.is_object() { return Err("原始 auth.json 快照不是对象。".into()); }
+        Some(bytes)
+    } else { None };
+    if meta.config_existed || !restored.trim().is_empty() {
+        write_private_atomic(config_path, restored.as_bytes())
+            .map_err(|_| "无法恢复 config.toml 初始快照。")?;
+        verify_config_write(config_path, &restored)?;
     } else if config_path.exists() {
         fs::remove_file(config_path).map_err(|err| format!("无法删除新建的 config.toml：{err}"))?;
     }
 
-    if meta.auth_existed {
-        let bytes = fs::read(snapshot_dir.join("auth.json"))
-            .map_err(|_| "无法读取原始 auth.json 快照。")?;
+    if let Some(bytes) = original_auth {
         write_private_atomic(auth_path, &bytes)
             .map_err(|err| format!("无法恢复 auth.json 初始快照：{err}"))?;
     } else if auth_path.exists() {
@@ -1067,6 +1103,28 @@ fn restore_from_snapshot(
         Local::now().timestamp_nanos_opt().unwrap_or_default()));
     fs::rename(snapshot_dir, archive).map_err(|_| "无法归档已恢复快照。")?;
     Ok(true)
+}
+
+fn preserve_independent_settings(original: &str, current: &str) -> Result<String, String> {
+    let mut restored = original.parse::<DocumentMut>().map_err(|_| "原始配置快照损坏。")?;
+    let cleaned = direct_image_config::remove(current)?;
+    let active = cleaned.parse::<DocumentMut>().map_err(|_| "当前配置损坏。")?;
+    // Provider/auth restoration keeps the established snapshot semantics. MCP and
+    // user instructions are independent and may have been edited after that snapshot.
+    for key in ["mcp_servers", "developer_instructions"] {
+        match active.get(key) {
+            Some(item) => { restored[key] = item.clone(); }
+            None => { restored.remove(key); }
+        }
+    }
+    if let Some(locale) = active.get("desktop").and_then(|table| table.get("localeOverride")) {
+        let desktop = ensure_table(restored.as_table_mut(), "desktop")?;
+        desktop["localeOverride"] = locale.clone();
+    } else if let Some(desktop) = restored.get_mut("desktop").and_then(Item::as_table_like_mut) {
+        desktop.remove("localeOverride");
+    }
+    if restored.to_string() == original { return Ok(original.to_string()); }
+    Ok(restored.to_string())
 }
 
 fn history_migration_status_in_home(codex_home: &Path) -> Result<HistoryMigrationStatus, String> {
@@ -1611,8 +1669,12 @@ fn merge_config(
         .map_err(|_| "现有 config.toml 无法解析，未覆盖配置。".to_string())?;
     doc["model_provider"] = value(provider_id);
     doc["model"] = value(model);
-    doc["model_reasoning_effort"] = value("high");
-    doc["disable_response_storage"] = value(true);
+    if !doc.contains_key("model_reasoning_effort") {
+        doc["model_reasoning_effort"] = value("high");
+    }
+    if !doc.contains_key("disable_response_storage") {
+        doc["disable_response_storage"] = value(true);
+    }
     // File-based API credentials must win over a previous ChatGPT/keyring login.
     // The original choice is retained in the restore snapshot.
     doc["cli_auth_credentials_store"] = value("file");
@@ -2292,31 +2354,23 @@ fn run_diagnostics_in_home(codex_home: &Path) -> Result<DiagnosticReport, String
         !has_api_key,
     ));
 
-    let direct_ready = provider_active
-        && direct_image_config::configured(&config)
-        && has_matching_direct_http_environment(
-            &config,
-            api_key.map(String::as_str),
-            base_url.as_deref(),
-        );
+    let direct_ready = provider_active && mcp_config::status(codex_home, &config).configured;
     checks.push(diagnostic_check(
         "direct-image-api",
-        "直接图片 API 规则",
+        "图片 MCP 与路由规则",
         if direct_ready { "pass" } else { "warning" },
         if direct_ready {
-            "规则已保存，HTTP 环境与当前凭据一致；自然语言触发及生图仍需实测。".to_string()
+            "原生 MCP 与三条路由规则已保存；工具握手、自然语言及生图分别验证。".to_string()
         } else {
-            "直接图片规则或 HTTP 环境缺失、已过期，可重新同步。".to_string()
+            "图片 MCP 或短规则缺失、已修改，请重新配置或检查所有权冲突。".to_string()
         },
         !direct_ready && provider_active && has_api_key,
     ));
 
-    let compatibility_ready = if chatgpt_login {
-        provider_token.is_some()
-            && read_provider_bool(&config, PROVIDER_ID, "requires_openai_auth") == Some(true)
-    } else {
-        read_provider_bool(&config, PROVIDER_ID, "requires_openai_auth") == Some(true)
-    };
+    let compatibility_ready = has_api_key
+        && read_provider_bool(&config, PROVIDER_ID, "requires_openai_auth") == Some(true)
+        && read_root_string(&config, "cli_auth_credentials_store").as_deref() == Some("file")
+        && read_root_string(&config, "forced_login_method").as_deref() == Some("api");
     checks.push(diagnostic_check(
         "auth-mode",
         "Provider 认证模式",
@@ -2327,7 +2381,7 @@ fn run_diagnostics_in_home(codex_home: &Path) -> Result<DiagnosticReport, String
         },
         if compatibility_ready {
             if chatgpt_login {
-                "已保留 ChatGPT 登录态并使用 provider 专用凭据。".to_string()
+                "原账号信息已保留在备份及认证文件中；当前使用明确的文件 API Key 认证。".to_string()
             } else {
                 "已配置 API Key 认证，不依赖本地图片扩展标记。".to_string()
             }
@@ -2343,7 +2397,7 @@ fn run_diagnostics_in_home(codex_home: &Path) -> Result<DiagnosticReport, String
         .or(system.codex_cli_version.as_deref());
     let version_status = "warning";
     let version_detail = match version_value {
-        Some(version) => format!("检测到 Codex {version}；请在新任务验证 developer_instructions 与附件原图访问，版本号不代表已通过。"),
+        Some(version) => format!("检测到 Codex {version}；请在新任务验证 MCP、参考图和中文界面，版本号不代表已通过。"),
         None => "未检测到 Codex 版本，请确认 Codex Desktop 或 CLI 已安装。".to_string(),
     };
     checks.push(diagnostic_check(
@@ -2749,6 +2803,7 @@ fn restart_codex_desktop() -> Result<RestartCodexResult, String> {
             }
         }
 
+        language::apply_pending_checked(&codex_home()?, macos_codex_version(host).as_deref())?;
         let opened = Command::new("open")
             .arg(&app_path)
             .status()
@@ -2914,6 +2969,22 @@ fn set_private_permissions(_path: &Path) -> Result<(), String> {
 
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
+    if args.as_slice() == ["--image-mcp-stdio"] {
+        let result = tokio::runtime::Builder::new_multi_thread().enable_all().build()
+            .map_err(|_| "Cannot initialize image MCP runtime.".to_string())
+            .and_then(|runtime| runtime.block_on(mcp_stdio::serve_stdio()));
+        if let Err(error) = result { eprintln!("{error}"); process::exit(1); }
+        return;
+    }
+    if args.as_slice() == ["--apply-pending-language"] {
+        if let Err(error) = codex_home().and_then(|home| language::apply_pending_checked(
+            &home, env::var("OCEANWAY_LANGUAGE_HOST_VERSION").ok().as_deref(),
+        )) {
+            eprintln!("{error}");
+            process::exit(1);
+        }
+        return;
+    }
 
     let gui_only = args.len() == 1 && args[0] == "--gui";
 
@@ -2940,6 +3011,11 @@ fn run_gui() {
             image_api::cancel_image_test,
             image_api::retry_image_test,
             image_api::open_image_result,
+            get_image_mcp_status,
+            check_image_mcp,
+            get_language_status,
+            configure_language,
+            restore_language,
             reference_picker::pick_reference_images,
             check_for_updates,
             copy_support_report,
@@ -2988,7 +3064,7 @@ fn run_cli(args: &[String]) -> Result<(), String> {
     } else {
         None
     };
-    let mut rendered_config = merge_config(
+    let _rendered_config = merge_config(
         &original_config,
         &options.provider_id,
         &options.base_url,
@@ -2996,18 +3072,13 @@ fn run_cli(args: &[String]) -> Result<(), String> {
         dry_run_provider_token,
         auth_strategy,
     )?;
-    if let Some(api_key) = options.api_key.as_deref() {
-        rendered_config =
-            merge_direct_http_environment(&rendered_config, api_key, &options.base_url)?;
-        rendered_config = direct_image_config::merge(&rendered_config)?;
-    }
 
     if options.dry_run {
         println!("--- {} ---", display_path(&config_path));
         println!("Provider: {}", options.provider_id);
         println!("Base URL: {}", options.base_url);
         println!("Model: {model}");
-        println!("Direct image rules: {}", direct_image_config::configured(&rendered_config));
+        println!("Image MCP: bundled native runtime and three managed routing rules");
         println!("仅显示公开配置摘要；认证、环境变量和原始指令已省略。dry-run 不写入文件。");
         return Ok(());
     }
@@ -3043,7 +3114,7 @@ fn run_cli(args: &[String]) -> Result<(), String> {
     match config_result {
         Ok(config_backup_path) => {
             println!("Configured provider: {}", options.provider_id);
-            println!("Configured direct image API instructions and HTTP environment.");
+            println!("Configured native image MCP and managed routing rules.");
             println!("Config: {}", display_path(&config_path));
             println!("Auth: {}", display_path(&auth_path));
             if let Some(path) = config_backup_path {
@@ -3270,7 +3341,7 @@ mod tests {
         assert!(rendered.contains("base_url = \"https://ocean-way.top\""));
         assert!(!rendered.contains("http://64.188.30.215:8080/v1"));
         assert!(rendered.contains("model_provider = \"OceanWay\""));
-        assert!(rendered.contains("model_reasoning_effort = \"high\""));
+        assert!(rendered.contains("model_reasoning_effort = \"medium\""));
         assert_eq!(read_provider_bool(&rendered, PROVIDER_ID, "requires_openai_auth"), Some(true));
         assert!(!rendered.contains("local-image-extension"));
     }
@@ -3478,11 +3549,8 @@ mod tests {
         let rendered = fs::read_to_string(&config_path).unwrap();
 
         assert!(result.configured);
-        assert!(has_matching_direct_http_environment(
-            &rendered,
-            Some("saved-provider-key"),
-            Some(DEFAULT_BASE_URL)
-        ));
+        assert!(mcp_config::status(&dir, &rendered).configured);
+        assert!(!rendered.contains("shell_environment_policy"));
         assert!(dir.join(BACKUP_DIR_NAME).join("meta.json").exists());
 
         fs::remove_dir_all(dir).unwrap();

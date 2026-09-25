@@ -292,15 +292,15 @@ impl State {
             Phase::Applied => false,
         });
         let message = match self.receipt.as_ref().map(|receipt| receipt.phase) {
-            Some(_) if conflict => "The pending language operation conflicts with a later edit; it will not overwrite that edit.",
-            Some(Phase::PendingApply) => "Chinese is staged; apply only after desktop and backend exit.",
-            Some(Phase::PendingRestore) => "Language restore is staged; apply only after desktop and backend exit.",
+            Some(_) if conflict => "待执行语言设置与后来的修改冲突，未覆盖用户选择。",
+            Some(Phase::PendingApply) => "中文设置已准备，等待桌面及后端退出后保存。",
+            Some(Phase::PendingRestore) => "原语言恢复已准备，等待桌面及后端退出后保存。",
             Some(Phase::Applied) if self.current.as_deref() == Some(CHINESE) => {
-                "Chinese is saved. Translated UI and enable_i18n have not been verified."
+                "中文设置已保存，实际界面尚待确认。"
             }
-            Some(Phase::Applied) => "The saved language changed outside this adapter; it will not be overwritten.",
-            None if applied => "Chinese is already saved but is not owned by this adapter. UI is unverified.",
-            None => "No language change is owned. Host compatibility has not been established.",
+            Some(Phase::Applied) => "语言已被用户另行修改，本工具不会覆盖。",
+            None if applied => "当前已选择中文，非本工具修改；实际界面尚待确认。",
+            None => "本工具尚未修改语言，中文界面未验证。",
         };
         LanguageStatus {
             supported: self.receipt.is_some(),
@@ -357,8 +357,7 @@ fn commit(state: &State, config: Option<&str>, receipt: Option<&Receipt>) -> Res
     result.map_err(|cause| snapshot.rollback(cause))
 }
 
-/// Stage only. An unchecked option is a strict no-op, including existing pending
-/// work; it is not a language reset. Unknown versions never create/update files.
+/// Unchecking withdraws an uncommitted apply, but never restores an applied locale.
 pub fn prepare(
     home: &Path,
     enable: bool,
@@ -369,10 +368,25 @@ pub fn prepare(
     let mut status = state.status();
     status.supported = host_version.is_some_and(supported_version);
     if !enable {
+        if let Some(receipt) = &state.receipt {
+            if receipt.phase == Phase::PendingApply {
+                if state.matches_original(receipt) {
+                    commit(&state, None, None)?;
+                    return Ok(State::load(home)?.status());
+                }
+                if state.current.as_deref() == Some(CHINESE) {
+                    let mut applied = receipt.clone();
+                    applied.phase = Phase::Applied;
+                    commit(&state, None, Some(&applied))?;
+                    return Ok(State::load(home)?.status());
+                }
+                return Err("The pending language value changed; no user edit was overwritten.".into());
+            }
+        }
         return Ok(status);
     }
     if !status.supported {
-        status.message = "Native language persistence is supported only for known 26.917 desktop versions; nothing was staged.".into();
+        status.message = "当前版本尚不支持此语言适配；中文界面未应用，供应商与图片配置仍可使用。".into();
         return Ok(status);
     }
     if let Some(receipt) = &state.receipt {
@@ -390,7 +404,7 @@ pub fn prepare(
         }
     }
     if status.applied {
-        status.message = "Chinese was already selected; no ownership receipt was created. UI is unverified.".into();
+        status.message = "原本已选择中文，未创建语言恢复记录；实际界面尚待确认。".into();
         return Ok(status);
     }
     let receipt = Receipt {
@@ -460,8 +474,22 @@ pub fn apply_pending(home: &Path) -> Result<(), String> {
     }
 }
 
+pub fn apply_pending_checked(home: &Path, host_version: Option<&str>) -> Result<(), String> {
+    let state = State::load(home)?;
+    if state.receipt.as_ref().is_some_and(|receipt| receipt.phase != Phase::Applied)
+        && !host_version.is_some_and(supported_version)
+    {
+        return Err("The launch target is no longer a supported desktop version; pending language was not applied.".into());
+    }
+    apply_pending(home)
+}
+
 pub fn status(home: &Path) -> Result<LanguageStatus, String> {
     let _guard = MUTATION.lock().map_err(|_| "Language transaction lock is unavailable.")?;
+    if !home.exists() {
+        return Ok(LanguageStatus { supported: false, applied: false, verified: false,
+            pending: false, managed: false, message: "中文界面尚未配置。".into() });
+    }
     Ok(State::load(home)?.status())
 }
 
@@ -544,10 +572,11 @@ mod tests {
         assert!(staged.pending && staged.managed && staged.supported);
         assert!(!staged.applied && !staged.verified);
         assert_eq!(home.read(CONFIG), original);
-        let receipt = home.read(RECEIPT);
         prepare(&home.0, false, Some(VERSION)).unwrap();
         assert_eq!(home.read(CONFIG), original);
-        assert_eq!(home.read(RECEIPT), receipt);
+        assert!(!home.0.join(RECEIPT).exists());
+        apply_pending(&home.0).unwrap();
+        assert_eq!(home.read(CONFIG), original);
     }
 
     #[test]
