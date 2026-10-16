@@ -2,12 +2,13 @@ name: Build codex-config
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
-      - master
-      - codex/**
   pull_request:
+
+permissions:
+  contents: read
+concurrency:
+  group: codex-config-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -43,8 +44,15 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Select affected desktop checks
+        id: scope
+        run: python .github/scripts/ci_scope.py
 
       - name: Setup Node.js
+        if: steps.scope.outputs.app == 'true'
         uses: actions/setup-node@v6
         with:
           node-version: 22
@@ -52,30 +60,50 @@ jobs:
           cache-dependency-path: package-lock.json
 
       - name: Setup Rust
+        if: steps.scope.outputs.app == 'true'
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.rust_target }}
 
+      - name: Record native Rust target
+        id: native
+        if: steps.scope.outputs.app == 'true'
+        shell: bash
+        run: |
+          native_target="$(rustc -vV | sed -n 's/^host: //p')"
+          test -n "$native_target"
+          printf 'target=%s\n' "$native_target" >> "$GITHUB_OUTPUT"
+
       - name: Cache Rust
+        if: steps.scope.outputs.app == 'true'
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
 
       - name: Install frontend dependencies
+        if: steps.scope.outputs.app == 'true'
         run: npm ci
 
       - name: Run frontend tests
+        if: steps.scope.outputs.app == 'true' && (matrix.platform != 'macos-intel' || github.event_name == 'workflow_dispatch')
         run: npm test
 
       - name: Run Rust tests
+        if: steps.scope.outputs.app == 'true' && (matrix.platform != 'macos-intel' || github.event_name == 'workflow_dispatch')
         run: cargo test
         working-directory: src-tauri
 
+      - name: Check desktop target compilation
+        if: steps.scope.outputs.app == 'true' && github.event_name == 'pull_request' && (matrix.platform == 'macos-intel' || (matrix.rust_target != '' && matrix.rust_target != steps.native.outputs.target))
+        working-directory: src-tauri
+        run: cargo check --locked ${{ matrix.rust_target != '' && format('--target {0}', matrix.rust_target) || '' }}
+
       - name: Build Tauri bundle
+        if: github.event_name == 'workflow_dispatch'
         run: npm exec tauri -- build ${{ matrix.bundle_args }}
 
       - name: Package macOS app
-        if: startsWith(matrix.platform, 'macos-')
+        if: github.event_name == 'workflow_dispatch' && startsWith(matrix.platform, 'macos-')
         run: |
           mkdir -p dist
           ARCH_LABEL="${{ matrix.platform == 'macos-arm64' && 'arm64' || 'intel' }}"
@@ -85,6 +113,7 @@ jobs:
             "dist/codex-config-macOS-$ARCH_LABEL.zip"
 
       - name: Upload artifact
+        if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.artifact_name }}
