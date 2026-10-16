@@ -1,5 +1,7 @@
 # codex-config
 
+> 需求、设计、决策以文档站为准：https://docs.oceanway.site/docs/06_开发/07_内部工具（本仓只保留运行与开发说明；决策见 https://docs.oceanway.site/docs/02_决策/ADR-0000_决策索引）。
+
 `codex-config` is a lightweight OceanWay AI desktop helper for configuring Codex. It is built with Tauri and Rust, with a small HTML/CSS/JavaScript interface.
 
 This repository only contains the Rust/Tauri version. The old Python/PyQt packaging version has been removed from the cloud repository.
