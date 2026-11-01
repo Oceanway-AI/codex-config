@@ -48,6 +48,7 @@ pub struct DetectedApp {
     app_id: String,
     name: String,
     installed: bool,
+    desktop_installed: bool,
     config_exists: bool,
     configurable: bool,
     reason: Option<String>,
@@ -288,13 +289,13 @@ pub async fn oceanway_detect_apps() -> Result<Vec<DetectedApp>, String> {
             let item = versions
                 .as_array()
                 .and_then(|rows| rows.iter().find(|row| row["name"] == *id));
-            let installed =
-                item.is_some_and(|v| v["version"].is_string() || v["installed_but_broken"] == true);
+            let (installed, desktop_installed) = app_installation_state(id, item);
             let broken = item.is_some_and(|v| v["installed_but_broken"] == true);
             DetectedApp {
                 app_id: (*id).into(),
                 name: (*name).into(),
                 installed,
+                desktop_installed,
                 configurable: true,
                 config_exists: config_paths(id)
                     .map(|paths| paths.iter().any(|p| p.exists()))
@@ -312,6 +313,12 @@ pub async fn oceanway_detect_apps() -> Result<Vec<DetectedApp>, String> {
             }
         })
         .collect())
+}
+
+fn app_installation_state(id: &str, item: Option<&Value>) -> (bool, bool) {
+    let desktop = id == "codex" && item.is_some_and(|v| v["desktop_installed"] == true);
+    let cli = item.is_some_and(|v| v["version"].is_string() || v["installed_but_broken"] == true);
+    (desktop || cli, desktop)
 }
 
 fn app_type(id: &str) -> Result<AppType, String> {
@@ -884,6 +891,24 @@ pub async fn oceanway_launch_app(app_id: String, restart: bool) -> Result<Launch
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn oceanway_codex_desktop_is_configurable_without_cli_and_cli_does_not_imply_desktop() {
+        let desktop_only = json!({"name":"codex", "version":null, "desktop_installed":true});
+        assert_eq!(
+            app_installation_state("codex", Some(&desktop_only)),
+            (true, true)
+        );
+        let cli_only = json!({"name":"codex", "version":"1.0.0", "desktop_installed":false});
+        assert_eq!(
+            app_installation_state("codex", Some(&cli_only)),
+            (true, false)
+        );
+        assert_eq!(
+            app_installation_state("claude", Some(&desktop_only)),
+            (false, false)
+        );
+        assert_eq!(app_installation_state("codex", None), (false, false));
+    }
     #[test]
     fn origin_rejects_other_hosts_and_url_tricks() {
         for url in [

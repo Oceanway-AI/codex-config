@@ -8,6 +8,7 @@ mod claude_desktop_config;
 mod claude_mcp;
 mod claude_plugin;
 mod codex_config;
+mod codex_desktop_detection;
 mod codex_history_migration;
 mod codex_rollout_file;
 mod codex_state_db;

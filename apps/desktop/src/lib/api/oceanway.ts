@@ -19,6 +19,7 @@ export interface DetectedApp {
   appId: string;
   name: string;
   installed: boolean;
+  desktopInstalled?: boolean;
   configExists: boolean;
   configurable: boolean;
   reason?: string;

@@ -163,6 +163,8 @@ pub struct ToolVersion {
     /// 已定位到可执行文件、但 `--version` 报错退出（装了却跑不起来，如 Node 版本不达标）。
     /// 供前端区分"未安装"与"已安装·无法运行"，无需匹配 error 文案反推语义。
     installed_but_broken: bool,
+    /// Separately detected Codex GUI bundle; never inferred from a CLI version.
+    desktop_installed: bool,
     /// 工具运行环境: "windows", "wsl", "macos", "linux", "unknown"
     env_type: String,
     /// 当 env_type 为 "wsl" 时，返回该工具绑定的 WSL distro（用于按 distro 探测 shells）
@@ -1358,12 +1360,17 @@ async fn get_single_tool_version_impl(
         _ => None,
     };
 
+    let desktop_installed = tool == "codex"
+        && tokio::task::spawn_blocking(crate::codex_desktop_detection::is_installed)
+            .await
+            .unwrap_or(false);
     ToolVersion {
         name: tool.to_string(),
         version: local_version,
         latest_version,
         error: local_error,
         installed_but_broken,
+        desktop_installed,
         env_type,
         wsl_distro,
         update_blocked_by_node,

@@ -779,6 +779,58 @@ describe("AppsPage concurrent CLI upgrades", () => {
     await waitFor(() => expect(isReady("Codex")).toBe(true));
   });
 
+  it("recognizes a Codex desktop-only installation without offering to uninstall a missing CLI", async () => {
+    missing.add("codex");
+    const getVersions = mocks.getToolVersions.getMockImplementation()!;
+    mocks.getToolVersions.mockImplementation(async (tools: string[]) =>
+      ((await getVersions(tools)) as ToolVersions).map((tool) => ({
+        ...tool,
+        desktop_installed: tool.name === "codex",
+      })),
+    );
+    await renderApps();
+    expect(rowApps("appsPage.sectionInstalled")).toContain("codex");
+    expect(
+      card("Codex").getByText("appsPage.desktopInstalled"),
+    ).toBeInTheDocument();
+    expect(
+      card("Codex").getByText("appsPage.cliNotInstalled"),
+    ).toBeInTheDocument();
+    expect(
+      card("Codex").getByRole("button", { name: "appsPage.installCli" }),
+    ).toBeEnabled();
+    expect(
+      card("Codex").queryByRole("button", { name: "appPage.moreActions" }),
+    ).toBeNull();
+    expect(
+      card("Codex").queryByRole("button", { name: "appsPage.desktopDownload" }),
+    ).toBeNull();
+    expect(mocks.runToolLifecycleAction).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])(
+    "offers the Codex desktop download separately when CLI missing is %s",
+    async (cliMissing) => {
+      if (cliMissing) missing.add("codex");
+      await renderApps();
+      expect(card("Codex").queryByText("appsPage.desktopInstalled")).toBeNull();
+      fireEvent.click(
+        card("Codex").getByRole("button", { name: "appsPage.desktopDownload" }),
+      );
+      await waitFor(() =>
+        expect(mocks.openExternal).toHaveBeenCalledWith(
+          "https://developers.openai.com/codex/app",
+        ),
+      );
+      expect(mocks.runToolLifecycleAction).not.toHaveBeenCalled();
+      expect(
+        card("Claude Code").queryByRole("button", {
+          name: "appsPage.desktopDownload",
+        }),
+      ).toBeNull();
+    },
+  );
+
   it("does not offer download actions for installed apps or unsupported Claude Desktop", async () => {
     mocks.desktopStatus = {
       supported: false,

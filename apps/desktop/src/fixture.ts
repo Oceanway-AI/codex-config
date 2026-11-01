@@ -3,6 +3,21 @@ import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 import liveModelCatalog from "./test-fixtures/oceanway-model-catalog.json";
 import liveImageCatalog from "./test-fixtures/oceanway-image-catalog.json";
 if (!import.meta.env.DEV) throw new Error("Fixture is for development only");
+// Explicit UI samples only; no local application/version detection is performed.
+// ?empty=1 previews a new computer; ?desktop=only previews Codex GUI without CLI.
+const query = new URLSearchParams(window.location.search);
+const empty = query.get("empty") === "1";
+const desktopOnly = query.get("desktop") === "only";
+const codexDesktopInstalled =
+  !empty && ["1", "only"].includes(query.get("desktop") ?? "");
+const installedCli = new Set(
+  empty
+    ? []
+    : desktopOnly
+      ? ["claude", "gemini"]
+      : ["codex", "claude", "gemini"],
+);
+const fixtureVersion = "0.0.0-fixture";
 const apps = [
   ["codex", "Codex"],
   ["claude", "Claude Code"],
@@ -31,11 +46,14 @@ mockIPC(async (command, args: any) => {
       defaultImageModel: null,
     };
   if (command === "oceanway_detect_apps")
-    return apps.map(([appId, name], index) => ({
+    return apps.map(([appId, name]) => ({
       appId,
       name,
-      installed: index < 3,
-      configExists: index < 2,
+      installed:
+        installedCli.has(appId) || (appId === "codex" && codexDesktopInstalled),
+      desktopInstalled: appId === "codex" && codexDesktopInstalled,
+      configExists:
+        !empty && !desktopOnly && ["codex", "claude"].includes(appId),
       configurable: [
         "codex",
         "claude",
@@ -45,6 +63,53 @@ mockIPC(async (command, args: any) => {
       ].includes(appId),
       reason: "正在适配",
     }));
+  if (command === "get_tool_versions")
+    return (args.tools ?? []).map((name: string) => ({
+      name,
+      version: installedCli.has(name) ? fixtureVersion : null,
+      latest_version: fixtureVersion,
+      error: null,
+      installed_but_broken: false,
+      desktop_installed: name === "codex" && codexDesktopInstalled,
+      env_type: "windows",
+      wsl_distro: null,
+      update_blocked_by_node: null,
+    }));
+  if (
+    command === "list_tool_installations" ||
+    command === "probe_tool_installations"
+  )
+    return (args.tools ?? []).map((tool: string) => ({
+      tool,
+      installs: installedCli.has(tool)
+        ? [
+            {
+              path: `fixture-only/${tool}`,
+              version: fixtureVersion,
+              runnable: true,
+              error: null,
+              source: "system",
+              is_path_default: true,
+            },
+          ]
+        : [],
+      is_conflict: false,
+      needs_confirmation: false,
+      command: "",
+      anchored: false,
+      unmanaged: true,
+    }));
+  if (command === "get_claude_desktop_status")
+    return { supported: true, installed: false, configured: false };
+  if (
+    command === "run_tool_lifecycle_action" ||
+    command === "prepare_tool_uninstall"
+  )
+    throw new Error("界面测试不会安装、升级或卸载本机应用。");
+  if (command === "open_external") {
+    window.open(args.url, "_blank", "noopener,noreferrer");
+    return true;
+  }
   if (command === "oceanway_check_key") {
     if (!configured && args.apiKey !== "fixture-key")
       throw new Error("界面测试请填写 fixture-key，不使用真实 Key。");

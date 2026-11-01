@@ -20,3 +20,5 @@ export const OFFICIAL_TOOL_INSTALL_URLS: Record<ToolName, string> = {
 };
 
 export const CLAUDE_DESKTOP_DOWNLOAD_URL = "https://claude.com/download";
+export const CODEX_DESKTOP_DOWNLOAD_URL =
+  "https://developers.openai.com/codex/app";

@@ -331,11 +331,13 @@ export function OceanwayConfigPanel({ appId }: { appId?: AppId }) {
                     <div className="mt-0.5 text-caption text-fg-3">
                       {!app.configurable
                         ? (app.reason ?? "正在适配")
-                        : app.installed
-                          ? "已检测到"
-                          : app.configExists
-                            ? "检测到已有配置"
-                            : "未检测到，请先安装"}
+                        : app.desktopInstalled
+                          ? "已检测到 Codex 桌面版"
+                          : app.installed
+                            ? "已检测到"
+                            : app.configExists
+                              ? "检测到已有配置"
+                              : "未检测到，请先安装"}
                     </div>
                   </div>
                   {app.configurable && (

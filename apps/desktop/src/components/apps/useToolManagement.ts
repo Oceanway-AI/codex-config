@@ -32,6 +32,8 @@ export interface ToolVersion {
   // 后端已定位到可执行文件但 --version 报错（装了却跑不起来）。直接读此字段，
   // 不要靠匹配 error 文案反推——避免前端与后端字符串硬耦合。
   installed_but_broken: boolean;
+  // Codex GUI detection is independent of the command-line version above.
+  desktop_installed?: boolean;
   env_type: "windows" | "wsl" | "macos" | "linux" | "unknown";
   wsl_distro: string | null;
   // 有新版本、但这处安装用的 Node 达不到新版本的要求：不给升级，提示先升级 Node。

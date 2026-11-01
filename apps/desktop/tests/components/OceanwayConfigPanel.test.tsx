@@ -76,6 +76,41 @@ beforeEach(() => {
   });
 });
 describe("Oceanway configuration", () => {
+  it("allows configuring a detected Codex desktop app before a CLI or configuration file exists", async () => {
+    vi.mocked(oceanwayApi.detectApps).mockResolvedValueOnce([
+      {
+        appId: "codex",
+        name: "Codex",
+        installed: true,
+        desktopInstalled: true,
+        configExists: false,
+        configurable: true,
+      },
+    ]);
+    const user = userEvent.setup();
+    mount();
+    expect(await screen.findByText("已检测到 Codex 桌面版")).toBeVisible();
+    expect(screen.getByRole("checkbox", { name: "配置 Codex" })).toBeEnabled();
+    expect(screen.getByRole("checkbox", { name: "配置 Codex" })).toBeChecked();
+    await user.type(
+      screen.getByLabelText("Oceanway API Key", { selector: "input" }),
+      "fixture-key",
+    );
+    await user.click(screen.getByText("连接并获取模型"));
+    await waitFor(() =>
+      expect(screen.getByLabelText("Codex 对话模型")).toHaveValue("gpt-5"),
+    );
+    await user.click(
+      await screen.findByRole("button", { name: "一键配置" }),
+    );
+    await waitFor(() =>
+      expect(oceanwayApi.apply).toHaveBeenCalledWith(
+        expect.objectContaining({
+          apps: [{ appId: "codex", model: "gpt-5" }],
+        }),
+      ),
+    );
+  });
   it("keeps all eleven live image test models separate from conversation families", () => {
     const combined = [...liveCatalog.models, ...liveImageCatalog.models];
     expect(imageModels(combined).sort()).toEqual(

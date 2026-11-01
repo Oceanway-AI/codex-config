@@ -85,6 +85,7 @@ import { ToolUninstallConfirmDialog } from "./ToolUninstallConfirmDialog";
 import { ManualUninstallDialog } from "./ManualUninstallDialog";
 import {
   CLAUDE_DESKTOP_DOWNLOAD_URL,
+  CODEX_DESKTOP_DOWNLOAD_URL,
   OFFICIAL_TOOL_INSTALL_URLS,
 } from "./officialInstallLinks";
 import {
@@ -197,7 +198,10 @@ export function AppsPage() {
     }
     const info = tools.toolVersionByName.get(row.tool);
     if (!info && tools.isLoadingTools) return null;
-    return isToolPresent(info, tools.installReports?.[row.tool]);
+    return (
+      Boolean(info?.desktop_installed) ||
+      isToolPresent(info, tools.installReports?.[row.tool])
+    );
   };
   // 两组共用一份顺序（拖动后写进设置，侧栏也按它排），每组只是按装没装过滤
   const appOrder = orderAppIds(settings?.appOrder);
@@ -716,10 +720,12 @@ function OfficialInstallButton({
   url,
   download = false,
   disabled = false,
+  labelKey,
 }: {
   url: string;
   download?: boolean;
   disabled?: boolean;
+  labelKey?: string;
 }) {
   const { t } = useTranslation();
   const [opening, setOpening] = useState(false);
@@ -746,7 +752,10 @@ function OfficialInstallButton({
       ) : (
         <ExternalLink className="h-3.5 w-3.5" />
       )}
-      {t(download ? "appsPage.officialDownload" : "appsPage.officialInstall")}
+      {t(
+        labelKey ??
+          (download ? "appsPage.officialDownload" : "appsPage.officialInstall"),
+      )}
     </Button>
   );
 }
@@ -783,6 +792,7 @@ function ToolRow({
   const isOutdated = isUpdateAvailable(info?.version, info?.latest_version);
   const nodeGap = isOutdated ? info?.update_blocked_by_node : null;
   const broken = Boolean(info?.installed_but_broken);
+  const desktopInstalled = tool === "codex" && Boolean(info?.desktop_installed);
   const isBusy = tools.busyTools.has(tool);
   const busyAction = tools.busyTools.get(tool);
   const canUninstall = isToolPresent(info, report);
@@ -827,6 +837,10 @@ function ToolRow({
       <AlertTriangle className="h-3.5 w-3.5" />
       {t("appsPage.notRunnable")}
     </span>
+  ) : desktopInstalled ? (
+    <span className="text-caption text-fg-2">
+      {t("appsPage.cliNotInstalled")}
+    </span>
   ) : (
     <span className="text-caption text-fg-2">{t("common.notInstalled")}</span>
   );
@@ -847,7 +861,7 @@ function ToolRow({
         <ArrowUpCircle className="h-3.5 w-3.5" />
       )}
       {action === "install"
-        ? t("settings.toolInstall")
+        ? t(desktopInstalled ? "appsPage.installCli" : "settings.toolInstall")
         : t("settings.toolUpdate")}
     </Button>
   ) : null;
@@ -976,6 +990,7 @@ function ToolRow({
       name={
         <>
           <span className="truncate">{toolDisplayName(tool)}</span>
+          {desktopInstalled && <Pill>{t("appsPage.desktopInstalled")}</Pill>}
           {sourceLabel && <Pill>{sourceLabel}</Pill>}
           {envBadge && <Pill>{envBadge}</Pill>}
         </>
@@ -985,6 +1000,13 @@ function ToolRow({
       action={
         <>
           {actionButton}
+          {tool === "codex" && !desktopInstalled && !isVersionLoading && (
+            <OfficialInstallButton
+              url={CODEX_DESKTOP_DOWNLOAD_URL}
+              labelKey="appsPage.desktopDownload"
+              disabled={isBusy}
+            />
+          )}
           {action === "install" && !canUninstall && (
             <OfficialInstallButton
               url={OFFICIAL_TOOL_INSTALL_URLS[tool]}
