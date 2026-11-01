@@ -1,0 +1,17 @@
+/* Product layer only: preserve CC Switch layout, sizing and component structure. */
+:root {
+  --action-bg: #18181b;
+  --action-fg: #ffffff;
+  --action-hover: #303036;
+  --action-text: #174c96;
+  --action-soft: #edf3fc;
+  --ring: 216 71% 43%;
+}
+.dark {
+  --action-bg: #f4f4f5;
+  --action-fg: #18181b;
+  --action-hover: #e4e4e7;
+  --action-text: #9ac1f6;
+  --action-soft: #253346;
+  --ring: 214 70% 70%;
+}

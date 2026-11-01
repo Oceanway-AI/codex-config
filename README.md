@@ -1,6 +1,41 @@
+# Oceanway Config
+
+基于 CC Switch v4.0.24 的 Oceanway 桌面配置应用。
+
+新版本源码位于 `apps/desktop/`。沿用 CC Switch 的应用框架、组件和会话管理，提供 Oceanway Key 接入、模型选择与配置流程。需求见 [项目需求入口](docs/PROJECT_REQUIREMENTS.md)。
+
+## 开发
+
+```powershell
+pnpm --dir apps/desktop install --frozen-lockfile
+pnpm dev
+```
+
+本地原生开发需要 Rust 与对应平台的 Tauri 编译环境。GitHub Actions 的 **Build Oceanway Config** 在开发分支推送后运行 Windows / macOS 构建，测试安装包在该次运行的 Artifacts 下载。
+
+```powershell
+pnpm typecheck
+pnpm test:desktop
+pnpm build
+```
+
+仅检查界面可运行 `pnpm preview:desktop` 并打开 `http://127.0.0.1:3012/fixture.html`。测试页面使用 `fixture-key` 和示例数据，不读写本机 Agent 配置。
+
+## 来源
+
+- 上游与修改记录：[UPSTREAM.md](apps/desktop/UPSTREAM.md)
+- CC Switch MIT 许可证：[LICENSE](apps/desktop/LICENSE)
+- 根目录原配置程序保留为旧版对照，使用 `dev:legacy` / `build:legacy` 命令。
+
+---
+
+## 旧版说明（1.3.0）
+
 # codex-config
 
 > 需求、设计、决策以文档站为准：https://docs.oceanway.site/docs/06_开发/07_内部工具（本仓只保留运行与开发说明；决策见 https://docs.oceanway.site/docs/02_决策/ADR-0000_决策索引）。
+
+> Oceanway Config 重构开发入口：[项目需求与工作分支](docs/PROJECT_REQUIREMENTS.md)。下文描述现有版本；新应用的目标行为以关联 PRD/FS/WP 为准。
 
 `codex-config` is a lightweight OceanWay AI desktop helper for configuring Codex. It is built with Tauri and Rust, with a small HTML/CSS/JavaScript interface.
 
