@@ -66,6 +66,15 @@ describe("CodexAuthSettings classic sub-agent toggle", () => {
     expect(onChange).not.toHaveBeenCalled();
   });
 
+  it("does not require a manual history migration switch in Oceanway", async () => {
+    await renderWith(false);
+    expect(
+      screen.queryByRole("switch", {
+        name: "settings.unifyCodexSessionHistory",
+      }),
+    ).not.toBeInTheDocument();
+  });
+
   // 开关挪到了 Codex 聚合页签的「聚合设置」（StackSettingsSheet），设置页不再显示
   it("is no longer on the settings page", async () => {
     await renderWith(true);

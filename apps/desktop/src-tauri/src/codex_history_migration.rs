@@ -123,6 +123,7 @@ pub struct CodexProviderTemplateBucketMigrationOutcome {
 pub fn maybe_migrate_codex_third_party_history_provider_bucket(
     db: &Database,
 ) -> Result<CodexHistoryProviderBucketMigrationOutcome, AppError> {
+    let _op_guard = lock_codex_official_history_op();
     if crate::settings::is_codex_third_party_history_provider_bucket_migrated() {
         return Ok(CodexHistoryProviderBucketMigrationOutcome {
             skipped_reason: Some("already_migrated".to_string()),
@@ -148,6 +149,7 @@ pub fn maybe_migrate_codex_third_party_history_provider_bucket(
         });
     }
 
+    ensure_oceanway_history_idle()?;
     let backup_root = migration_backup_root(MIGRATION_NAME);
     let codex_dir = get_codex_config_dir();
     let migrated_jsonl_files =
@@ -241,6 +243,7 @@ pub fn maybe_migrate_codex_official_history_to_unified_bucket(
         });
     }
 
+    ensure_oceanway_history_idle()?;
     let source_provider_ids: BTreeSet<String> =
         std::iter::once(OFFICIAL_OPENAI_CODEX_MODEL_PROVIDER_ID.to_string()).collect();
     let backup_root = migration_backup_root(OFFICIAL_UNIFY_MIGRATION_NAME);
@@ -294,6 +297,457 @@ fn codex_config_text_routes_custom(config_text: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Oceanway saves a single custom provider. Codex's default thread/list filters
+/// by that provider, so keeping files alone would hide official/previous-API
+/// conversations. Reuse CC Switch's verified backups and metadata-only rewrite;
+/// message lines, attachment references and session IDs remain unchanged.
+/// This deliberately runs on every save, including histories created since the
+/// last save. It is synchronous: a failed compatibility step is not a success.
+pub(crate) fn with_oceanway_codex_history<T>(
+    apply_config: impl FnOnce() -> Result<T, AppError>,
+) -> Result<T, AppError> {
+    let _op_guard = lock_codex_official_history_op();
+    let codex_dir = get_codex_config_dir();
+    let config_text = read_codex_config_text()?;
+    let backup_root = get_app_config_dir()
+        .join("backups/oceanway-codex-history-v1")
+        .join(uuid::Uuid::new_v4().to_string());
+    with_oceanway_codex_history_inner(&codex_dir, &config_text, &backup_root, apply_config).map_err(
+        |error| {
+            let backup_notice = if backup_root.is_dir() {
+                format!("历史备份位置：{}。", backup_root.display())
+            } else { String::new() };
+            AppError::Message(format!(
+                "Codex 配置未完成。请关闭 Codex 后重新保存配置；原会话内容未删除。{backup_notice}原因：{error}"
+            ))
+        },
+    )
+}
+
+fn with_oceanway_codex_history_inner<T>(
+    codex_dir: &Path,
+    config_text: &str,
+    backup_root: &Path,
+    apply_config: impl FnOnce() -> Result<T, AppError>,
+) -> Result<T, AppError> {
+    // Do not select custom until every old provider is visible in that bucket.
+    // The native provider switch commits its config and pointer together.
+    let normalized = normalize_oceanway_codex_history_inner(codex_dir, config_text, backup_root);
+    let history_ready = normalized.is_ok();
+    let result = normalized.and_then(|_| apply_config());
+    if let Err(error) = result {
+        // Native publication may fail after config.toml was already replaced.
+        // Keep history in the provider actually selected on disk in that case.
+        let live_custom = fs::read_to_string(codex_dir.join("config.toml"))
+            .ok()
+            .is_some_and(|text| codex_config_text_routes_custom(&text));
+        if !history_ready || !live_custom {
+            if let Err(restore_error) = restore_oceanway_history_metadata(
+                codex_dir,
+                &codex_state_db_paths(codex_dir, config_text),
+                backup_root,
+            ) {
+                return Err(AppError::Message(format!(
+                    "{error}；历史标记回滚未完成：{restore_error}；请保留备份"
+                )));
+            }
+        }
+        // Keep pending.json until startup/retry has settled native publication.
+        return Err(error);
+    }
+    clear_oceanway_history_pending(backup_root)?;
+    result
+}
+
+fn clear_oceanway_history_pending(backup_root: &Path) -> Result<(), AppError> {
+    let marker = backup_root.join("pending.json");
+    match fs::remove_file(&marker) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(AppError::io(&marker, error)),
+    }
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct OceanwayHistoryPending {
+    codex_dir: PathBuf,
+    state_db_paths: Vec<PathBuf>,
+}
+
+/// Run after native pending publication is settled, both on startup and retry.
+/// Failed saves retain this small intent record; the verified preimages remain.
+pub(crate) fn recover_oceanway_codex_history() -> Result<(), AppError> {
+    let _op_guard = lock_codex_official_history_op();
+    if crate::mode::operation::pending_published(
+        &crate::live::engine::DeviceStore::for_device(),
+        "codex",
+    )?
+    .is_some()
+    {
+        return Err(AppError::Message(
+            "Codex 上次配置仍未完成，请先关闭 Codex 后重试".into(),
+        ));
+    }
+    let parent = get_app_config_dir().join("backups/oceanway-codex-history-v1");
+    if !parent
+        .try_exists()
+        .map_err(|error| AppError::io(&parent, error))?
+    {
+        return Ok(());
+    }
+    let current_dir = get_codex_config_dir();
+    for entry in fs::read_dir(&parent).map_err(|error| AppError::io(&parent, error))? {
+        let root = entry.map_err(|error| AppError::io(&parent, error))?.path();
+        let marker = root.join("pending.json");
+        if !marker
+            .try_exists()
+            .map_err(|error| AppError::io(&marker, error))?
+        {
+            continue;
+        }
+        let pending: OceanwayHistoryPending = crate::config::read_json_file(&marker)?;
+        if canonical_dir_string(&pending.codex_dir) != canonical_dir_string(&current_dir) {
+            continue;
+        }
+        ensure_oceanway_history_idle()?;
+        let config = read_codex_config_text()?;
+        if codex_config_text_routes_custom(&config) {
+            let recovery = parent.join(uuid::Uuid::new_v4().to_string());
+            normalize_oceanway_codex_history_inner(&current_dir, &config, &recovery)?;
+            clear_oceanway_history_pending(&recovery)?;
+        } else {
+            restore_oceanway_history_metadata(&current_dir, &pending.state_db_paths, &root)?;
+        }
+        clear_oceanway_history_pending(&root)?;
+    }
+    Ok(())
+}
+
+#[cfg(not(test))]
+fn ensure_oceanway_history_idle() -> Result<(), AppError> {
+    #[cfg(windows)]
+    let output = {
+        use std::os::windows::process::CommandExt;
+        std::process::Command::new("tasklist.exe")
+            .args(["/FO", "CSV", "/NH"])
+            .creation_flags(0x08000000)
+            .output()
+    };
+    #[cfg(not(windows))]
+    let output = std::process::Command::new("ps")
+        .args(["-x", "-o", "comm="])
+        .output();
+    let output =
+        output.map_err(|error| AppError::Message(format!("无法检查 Codex 是否已退出：{error}")))?;
+    if !output.status.success() {
+        return Err(AppError::Message(
+            "无法检查 Codex 是否已退出，未改动历史".into(),
+        ));
+    }
+    if oceanway_history_process_running(&String::from_utf8_lossy(&output.stdout)) {
+        return Err(AppError::Message("为保留原有历史，请先退出 Codex 及其后台服务（含终端、桌面宿主和 app-server），再点击保存；不会强制关闭应用".into()));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn ensure_oceanway_history_idle() -> Result<(), AppError> {
+    Ok(())
+}
+
+fn oceanway_history_process_running(processes: &str) -> bool {
+    processes.lines().any(|line| {
+        let executable = line
+            .trim()
+            .trim_start_matches('"')
+            .split('"')
+            .next()
+            .unwrap_or("");
+        let name = executable
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        name == "codex"
+            || name == "codex.exe"
+            || name.starts_with("codex-")
+            || name == "chatgpt"
+            || name == "chatgpt.exe"
+    })
+}
+
+fn normalize_oceanway_codex_history_inner(
+    codex_dir: &Path,
+    config_text: &str,
+    backup_root: &Path,
+) -> Result<CodexHistoryProviderBucketMigrationOutcome, AppError> {
+    let mut files = Vec::new();
+    for directory in ["sessions", "archived_sessions"] {
+        collect_oceanway_history_files(&codex_dir.join(directory), &mut files, 0)?;
+    }
+    let mut source_provider_ids = BTreeSet::new();
+    // Preflight every history before making changes. Unlike startup's optional
+    // legacy migration, unreadable directories/DBs must never be skipped here.
+    for path in &files {
+        let content =
+            codex_rollout_file::read_to_string(path).map_err(|error| AppError::io(path, error))?;
+        for line in content.lines() {
+            if !line.contains("\"session_meta\"") {
+                continue;
+            }
+            let value: Value = serde_json::from_str(line).map_err(|error| {
+                AppError::Message(format!("无法读取会话元数据 {}: {error}", path.display()))
+            })?;
+            if value.get("type").and_then(Value::as_str) != Some("session_meta") {
+                continue;
+            }
+            let payload = value
+                .get("payload")
+                .and_then(Value::as_object)
+                .ok_or_else(|| {
+                    AppError::Message(format!("会话元数据格式错误：{}", path.display()))
+                })?;
+            if payload
+                .get("id")
+                .and_then(Value::as_str)
+                .is_none_or(str::is_empty)
+            {
+                return Err(AppError::Message(format!(
+                    "会话缺少 ID，未改动历史：{}",
+                    path.display()
+                )));
+            }
+            let provider = payload
+                .get("model_provider")
+                .and_then(Value::as_str)
+                .unwrap_or(OFFICIAL_OPENAI_CODEX_MODEL_PROVIDER_ID);
+            if provider != CC_SWITCH_CODEX_MODEL_PROVIDER_ID {
+                source_provider_ids.insert(provider.to_owned());
+            }
+        }
+    }
+    let mut db_paths = Vec::new();
+    for path in codex_state_db_paths(codex_dir, config_text) {
+        if path
+            .try_exists()
+            .map_err(|error| AppError::io(&path, error))?
+        {
+            db_paths.push(path);
+        }
+    }
+    for path in &db_paths {
+        if !codex_state_db_is_lockable(path) {
+            return Err(AppError::Message(format!(
+                "无法锁定历史数据库：{}",
+                path.display()
+            )));
+        }
+        let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)
+            .map_err(|error| AppError::Database(format!("打开历史数据库失败：{error}")))?;
+        conn.busy_timeout(Duration::from_secs(5))
+            .map_err(|error| AppError::Database(error.to_string()))?;
+        if !Database::table_exists(&conn, "threads")?
+            || !Database::has_column(&conn, "threads", "id")?
+            || !Database::has_column(&conn, "threads", "model_provider")?
+        {
+            return Err(AppError::Message(format!(
+                "无法识别历史数据库格式：{}",
+                path.display()
+            )));
+        }
+        conn.execute_batch("BEGIN IMMEDIATE; ROLLBACK;")
+            .map_err(|error| AppError::Database(format!("历史数据库暂时无法写入：{error}")))?;
+        let mut stmt = conn
+            .prepare("SELECT DISTINCT model_provider FROM threads WHERE model_provider <> 'custom'")
+            .map_err(|error| AppError::Database(error.to_string()))?;
+        let providers = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|error| AppError::Database(error.to_string()))?;
+        for provider in providers {
+            source_provider_ids
+                .insert(provider.map_err(|error| AppError::Database(error.to_string()))?);
+        }
+    }
+    if source_provider_ids.is_empty() {
+        return Ok(CodexHistoryProviderBucketMigrationOutcome::default());
+    }
+    ensure_oceanway_history_idle()?;
+    fs::create_dir_all(backup_root).map_err(|error| AppError::io(backup_root, error))?;
+    write_backup_generation_meta(backup_root, &canonical_dir_string(codex_dir))?;
+    crate::config::write_json_file_private(
+        &backup_root.join("pending.json"),
+        &OceanwayHistoryPending {
+            codex_dir: codex_dir.to_path_buf(),
+            state_db_paths: db_paths.clone(),
+        },
+    )?;
+    let mut migrated_jsonl_files = 0;
+    for path in &files {
+        if rewrite_codex_session_file_lines(path, codex_dir, backup_root, |line| {
+            if !line.contains("\"session_meta\"") {
+                return None;
+            }
+            let mut value: Value = serde_json::from_str(line).ok()?;
+            if value.get("type").and_then(Value::as_str) != Some("session_meta") {
+                return None;
+            }
+            let payload = value.get_mut("payload")?.as_object_mut()?;
+            if payload.get("model_provider").and_then(Value::as_str)
+                == Some(CC_SWITCH_CODEX_MODEL_PROVIDER_ID)
+            {
+                return None;
+            }
+            payload.insert(
+                "model_provider".into(),
+                Value::String(CC_SWITCH_CODEX_MODEL_PROVIDER_ID.into()),
+            );
+            serde_json::to_string(&value).ok()
+        })? {
+            migrated_jsonl_files += 1;
+        }
+    }
+    let mut migrated_state_rows = 0;
+    for path in db_paths {
+        migrated_state_rows += migrate_codex_state_db_provider_bucket_to(
+            &path,
+            codex_dir,
+            &source_provider_ids,
+            CC_SWITCH_CODEX_MODEL_PROVIDER_ID,
+            backup_root,
+        )?;
+    }
+    Ok(CodexHistoryProviderBucketMigrationOutcome {
+        source_provider_ids: source_provider_ids.into_iter().collect(),
+        migrated_jsonl_files,
+        migrated_state_rows,
+        skipped_reason: None,
+    })
+}
+
+/// Undo only provider metadata from verified preimages. Do not replace a whole
+/// live DB or rollout: an Agent may have appended messages while save failed.
+fn restore_oceanway_history_metadata(
+    codex_dir: &Path,
+    state_db_paths: &[PathBuf],
+    backup_root: &Path,
+) -> Result<(), AppError> {
+    let mut backups = Vec::new();
+    collect_oceanway_history_files(&backup_root.join("jsonl"), &mut backups, 0)?;
+    if !backups.is_empty() {
+        ensure_oceanway_history_idle()?;
+    }
+    for backup in backups {
+        let relative = backup
+            .strip_prefix(backup_root.join("jsonl"))
+            .map_err(|error| AppError::Message(error.to_string()))?;
+        let original = codex_rollout_file::read_to_string(&backup)
+            .map_err(|error| AppError::io(&backup, error))?;
+        let mut providers = std::collections::HashMap::new();
+        for line in original.lines() {
+            let Ok(value) = serde_json::from_str::<Value>(line) else {
+                continue;
+            };
+            if value.get("type").and_then(Value::as_str) != Some("session_meta") {
+                continue;
+            }
+            if let Some(id) = value.pointer("/payload/id").and_then(Value::as_str) {
+                providers.insert(
+                    id.to_owned(),
+                    value.pointer("/payload/model_provider").cloned(),
+                );
+            }
+        }
+        rewrite_codex_session_file_lines(
+            &codex_dir.join(relative),
+            codex_dir,
+            &backup_root.join("rollback"),
+            |line| {
+                let mut value: Value = serde_json::from_str(line).ok()?;
+                if value.get("type").and_then(Value::as_str) != Some("session_meta") {
+                    return None;
+                }
+                let payload = value.get_mut("payload")?.as_object_mut()?;
+                let original_provider = providers.get(payload.get("id")?.as_str()?)?;
+                if payload.get("model_provider").and_then(Value::as_str)
+                    != Some(CC_SWITCH_CODEX_MODEL_PROVIDER_ID)
+                {
+                    return None;
+                }
+                match original_provider {
+                    Some(provider) => {
+                        payload.insert("model_provider".into(), provider.clone());
+                    }
+                    None => {
+                        payload.remove("model_provider");
+                    }
+                }
+                serde_json::to_string(&value).ok()
+            },
+        )?;
+    }
+    for path in state_db_paths {
+        let backup = backup_root
+            .join("state")
+            .join(relative_backup_path(&path, codex_dir));
+        if !backup.exists() {
+            continue;
+        }
+        let source =
+            Connection::open_with_flags(&backup, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .map_err(|error| AppError::Database(error.to_string()))?;
+        let mut stmt = source
+            .prepare("SELECT id, model_provider FROM threads WHERE model_provider <> 'custom'")
+            .map_err(|error| AppError::Database(error.to_string()))?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|error| AppError::Database(error.to_string()))?;
+        let mut live =
+            Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)
+                .map_err(|error| AppError::Database(error.to_string()))?;
+        live.busy_timeout(Duration::from_secs(5))
+            .map_err(|error| AppError::Database(error.to_string()))?;
+        let tx = live
+            .transaction()
+            .map_err(|error| AppError::Database(error.to_string()))?;
+        for row in rows {
+            let (id, provider) = row.map_err(|error| AppError::Database(error.to_string()))?;
+            tx.execute("UPDATE threads SET model_provider = ?1 WHERE id = ?2 AND model_provider = 'custom'", [&provider, &id])
+                .map_err(|error| AppError::Database(error.to_string()))?;
+        }
+        tx.commit()
+            .map_err(|error| AppError::Database(error.to_string()))?;
+    }
+    Ok(())
+}
+
+fn collect_oceanway_history_files(
+    dir: &Path,
+    files: &mut Vec<PathBuf>,
+    depth: usize,
+) -> Result<(), AppError> {
+    if !dir.try_exists().map_err(|error| AppError::io(dir, error))? {
+        return Ok(());
+    }
+    if depth > 32 {
+        return Err(AppError::Message(format!(
+            "历史目录层级过深，未完成检查：{}",
+            dir.display()
+        )));
+    }
+    for entry in fs::read_dir(dir).map_err(|error| AppError::io(dir, error))? {
+        let entry = entry.map_err(|error| AppError::io(dir, error))?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_oceanway_history_files(&path, files, depth + 1)?;
+        } else if codex_rollout_file::is_rollout_file(&path) {
+            files.push(path);
+        }
+    }
+    Ok(())
+}
+
 /// v3.17–v3.20 官方账号走本地路由时，会话记在 `cc-switch-official` 桶下；v4 起这张表
 /// 不再写、旧表被清理，这些会话恢复时报「Model provider `cc-switch-official` not found」
 /// （#7948）。它们用的是官方登录、表名本就是 "OpenAI"，迁回内置 "openai" 桶后能力不变，
@@ -331,6 +785,7 @@ pub fn maybe_migrate_codex_legacy_official_history_to_openai_bucket(
         });
     }
 
+    ensure_oceanway_history_idle()?;
     let source_provider_ids: BTreeSet<String> =
         std::iter::once(CC_SWITCH_CODEX_OFFICIAL_PROXY_PROVIDER_ID.to_string()).collect();
     let backup_root = migration_backup_root(MIGRATION_NAME);
@@ -488,6 +943,7 @@ fn restore_codex_official_history_inner(
             ..Default::default()
         });
     }
+    ensure_oceanway_history_idle()?;
 
     let mut files = Vec::new();
     collect_jsonl_files(&codex_dir.join("sessions"), &mut files, 0, 8);
@@ -1457,6 +1913,317 @@ mod tests {
     use serial_test::serial;
     use std::ffi::OsString;
     use tempfile::tempdir;
+
+    fn oceanway_history_fixture(
+        codex_dir: &Path,
+        name: &str,
+        provider: Option<&str>,
+    ) -> (PathBuf, String) {
+        let path = codex_dir.join(name);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut payload = serde_json::json!({
+            "id": name, "cwd": "/fixture/project", "timestamp": "2026-11-02T00:00:00Z",
+            "source": "cli", "cli_version": "0.166.0", "originator": "fixture",
+        });
+        if let Some(provider) = provider {
+            payload["model_provider"] = provider.into();
+        }
+        let original = format!(
+            "{}\n{}\n",
+            serde_json::json!({"type":"session_meta","payload":payload}),
+            r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Original conversation"},{"type":"input_image","image_url":"file:///fixture/attachment.png"}]}}"#
+        );
+        codex_rollout_file::write_rollout(&path, original.as_bytes()).unwrap();
+        (path, original)
+    }
+
+    fn oceanway_fixture_provider(path: &Path) -> Option<String> {
+        let text = codex_rollout_file::read_to_string(path).unwrap();
+        let value: Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
+        value
+            .pointer("/payload/model_provider")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    }
+
+    #[test]
+    fn oceanway_history_unifies_all_sources_with_content_and_backups_intact() {
+        if crate::config::sqlite_unsupported_in_temp_dir() {
+            return;
+        }
+        let dir = tempdir().unwrap();
+        let codex = dir.path().join("codex");
+        let backup = dir.path().join("backup");
+        let fixtures = [
+            oceanway_history_fixture(&codex, "sessions/official.jsonl", Some("openai")),
+            oceanway_history_fixture(
+                &codex,
+                "sessions/previous.jsonl.zst",
+                Some("previous_ocean"),
+            ),
+            oceanway_history_fixture(&codex, "archived_sessions/legacy.jsonl", None),
+            oceanway_history_fixture(&codex, "sessions/current.jsonl", Some("custom")),
+        ];
+        let original_bytes = fixtures
+            .iter()
+            .map(|(path, _)| fs::read(path).unwrap())
+            .collect::<Vec<_>>();
+        let state_path = codex.join(CODEX_STATE_DB_FILENAME);
+        let conn = Connection::open(&state_path).unwrap();
+        conn.execute_batch("CREATE TABLE threads (id TEXT PRIMARY KEY, model_provider TEXT NOT NULL, title TEXT, archived INTEGER);
+            INSERT INTO threads VALUES ('official','openai','Original title',0), ('previous','previous_ocean','Previous title',0),
+            ('legacy','openai','Archived title',1), ('current','custom','Current title',0);").unwrap();
+        drop(conn);
+        let result = with_oceanway_codex_history_inner(&codex, "", &backup, || {
+            let conn = Connection::open(&state_path).unwrap();
+            let visible: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM threads WHERE model_provider='custom'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                visible, 4,
+                "all old providers are visible before switching config"
+            );
+            Ok(())
+        });
+        result.unwrap();
+        for (index, (path, original)) in fixtures.iter().enumerate() {
+            let updated = codex_rollout_file::read_to_string(path).unwrap();
+            assert_eq!(oceanway_fixture_provider(path).as_deref(), Some("custom"));
+            assert_eq!(
+                updated.split_once('\n').unwrap().1,
+                original.split_once('\n').unwrap().1
+            );
+            let mut before: Value = serde_json::from_str(original.lines().next().unwrap()).unwrap();
+            let mut after: Value = serde_json::from_str(updated.lines().next().unwrap()).unwrap();
+            before["payload"]
+                .as_object_mut()
+                .unwrap()
+                .remove("model_provider");
+            after["payload"]
+                .as_object_mut()
+                .unwrap()
+                .remove("model_provider");
+            assert_eq!(before, after, "IDs and all other metadata stay intact");
+            if index < 3 {
+                assert_eq!(
+                    fs::read(
+                        backup
+                            .join("jsonl")
+                            .join(path.strip_prefix(&codex).unwrap())
+                    )
+                    .unwrap(),
+                    original_bytes[index]
+                );
+            } else {
+                assert_eq!(fs::read(path).unwrap(), original_bytes[index]);
+            }
+        }
+        let original_db =
+            Connection::open(backup.join("state").join(CODEX_STATE_DB_FILENAME)).unwrap();
+        let provider: String = original_db
+            .query_row(
+                "SELECT model_provider FROM threads WHERE id='previous'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(provider, "previous_ocean");
+        let live = Connection::open(&state_path).unwrap();
+        let archived: (String, i64) = live
+            .query_row(
+                "SELECT title, archived FROM threads WHERE id='legacy'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(archived, ("Archived title".into(), 1));
+        let repeated =
+            normalize_oceanway_codex_history_inner(&codex, "", &dir.path().join("repeat")).unwrap();
+        assert_eq!(repeated.migrated_jsonl_files, 0);
+        assert_eq!(repeated.migrated_state_rows, 0);
+        assert!(!dir.path().join("repeat").exists());
+    }
+
+    #[test]
+    fn oceanway_history_db_failure_prevents_config_switch_and_rolls_back_jsonl() {
+        if crate::config::sqlite_unsupported_in_temp_dir() {
+            return;
+        }
+        let dir = tempdir().unwrap();
+        let codex = dir.path().join("codex");
+        let (path, original) =
+            oceanway_history_fixture(&codex, "sessions/old.jsonl", Some("previous_ocean"));
+        let conn = Connection::open(codex.join(CODEX_STATE_DB_FILENAME)).unwrap();
+        conn.execute_batch("CREATE TABLE threads (id TEXT PRIMARY KEY, model_provider TEXT NOT NULL);
+            INSERT INTO threads VALUES ('old','previous_ocean');
+            CREATE TRIGGER fail_update BEFORE UPDATE ON threads WHEN NEW.model_provider='custom' BEGIN SELECT RAISE(FAIL, 'fixture DB failure'); END;").unwrap();
+        drop(conn);
+        let mut applied = false;
+        let result =
+            with_oceanway_codex_history_inner(&codex, "", &dir.path().join("backup"), || {
+                applied = true;
+                Ok(())
+            });
+        assert!(result.is_err());
+        assert!(!applied);
+        assert_eq!(
+            oceanway_fixture_provider(&path).as_deref(),
+            Some("previous_ocean")
+        );
+        let restored = codex_rollout_file::read_to_string(&path).unwrap();
+        assert_eq!(
+            restored.split_once('\n').unwrap().1,
+            original.split_once('\n').unwrap().1
+        );
+        let conn = Connection::open(codex.join(CODEX_STATE_DB_FILENAME)).unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM threads WHERE model_provider='previous_ocean'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn oceanway_history_switch_failure_restores_metadata_without_losing_new_messages() {
+        if crate::config::sqlite_unsupported_in_temp_dir() {
+            return;
+        }
+        let dir = tempdir().unwrap();
+        let codex = dir.path().join("codex");
+        let (path, original) = oceanway_history_fixture(&codex, "sessions/old.jsonl", None);
+        let state_path = codex.join(CODEX_STATE_DB_FILENAME);
+        let conn = Connection::open(&state_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE threads (id TEXT PRIMARY KEY, model_provider TEXT NOT NULL);
+            INSERT INTO threads VALUES ('old','openai');",
+        )
+        .unwrap();
+        drop(conn);
+        let appended =
+            "{\"type\":\"event_msg\",\"payload\":{\"text\":\"new message during save\"}}\n";
+        let result: Result<(), AppError> =
+            with_oceanway_codex_history_inner(&codex, "", &dir.path().join("backup"), || {
+                let current = fs::read_to_string(&path).unwrap();
+                fs::write(&path, format!("{current}{appended}")).unwrap();
+                Connection::open(&state_path)
+                    .unwrap()
+                    .execute("INSERT INTO threads VALUES ('new','custom')", [])
+                    .unwrap();
+                Err(AppError::Message("fixture switch failure".into()))
+            });
+        assert!(result.is_err());
+        assert_eq!(oceanway_fixture_provider(&path), None);
+        assert_eq!(
+            fs::read_to_string(&path)
+                .unwrap()
+                .split_once('\n')
+                .unwrap()
+                .1,
+            format!("{}{appended}", original.split_once('\n').unwrap().1)
+        );
+        let conn = Connection::open(&state_path).unwrap();
+        let providers = conn
+            .prepare("SELECT model_provider FROM threads ORDER BY id")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(providers, vec!["custom", "openai"]);
+    }
+
+    #[test]
+    fn oceanway_history_unreadable_db_is_not_silently_skipped() {
+        let dir = tempdir().unwrap();
+        let codex = dir.path().join("codex");
+        let (path, original) =
+            oceanway_history_fixture(&codex, "sessions/old.jsonl", Some("openai"));
+        fs::write(codex.join(CODEX_STATE_DB_FILENAME), b"not sqlite").unwrap();
+        let mut applied = false;
+        assert!(
+            with_oceanway_codex_history_inner(&codex, "", &dir.path().join("backup"), || {
+                applied = true;
+                Ok(())
+            })
+            .is_err()
+        );
+        assert!(!applied);
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn oceanway_history_process_guard_recognizes_cli_and_desktop_without_matching_itself() {
+        for process in [
+            "codex",
+            "/usr/bin/codex",
+            "/Applications/Codex.app/Contents/MacOS/Codex",
+            "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT",
+            "codex-x86_64-un",
+            "\"Codex.exe\",\"123\",\"Console\"",
+        ] {
+            assert!(oceanway_history_process_running(process), "{process}");
+        }
+        assert!(!oceanway_history_process_running(
+            "oceanway-config\ncargo\nrustc\nnode\nps"
+        ));
+    }
+
+    #[test]
+    #[serial]
+    fn oceanway_history_partial_publication_and_startup_recovery_follow_live_provider() {
+        for published in [false, true] {
+            let home = IsolatedHome::new();
+            let codex = home.codex_dir();
+            let (path, original) =
+                oceanway_history_fixture(&codex, "sessions/old.jsonl", Some("openai"));
+            fs::write(codex.join("config.toml"), "model_provider = 'openai'\n").unwrap();
+            let result: Result<(), AppError> = with_oceanway_codex_history(|| {
+                if published {
+                    fs::write(codex.join("config.toml"), "model_provider = 'custom'\n").unwrap();
+                }
+                Err(AppError::Message(
+                    "fixture partial native publication".into(),
+                ))
+            });
+            assert!(result.is_err());
+            assert_eq!(
+                oceanway_fixture_provider(&path).as_deref(),
+                Some(if published { "custom" } else { "openai" })
+            );
+            let parent = get_app_config_dir().join("backups/oceanway-codex-history-v1");
+            let roots = fs::read_dir(&parent)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .collect::<Vec<_>>();
+            assert_eq!(roots.len(), 1);
+            assert!(roots[0].join("pending.json").is_file());
+            // Native pending can roll forward on the next startup. Recovery
+            // must then follow its final selector instead of trusting old Err.
+            fs::write(codex.join("config.toml"), "model_provider = 'custom'\n").unwrap();
+            recover_oceanway_codex_history().unwrap();
+            assert_eq!(oceanway_fixture_provider(&path).as_deref(), Some("custom"));
+            assert_eq!(
+                fs::read_to_string(&path)
+                    .unwrap()
+                    .split_once('\n')
+                    .unwrap()
+                    .1,
+                original.split_once('\n').unwrap().1
+            );
+            assert!(!roots[0].join("pending.json").exists());
+            assert_eq!(
+                fs::read_to_string(roots[0].join("jsonl/sessions/old.jsonl")).unwrap(),
+                original
+            );
+        }
+    }
 
     struct EnvVarGuard {
         key: &'static str,

@@ -711,6 +711,9 @@ pub fn run() {
             // 补完上次崩溃时写到一半的客户端文件（写前意图在 ~/.oceanway-config/live-state.json），
             // 要在任何写客户端文件的启动步骤之前。
             crate::mode::operation::recover_on_startup(&app_state.db);
+            if let Err(error) = crate::codex_history_migration::recover_oceanway_codex_history() {
+                log::warn!("Oceanway Codex 历史恢复待重试：{error}");
+            }
 
             // ============================================================
             // 按表独立判断的导入逻辑（各类数据独立检查，互不影响）

@@ -251,7 +251,9 @@ export function OceanwayConfigPanel({ appId }: { appId?: AppId }) {
                   disabled={!!busy}
                   placeholder={
                     connection?.configured
-                      ? `已保存 ${connection.keyPreview ?? "Key"}，留空使用`
+                      ? connection.keyPreview && connection.keyPreview !== "已保存"
+                        ? `已保存 ${connection.keyPreview}，留空使用`
+                        : "Key 已保存，留空使用"
                       : "粘贴你的 API Key"
                   }
                   onChange={(e) => changeKey(e.target.value)}

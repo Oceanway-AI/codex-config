@@ -151,15 +151,17 @@ export function CodexAuthSettings({
         }
       />
 
-      <SettingsSwitchRow
-        label={t("settings.unifyCodexSessionHistory")}
-        help={{
-          title: t("settings.unifyCodexSessionHistory"),
-          body: t("settings.unifyCodexSessionHistoryDescription"),
-        }}
-        checked={settings.unifyCodexSessionHistory ?? false}
-        onCheckedChange={handleUnifyHistoryChange}
-      />
+      {!OCEANWAY_EDITION && (
+        <SettingsSwitchRow
+          label={t("settings.unifyCodexSessionHistory")}
+          help={{
+            title: t("settings.unifyCodexSessionHistory"),
+            body: t("settings.unifyCodexSessionHistoryDescription"),
+          }}
+          checked={settings.unifyCodexSessionHistory ?? false}
+          onCheckedChange={handleUnifyHistoryChange}
+        />
+      )}
 
       <SettingsSwitchRow
         label={t("settings.codexSessionCompression")}

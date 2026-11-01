@@ -629,6 +629,44 @@ fn retained_image_settings(
     (default_model, models, warning)
 }
 
+fn save_and_switch_provider(
+    state: &AppState,
+    app: &AppType,
+    provider: Provider,
+) -> Result<(), crate::AppError> {
+    if *app == AppType::Codex {
+        crate::mode::operation::settle(&state.db, "codex")?;
+        crate::codex_history_migration::recover_oceanway_codex_history()?;
+    }
+    let apply = || {
+        if let Some(existing) = state.db.get_provider_by_id(PROVIDER_ID, app.as_str())? {
+            validate_provider(&existing).map_err(|_| {
+                crate::AppError::Message("已有同名供应商，请先检查；不会覆盖其他服务的配置".into())
+            })?;
+            ProviderService::update(state, app.clone(), None, provider)?;
+        } else {
+            ProviderService::add_without_switching(state, app.clone(), provider)?;
+        }
+        ProviderService::switch(state, app.clone(), PROVIDER_ID).map(|_| ())
+    };
+    if *app == AppType::Codex {
+        crate::codex_history_migration::with_oceanway_codex_history(|| {
+            let result = apply();
+            if result.is_err() {
+                if let Err(recovery) = crate::mode::operation::settle(&state.db, "codex") {
+                    return Err(crate::AppError::Message(format!(
+                        "{}；原生配置恢复待重试：{recovery}",
+                        result.unwrap_err()
+                    )));
+                }
+            }
+            result
+        })
+    } else {
+        apply()
+    }
+}
+
 #[tauri::command]
 pub async fn oceanway_apply_config(
     state: tauri::State<'_, AppState>,
@@ -672,22 +710,7 @@ pub async fn oceanway_apply_config(
             let outcome = (|| -> Result<(), String> {
                 let app = app_type(&selection.app_id)?;
                 let provider = provider_for(&selection, &key)?;
-                if let Some(existing) = state
-                    .db
-                    .get_provider_by_id(PROVIDER_ID, app.as_str())
-                    .map_err(|e| e.to_string())?
-                {
-                    validate_provider(&existing).map_err(|_| {
-                        "已有同名供应商，请先检查；不会覆盖其他服务的配置".to_owned()
-                    })?;
-                    ProviderService::update(&state, app.clone(), None, provider)
-                        .map_err(|e| e.to_string())?;
-                } else {
-                    ProviderService::add_without_switching(&state, app.clone(), provider)
-                        .map_err(|e| e.to_string())?;
-                }
-                ProviderService::switch(&state, app.clone(), PROVIDER_ID)
-                    .map_err(|e| e.to_string())?;
+                save_and_switch_provider(&state, &app, provider).map_err(|e| e.to_string())?;
                 if app == AppType::OpenCode {
                     crate::opencode_config::set_default_model(&format!(
                         "{PROVIDER_ID}/{}",
@@ -1135,7 +1158,13 @@ mod tests {
         let history=b"{\"type\":\"fixture\",\"message\":\"original conversation and attachment reference\"}\n";
         let codex_history = codex.join("sessions/fixture.jsonl");
         let claude_history = claude.join("projects/fixture/session.jsonl");
-        std::fs::write(&codex_history, history).unwrap();
+        let codex_original = format!(
+            "{}\n{}",
+            json!({"type":"session_meta","payload":{
+            "id":"fixture-session","model_provider":"openai","cwd":"/fixture/project"}}),
+            String::from_utf8_lossy(history)
+        );
+        std::fs::write(&codex_history, &codex_original).unwrap();
         std::fs::write(&claude_history, history).unwrap();
         std::fs::write(
             codex.join("config.toml"),
@@ -1165,15 +1194,21 @@ mod tests {
         let state = AppState::new(std::sync::Arc::new(crate::Database::memory().unwrap()));
         for selection in &selections {
             let app = app_type(&selection.app_id).unwrap();
-            ProviderService::add_without_switching(
+            save_and_switch_provider(
                 &state,
-                app.clone(),
+                &app,
                 provider_for(selection, "fixture-key").unwrap(),
             )
             .unwrap();
-            ProviderService::switch(&state, app, PROVIDER_ID).unwrap();
         }
-        assert_eq!(std::fs::read(&codex_history).unwrap(), history);
+        let codex_updated = std::fs::read_to_string(&codex_history).unwrap();
+        assert_eq!(
+            codex_updated.split_once('\n').unwrap().1.as_bytes(),
+            history
+        );
+        let meta: Value = serde_json::from_str(codex_updated.lines().next().unwrap()).unwrap();
+        assert_eq!(meta["payload"]["id"], "fixture-session");
+        assert_eq!(meta["payload"]["model_provider"], "custom");
         assert_eq!(std::fs::read(&claude_history).unwrap(), history);
         let auth: Value = crate::config::read_json_file(&codex.join("auth.json")).unwrap();
         assert_eq!(auth["tokens"], original_auth["tokens"]);
@@ -1185,6 +1220,51 @@ mod tests {
         assert_eq!(settings["permissions"]["allow"], json!(["Read"]));
         assert!(backup.join("manifest.json").is_file());
         assert!(!root.join(".cc-switch").exists());
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn oceanway_history_preflight_failure_does_not_update_active_provider_or_config() {
+        let fixture = FixtureHome::new();
+        let codex = fixture.directory.path().join(".codex");
+        let state = AppState::new(std::sync::Arc::new(crate::Database::memory().unwrap()));
+        let selection = AppSelection {
+            app_id: "codex".into(),
+            model: "gpt-original".into(),
+        };
+        save_and_switch_provider(
+            &state,
+            &AppType::Codex,
+            provider_for(&selection, "fixture-key").unwrap(),
+        )
+        .unwrap();
+        let before = std::fs::read(codex.join("config.toml")).unwrap();
+        let provider_before = state
+            .db
+            .get_provider_by_id(PROVIDER_ID, "codex")
+            .unwrap()
+            .unwrap();
+        std::fs::write(codex.join("state_5.sqlite"), b"fixture unreadable DB").unwrap();
+        let changed = AppSelection {
+            app_id: "codex".into(),
+            model: "gpt-changed".into(),
+        };
+        assert!(save_and_switch_provider(
+            &state,
+            &AppType::Codex,
+            provider_for(&changed, "fixture-key").unwrap()
+        )
+        .is_err());
+        assert_eq!(std::fs::read(codex.join("config.toml")).unwrap(), before);
+        assert_eq!(
+            state
+                .db
+                .get_provider_by_id(PROVIDER_ID, "codex")
+                .unwrap()
+                .unwrap()
+                .settings_config,
+            provider_before.settings_config
+        );
     }
 
     #[test]
