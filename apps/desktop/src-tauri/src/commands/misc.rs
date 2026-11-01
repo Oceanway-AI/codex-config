@@ -6374,6 +6374,7 @@ fn launch_linux_terminal(script_file: &std::path::Path) -> Result<(), String> {
         ("alacritty", vec!["-e"]),
         ("kitty", vec!["-e"]),
         ("ghostty", vec!["-e"]),
+        ("xterm", vec!["-e"]),
     ];
 
     // Build terminal list: preferred terminal first (if specified), then defaults
