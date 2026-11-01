@@ -34,6 +34,7 @@ const mocks = vi.hoisted(() => ({
   listToolInstallations: vi.fn(),
   runToolLifecycleAction: vi.fn(),
   prepareToolUninstall: vi.fn(),
+  openExternal: vi.fn(),
   copyText: vi.fn(),
   info: vi.fn(),
   success: vi.fn(),
@@ -243,6 +244,7 @@ describe("AppsPage concurrent CLI upgrades", () => {
     mocks.updateSettings.mockReset();
     mocks.autoSaveSettings.mockReset().mockResolvedValue(null);
     mocks.copyText.mockReset().mockResolvedValue(undefined);
+    mocks.openExternal.mockReset().mockResolvedValue(undefined);
     outdated.add("claude").add("codex").add("gemini");
     mocks.getToolVersions
       .mockReset()
@@ -688,6 +690,111 @@ describe("AppsPage concurrent CLI upgrades", () => {
     };
     await renderApps();
     expect(rowApps("appsPage.sectionNotInstalled")).toEqual(["claude-desktop"]);
+    expect(
+      card("Claude Desktop").getByText("common.notInstalled"),
+    ).toBeInTheDocument();
+    fireEvent.click(
+      card("Claude Desktop").getByRole("button", {
+        name: "appsPage.officialDownload",
+      }),
+    );
+    await waitFor(() =>
+      expect(mocks.openExternal).toHaveBeenCalledWith(
+        "https://claude.com/download",
+      ),
+    );
+    expect(mocks.runToolLifecycleAction).not.toHaveBeenCalled();
+  });
+
+  it("opens the publisher's installation entry for every missing CLI without installing it", async () => {
+    const entries = [
+      ["claude", "Claude Code", "https://code.claude.com/docs/en/setup"],
+      ["codex", "Codex", "https://developers.openai.com/codex/cli"],
+      [
+        "gemini",
+        "Gemini CLI",
+        "https://geminicli.com/docs/get-started/installation/",
+      ],
+      ["grok", "Grok Build", "https://x.ai/cli"],
+      ["opencode", "OpenCode", "https://opencode.ai/docs/"],
+      ["openclaw", "OpenClaw", "https://docs.openclaw.ai/install"],
+      [
+        "hermes",
+        "Hermes",
+        "https://github.com/NousResearch/hermes-agent#installation",
+      ],
+      ["pi", "Pi", "https://github.com/earendil-works/pi#readme"],
+      [
+        "mcode",
+        "MiniMax Code",
+        "https://platform.minimax.io/docs/m-plan/minimax-code",
+      ],
+      ["kimi", "Kimi Code", "https://www.kimi.com/code/docs/en/"],
+      [
+        "dsh",
+        "DeepSeek Harness",
+        "https://github.com/deepseek-ai/deepseek-harness#readme",
+      ],
+      ["agy", "Antigravity CLI", "https://antigravity.google/cli"],
+      ["omp", "Oh My Pi", "https://omp.sh/"],
+    ];
+    entries.forEach(([tool]) => missing.add(tool));
+    await renderApps();
+    for (const [, name, url] of entries) {
+      expect(
+        card(name).getByRole("button", { name: "settings.toolInstall" }),
+      ).toBeEnabled();
+      fireEvent.click(
+        card(name).getByRole("button", { name: "appsPage.officialInstall" }),
+      );
+      await waitFor(() =>
+        expect(mocks.openExternal).toHaveBeenLastCalledWith(url),
+      );
+    }
+    expect(mocks.openExternal).toHaveBeenCalledTimes(entries.length);
+    expect(mocks.runToolLifecycleAction).not.toHaveBeenCalled();
+  });
+
+  it("keeps native installation usable after an official link fails to open", async () => {
+    missing.add("codex");
+    mocks.openExternal.mockRejectedValueOnce(new Error("No browser"));
+    await renderApps();
+    fireEvent.click(
+      card("Codex").getByRole("button", { name: "appsPage.officialInstall" }),
+    );
+    await waitFor(() =>
+      expect(mocks.error).toHaveBeenCalledWith("notifications.openLinkFailed"),
+    );
+    expect(mocks.runToolLifecycleAction).not.toHaveBeenCalled();
+    fireEvent.click(
+      card("Codex").getByRole("button", { name: "settings.toolInstall" }),
+    );
+    await waitFor(() =>
+      expect(mocks.runToolLifecycleAction).toHaveBeenCalledWith(
+        ["codex"],
+        "install",
+        {},
+      ),
+    );
+    await waitFor(() => expect(isReady("Codex")).toBe(true));
+  });
+
+  it("does not offer download actions for installed apps or unsupported Claude Desktop", async () => {
+    mocks.desktopStatus = {
+      supported: false,
+      installed: false,
+      configured: false,
+    };
+    await renderApps();
+    expect(
+      screen.queryByRole("button", { name: "appsPage.officialInstall" }),
+    ).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "appsPage.officialDownload" }),
+    ).toBeNull();
+    expect(
+      card("Claude Desktop").getByText("appsPage.desktopUnsupported"),
+    ).toBeInTheDocument();
   });
 
   it("orders rows by the saved app order within each section", async () => {

@@ -35,6 +35,7 @@ import {
   ChevronDown,
   Copy,
   Download,
+  ExternalLink,
   GripVertical,
   LayoutGrid,
   Loader2,
@@ -42,7 +43,7 @@ import {
   RefreshCw,
   Trash2,
 } from "lucide-react";
-import type { AppId } from "@/lib/api";
+import { settingsApi, type AppId } from "@/lib/api";
 import { providersApi } from "@/lib/api/providers";
 import type { ToolInstallationReport } from "@/lib/api/settings";
 import type { VisibleApps } from "@/types";
@@ -50,6 +51,7 @@ import { DEFAULT_VISIBLE_APPS, orderAppIds } from "@/config/appConfig";
 import { useSettings } from "@/hooks/useSettings";
 import { isUpdateAvailable } from "@/lib/version";
 import { cn } from "@/lib/utils";
+import { toast } from "@/lib/toast";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { HelpTip } from "@/components/ui/help-tip";
@@ -81,6 +83,10 @@ import { ToolInstallRow } from "@/components/settings/ToolInstallRow";
 import { ToolErrorMessage } from "@/components/settings/ToolErrorMessage";
 import { ToolUninstallConfirmDialog } from "./ToolUninstallConfirmDialog";
 import { ManualUninstallDialog } from "./ManualUninstallDialog";
+import {
+  CLAUDE_DESKTOP_DOWNLOAD_URL,
+  OFFICIAL_TOOL_INSTALL_URLS,
+} from "./officialInstallLinks";
 import {
   ENV_BADGE_CONFIG,
   ONE_CLICK_INSTALL_COMMANDS,
@@ -347,13 +353,22 @@ export function AppsPage() {
           <span className="inline-flex items-center gap-1 text-caption text-fg-2">
             {desktopStatus?.supported === false
               ? t("appsPage.desktopUnsupported")
-              : desktopStatus?.configured
-                ? t("appsPage.desktopConnected")
-                : t("appsPage.desktopNotConnected")}
+              : isDesktopStatusPending
+                ? t("common.loading")
+                : desktopStatus && !desktopStatus.installed
+                  ? t("common.notInstalled")
+                  : desktopStatus?.configured
+                    ? t("appsPage.desktopConnected")
+                    : t("appsPage.desktopNotConnected")}
             <HelpTip title={APP_DISPLAY_NAME["claude-desktop"]} align="end">
               {t("appsPage.desktopHelp")}
             </HelpTip>
           </span>
+        }
+        action={
+          desktopStatus?.supported && !desktopStatus.installed ? (
+            <OfficialInstallButton url={CLAUDE_DESKTOP_DOWNLOAD_URL} download />
+          ) : undefined
         }
         visibility={visibilitySwitch("claude-desktop")}
       />
@@ -697,6 +712,45 @@ function Pill({ children }: { children: React.ReactNode }) {
   );
 }
 
+function OfficialInstallButton({
+  url,
+  download = false,
+  disabled = false,
+}: {
+  url: string;
+  download?: boolean;
+  disabled?: boolean;
+}) {
+  const { t } = useTranslation();
+  const [opening, setOpening] = useState(false);
+  const open = async () => {
+    setOpening(true);
+    try {
+      await settingsApi.openExternal(url);
+    } catch {
+      toast.error(t("notifications.openLinkFailed"));
+    } finally {
+      setOpening(false);
+    }
+  };
+  return (
+    <Button
+      variant="neutral"
+      size="compact"
+      onClick={() => void open()}
+      disabled={disabled || opening}
+      aria-busy={opening}
+    >
+      {opening ? (
+        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+      ) : (
+        <ExternalLink className="h-3.5 w-3.5" />
+      )}
+      {t(download ? "appsPage.officialDownload" : "appsPage.officialInstall")}
+    </Button>
+  );
+}
+
 function ToolRow({
   tool,
   tools,
@@ -928,7 +982,17 @@ function ToolRow({
       }
       meta={meta}
       version={version}
-      action={actionButton}
+      action={
+        <>
+          {actionButton}
+          {action === "install" && !canUninstall && (
+            <OfficialInstallButton
+              url={OFFICIAL_TOOL_INSTALL_URLS[tool]}
+              disabled={isBusy}
+            />
+          )}
+        </>
+      }
       visibility={visibility}
       menu={
         (canUninstall || busyAction === "uninstall") && (

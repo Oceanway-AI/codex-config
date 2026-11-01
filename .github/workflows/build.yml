@@ -71,6 +71,7 @@ jobs:
         run: >-
           pnpm exec vitest run
           tests/components/OceanwayConfigPanel.test.tsx
+          tests/components/AppsPage.test.tsx
           tests/types/sessionFixtures.test.ts
           tests/components/SessionManagerPage.test.tsx
           tests/components/sessionUtils.test.ts
