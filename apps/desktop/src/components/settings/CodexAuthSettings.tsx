@@ -1,3 +1,4 @@
+import { OCEANWAY_EDITION } from "@/config/edition";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "@/lib/toast";
@@ -140,7 +141,11 @@ export function CodexAuthSettings({
           title: t("settings.preserveCodexOfficialAuthOnSwitch"),
           body: t("settings.preserveCodexOfficialAuthOnSwitchDescription"),
         }}
-        checked={settings.preserveCodexOfficialAuthOnSwitch ?? false}
+        checked={
+          OCEANWAY_EDITION ||
+          (settings.preserveCodexOfficialAuthOnSwitch ?? false)
+        }
+        disabled={OCEANWAY_EDITION}
         onCheckedChange={(value) =>
           onChange({ preserveCodexOfficialAuthOnSwitch: value })
         }

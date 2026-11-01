@@ -2519,4 +2519,4 @@ fn download_from(client: &Client, url: Url, addresses: &[SocketAddr]) -> Result<
 
 #[cfg(test)]
 #[path = "image_api_tests.rs"]
-mod tests;
+pub(super) mod tests;

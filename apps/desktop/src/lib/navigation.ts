@@ -1,4 +1,5 @@
 import type { AppId } from "@/lib/api";
+import { OCEANWAY_EDITION } from "@/config/edition";
 
 /**
  * 主窗口的导航模型（v7）：侧栏选一个应用或一个全局页；设置单独占一屏。
@@ -38,7 +39,7 @@ export type SettingsSection =
 export const SETTINGS_SECTIONS: SettingsSection[] = [
   "general",
   "appConfig",
-  "routing",
+  ...(OCEANWAY_EDITION ? [] : ["routing" as const]),
   "network",
   "data",
   "about",

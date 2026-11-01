@@ -1,6 +1,7 @@
 name: Build Oceanway Config
 
 on:
+  workflow_call:
   workflow_dispatch:
   push:
     branches: [main, master, 'codex/**']
@@ -11,7 +12,7 @@ permissions:
 
 concurrency:
   group: oceanway-build-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -66,8 +67,20 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Typecheck
         run: pnpm typecheck
-      - name: Test Oceanway setup and session parsers
-        run: pnpm exec vitest run tests/components/OceanwayConfigPanel.test.tsx tests/types/sessionFixtures.test.ts
+      - name: Test Oceanway setup, settings and sessions
+        run: >-
+          pnpm exec vitest run
+          tests/components/OceanwayConfigPanel.test.tsx
+          tests/types/sessionFixtures.test.ts
+          tests/components/SessionManagerPage.test.tsx
+          tests/components/sessionUtils.test.ts
+          tests/components/ImportExportSection.test.tsx
+          tests/components/CodexAuthSettings.test.tsx
+          tests/components/SettingsDialog.test.tsx
+          tests/integration/SettingsDialog.test.tsx
+          tests/hooks/useSettings.test.tsx
+          tests/components/GlobalProxySettings.test.tsx
+          tests/components/shell/SidebarToday.test.tsx
       - name: Test native Oceanway services
         working-directory: apps/desktop/src-tauri
         run: cargo test --locked --lib oceanway -- --test-threads=1
@@ -86,5 +99,13 @@ jobs:
         with:
           name: Oceanway-Config-${{ matrix.platform }}-${{ github.sha }}
           path: ${{ matrix.artifact_path }}
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload Windows executable for isolated integration tests
+        if: matrix.platform == 'windows-x64'
+        uses: actions/upload-artifact@v6
+        with:
+          name: Oceanway-Config-windows-native-${{ github.sha }}
+          path: apps/desktop/src-tauri/target/release/oceanway-config.exe
           if-no-files-found: error
           retention-days: 14

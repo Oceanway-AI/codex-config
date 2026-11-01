@@ -1,3 +1,4 @@
+import { OCEANWAY_EDITION } from "@/config/edition";
 import {
   useCallback,
   useEffect,
@@ -358,7 +359,9 @@ export function SettingsPage({
   );
 
   const isBusy = useMemo(() => isLoading && !settings, [isLoading, settings]);
-  const SectionIcon = SECTION_ICON[section];
+  const effectiveSection =
+    OCEANWAY_EDITION && section === "routing" ? "general" : section;
+  const SectionIcon = SECTION_ICON[effectiveSection];
 
   const appConfigDirty =
     (appConfigDir?.trim() || undefined) !==
@@ -366,7 +369,7 @@ export function SettingsPage({
 
   const renderSection = () => {
     if (!settings) return null;
-    switch (section) {
+    switch (effectiveSection) {
       case "general":
         return (
           <GeneralSection
@@ -447,11 +450,19 @@ export function SettingsPage({
               </SettingsCard>
             </SettingsBlock>
             <SettingsBlock
-              title={t("settings.advanced.data.title")}
-              help={{
-                title: t("settings.advanced.data.title"),
-                body: t("settings.advanced.data.description"),
-              }}
+              title={t(
+                OCEANWAY_EDITION
+                  ? "settings.exportConfig"
+                  : "settings.advanced.data.title",
+              )}
+              help={
+                OCEANWAY_EDITION
+                  ? undefined
+                  : {
+                      title: t("settings.advanced.data.title"),
+                      body: t("settings.advanced.data.description"),
+                    }
+              }
             >
               <div className="rounded-panel border border-border bg-surface p-5">
                 <ImportExportSection
@@ -482,22 +493,24 @@ export function SettingsPage({
                 />
               </div>
             </SettingsBlock>
-            <SettingsBlock
-              title={t("settings.advanced.cloudSync.title")}
-              help={{
-                title: t("settings.advanced.cloudSync.title"),
-                body: t("settings.advanced.cloudSync.description"),
-              }}
-            >
-              <div className="rounded-panel border border-border bg-surface p-5">
-                <WebdavSyncSection
-                  config={settings.webdavSync}
-                  s3Config={settings.s3Sync}
-                  settings={settings}
-                  onAutoSave={handleAutoSave}
-                />
-              </div>
-            </SettingsBlock>
+            {!OCEANWAY_EDITION && (
+              <SettingsBlock
+                title={t("settings.advanced.cloudSync.title")}
+                help={{
+                  title: t("settings.advanced.cloudSync.title"),
+                  body: t("settings.advanced.cloudSync.description"),
+                }}
+              >
+                <div className="rounded-panel border border-border bg-surface p-5">
+                  <WebdavSyncSection
+                    config={settings.webdavSync}
+                    s3Config={settings.s3Sync}
+                    settings={settings}
+                    onAutoSave={handleAutoSave}
+                  />
+                </div>
+              </SettingsBlock>
+            )}
             <SettingsBlock
               title={t("settings.advanced.logConfig.title")}
               help={{
@@ -530,7 +543,7 @@ export function SettingsPage({
     <>
       <AppPageHeader
         icon={<SectionIcon className="h-5 w-5" strokeWidth={1.5} />}
-        title={t(`settings.sections.${section}`)}
+        title={t(`settings.sections.${effectiveSection}`)}
       />
       <div
         ref={scrollRef}

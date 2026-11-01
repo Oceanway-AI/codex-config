@@ -25,7 +25,13 @@ import {
   type ApplyResult,
 } from "@/lib/api/oceanway";
 import type { AppId } from "@/lib/api";
-import { conversationModels, familyModels, imageModels, recommendedModel } from "./models";
+import {
+  conversationModels,
+  familyModels,
+  imageModels,
+  recommendedModel,
+  recommendedImageModel,
+} from "./models";
 
 const errorText = (e: unknown) =>
   e instanceof Error
@@ -109,6 +115,7 @@ export function OceanwayConfigPanel({ appId }: { appId?: AppId }) {
     setCatalog(undefined);
     setResult(undefined);
     setModels({});
+    setOtherModels({});
     setImageModel("");
     setError("");
   }
@@ -133,7 +140,7 @@ export function OceanwayConfigPanel({ appId }: { appId?: AppId }) {
         connection?.defaultImageModel &&
           images.includes(connection.defaultImageModel)
           ? connection.defaultImageModel
-          : (images[0] ?? ""),
+          : recommendedImageModel(images),
       );
     } catch (e) {
       if (current === generation.current) {
@@ -463,6 +470,11 @@ export function OceanwayConfigPanel({ appId }: { appId?: AppId }) {
                         item.appId}
                     </span>
                     <p className="text-caption text-fg-2">{item.message}</p>
+                    {item.imageMessage && (
+                      <p className="mt-1 text-caption text-fg-2">
+                        图片：{item.imageMessage}
+                      </p>
+                    )}
                   </div>
                   {item.ok && (
                     <Button
@@ -477,9 +489,7 @@ export function OceanwayConfigPanel({ appId }: { appId?: AppId }) {
                 </div>
               ))}
               <p className="text-caption text-fg-3">
-                {result.imagesConfigured
-                  ? "Oceanway 图片工具已配置。"
-                  : "本次未启用图片工具。"}{" "}
+                {result.imagesConfigured && "Oceanway 图片工具已配置。 "}
                 配置备份已保存。
               </p>
             </section>

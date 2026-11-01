@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize};
 const MOCK_KEY: &str = "mock-only-credential";
 // Production has exactly two workers per process, including across service
 // instances. Tests with gated requests must not compete for those same workers.
-static WORKER_TEST: Mutex<()> = Mutex::new(());
+pub(in crate::oceanway_images) static WORKER_TEST: Mutex<()> = Mutex::new(());
 
 struct TempHome(PathBuf);
 
@@ -3014,4 +3014,145 @@ fn production_loopback_fixture_keeps_redirects_disabled_and_output_downloads_pub
             "no redirect or loopback download may follow the provider POST"
         );
     }
+}
+
+// This child runs the real queue and persistence path against the parent's
+// loopback HTTP fixture. Unlike direct worker tests, no engine state is shared.
+#[test]
+fn cross_process_batch_progress_helper() {
+    let Some(home) = std::env::var_os("OCEANWAY_BATCH_TEST_HOME").map(PathBuf::from) else {
+        return;
+    };
+    let service = ImageJobs::with_home(home.clone()).unwrap();
+    let mut batch = request(4);
+    batch.prompts = vec![
+        "hold-first".into(),
+        "fast-second".into(),
+        "fast-third".into(),
+        "fast-fourth".into(),
+    ];
+    let submitted = service.start(batch, None, false).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut published_partial = false;
+    loop {
+        let status = service.status(&submitted.id).unwrap();
+        if !published_partial && status.completed > 0 && status.completed < status.total {
+            let path = home.join("batch-partial.json");
+            fs::write(
+                path.with_extension("tmp"),
+                serde_json::to_vec(&status).unwrap(),
+            )
+            .unwrap();
+            fs::rename(path.with_extension("tmp"), path).unwrap();
+            published_partial = true;
+        }
+        if status.completed == status.total {
+            assert!(
+                published_partial,
+                "completed images must be visible before the whole batch"
+            );
+            fs::write(
+                home.join("batch-done.json"),
+                serde_json::to_vec(&status).unwrap(),
+            )
+            .unwrap();
+            break;
+        }
+        assert!(Instant::now() < deadline, "batch child did not complete");
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn child_process_batch_is_parallel_and_publishes_images_before_the_slow_first_image() {
+    use std::process::{Command, Stdio};
+    let home = TempHome::new();
+    let active = Arc::new(AtomicUsize::new(0));
+    let maximum = Arc::new(AtomicUsize::new(0));
+    let started = Arc::new(AtomicUsize::new(0));
+    let gate = Arc::new(Gate::default());
+    let handler_active = active.clone();
+    let handler_maximum = maximum.clone();
+    let handler_started = started.clone();
+    let handler_gate = gate.clone();
+    let mock = Mock::new(move |_, captured| {
+        assert_eq!(captured.path, "/v1/images/generations");
+        assert_eq!(
+            captured.headers["authorization"],
+            format!("Bearer {LOCAL_FIXTURE_KEY}")
+        );
+        let body: Value = serde_json::from_slice(&captured.body).unwrap();
+        assert_eq!(body["n"], 1);
+        let in_flight = handler_active.fetch_add(1, Ordering::SeqCst) + 1;
+        handler_maximum.fetch_max(in_flight, Ordering::SeqCst);
+        handler_started.fetch_add(1, Ordering::SeqCst);
+        // A serial implementation cannot pass this barrier.
+        wait_until(|| handler_started.load(Ordering::SeqCst) >= 2);
+        if body["prompt"] == "hold-first" {
+            handler_gate.wait();
+        } else {
+            thread::sleep(Duration::from_millis(75));
+        }
+        handler_active.fetch_sub(1, Ordering::SeqCst);
+        Reply::json(success())
+    });
+    save_local_fixture_provider(&home.0, &mock.base, LOCAL_FIXTURE_KEY);
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    command
+        .args([
+            "--exact",
+            "oceanway_images::image_api::tests::cross_process_batch_progress_helper",
+            "--nocapture",
+        ])
+        .env("OCEANWAY_BATCH_TEST_HOME", &home.0)
+        .current_dir(&home.0)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000);
+    }
+    let mut child = LockTestChild(Some(command.spawn().unwrap()));
+    wait_until(|| home.0.join("batch-partial.json").is_file());
+    let partial: ImageJob =
+        serde_json::from_slice(&fs::read(home.0.join("batch-partial.json")).unwrap()).unwrap();
+    assert!(partial.completed >= 1 && partial.completed < 4);
+    assert_eq!(maximum.load(Ordering::SeqCst), 2);
+    let first = partial.items.iter().find(|item| item.index == 1).unwrap();
+    assert_eq!(first.status, "running");
+    let completed = partial
+        .items
+        .iter()
+        .find(|item| item.status == "succeeded")
+        .unwrap();
+    let saved_path = completed.path.as_ref().unwrap();
+    let saved_bytes = fs::read(saved_path).unwrap();
+    assert_eq!(
+        completed.sha256.as_deref(),
+        Some(hash(&saved_bytes).as_str())
+    );
+    assert!(completed
+        .preview_data_url
+        .as_ref()
+        .unwrap()
+        .starts_with("data:image/png;base64,"));
+    wait_until(|| started.load(Ordering::SeqCst) >= 3);
+    assert!(
+        active.load(Ordering::SeqCst) >= 1,
+        "the first image remains in flight"
+    );
+    gate.release();
+    child.finish();
+    let done: ImageJob =
+        serde_json::from_slice(&fs::read(home.0.join("batch-done.json")).unwrap()).unwrap();
+    assert_eq!((done.completed, done.failed, done.total), (4, 0, 4));
+    assert_eq!(
+        mock.count(),
+        4,
+        "exactly one request per requested image, no retry"
+    );
+    assert_eq!(maximum.load(Ordering::SeqCst), 2);
+    assert_eq!(fs::read(saved_path).unwrap(), saved_bytes);
 }

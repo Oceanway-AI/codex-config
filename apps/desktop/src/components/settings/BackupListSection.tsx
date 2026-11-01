@@ -1,3 +1,4 @@
+import { OCEANWAY_EDITION } from "@/config/edition";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "@/lib/toast";
@@ -387,22 +388,24 @@ export function BackupListSection({
                         <Trash2 className="h-3 w-3" />
                       </Button>
                     </HoverTip>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-7 px-2 text-xs"
-                      disabled={isRestoring || isDeleting}
-                      onClick={() => setConfirmFilename(backup.filename)}
-                    >
-                      <RotateCcw className="h-3 w-3 mr-1" />
-                      {isRestoring
-                        ? t("settings.backupManager.restoring", {
-                            defaultValue: "Restoring...",
-                          })
-                        : t("settings.backupManager.restore", {
-                            defaultValue: "Restore",
-                          })}
-                    </Button>
+                    {!OCEANWAY_EDITION && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 px-2 text-xs"
+                        disabled={isRestoring || isDeleting}
+                        onClick={() => setConfirmFilename(backup.filename)}
+                      >
+                        <RotateCcw className="h-3 w-3 mr-1" />
+                        {isRestoring
+                          ? t("settings.backupManager.restoring", {
+                              defaultValue: "Restoring...",
+                            })
+                          : t("settings.backupManager.restore", {
+                              defaultValue: "Restore",
+                            })}
+                      </Button>
+                    )}
                   </div>
                 )}
               </div>
@@ -415,7 +418,7 @@ export function BackupListSection({
 
       {/* Restore Confirmation Dialog */}
       <Dialog
-        open={!!confirmFilename}
+        open={!OCEANWAY_EDITION && !!confirmFilename}
         onOpenChange={(open) => !open && setConfirmFilename(null)}
       >
         <DialogContent className="max-w-md" zIndex="alert">

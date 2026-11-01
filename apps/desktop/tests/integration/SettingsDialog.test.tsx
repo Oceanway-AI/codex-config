@@ -5,6 +5,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { http, HttpResponse } from "msw";
 import type { Settings } from "@/types";
 import { SettingsPage } from "@/components/settings/SettingsPage";
+vi.mock("@/config/edition", () => ({ OCEANWAY_EDITION: false }));
 import {
   resetProviderState,
   getSettings,

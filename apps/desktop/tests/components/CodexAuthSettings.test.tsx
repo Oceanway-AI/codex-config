@@ -55,6 +55,17 @@ describe("CodexAuthSettings classic sub-agent toggle", () => {
     diskUsageMock.mockResolvedValue(0);
   });
 
+  it("always preserves the original Codex login in Oceanway", async () => {
+    const onChange = await renderWith(false);
+    const toggle = screen.getByRole("switch", {
+      name: "settings.preserveCodexOfficialAuthOnSwitch",
+    });
+    expect(toggle).toHaveAttribute("aria-checked", "true");
+    expect(toggle).toBeDisabled();
+    fireEvent.click(toggle);
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
   // 开关挪到了 Codex 聚合页签的「聚合设置」（StackSettingsSheet），设置页不再显示
   it("is no longer on the settings page", async () => {
     await renderWith(true);

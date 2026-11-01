@@ -62,7 +62,24 @@ pub fn prompt_file_path(app: &AppType) -> Result<PathBuf, AppError> {
         AppType::ClaudeDesktop => unreachable!("handled above"),
     };
 
+    if matches!(app, AppType::Codex) {
+        return codex_effective_prompt_path(&base_dir);
+    }
     Ok(base_dir.join(filename))
+}
+
+/// Codex loads a nonempty AGENTS.override.md before AGENTS.md in the same
+/// directory. Backups, the prompt editor and managed rules must share its path.
+fn codex_effective_prompt_path(base_dir: &Path) -> Result<PathBuf, AppError> {
+    let override_path = base_dir.join("AGENTS.override.md");
+    match std::fs::read_to_string(&override_path) {
+        Ok(content) if !content.trim().is_empty() => Ok(override_path),
+        Ok(_) => Ok(base_dir.join("AGENTS.md")),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Ok(base_dir.join("AGENTS.md"))
+        }
+        Err(error) => Err(AppError::io(&override_path, error)),
+    }
 }
 
 /// 把用户主目录前缀换成 `~`，给界面显示用（复制路径仍用完整路径）。
@@ -98,6 +115,26 @@ fn get_base_dir_with_fallback(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn oceanway_codex_effective_prompt_uses_nonempty_override() {
+        let directory = tempfile::tempdir().unwrap();
+        let base = directory.path();
+        assert_eq!(
+            codex_effective_prompt_path(base).unwrap(),
+            base.join("AGENTS.md")
+        );
+        std::fs::write(base.join("AGENTS.override.md"), " \n").unwrap();
+        assert_eq!(
+            codex_effective_prompt_path(base).unwrap(),
+            base.join("AGENTS.md")
+        );
+        std::fs::write(base.join("AGENTS.override.md"), "Original instructions\n").unwrap();
+        assert_eq!(
+            codex_effective_prompt_path(base).unwrap(),
+            base.join("AGENTS.override.md")
+        );
+    }
 
     #[test]
     fn mcode_instructions_limit_counts_utf8_bytes() {

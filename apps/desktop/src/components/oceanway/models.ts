@@ -23,6 +23,18 @@ export function imageModels(models: OceanwayModel[]): string[] {
     (a, b) => b.localeCompare(a, "en", { numeric: true }),
   );
 }
+
+export function recommendedImageModel(models: string[]): string {
+  // Prefer the verified Images API models; keep every available model selectable.
+  return (
+    ["gpt-image-2", "gpt-image-1.5", "gpt-image-1"].find((id) =>
+      models.includes(id),
+    ) ??
+    models.find((id) => !/preview|experimental/i.test(id)) ??
+    models[0] ??
+    ""
+  );
+}
 export function recommendedModel(appId: string, models: string[]): string {
   const family =
     appId === "codex"

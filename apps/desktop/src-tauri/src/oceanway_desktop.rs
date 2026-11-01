@@ -79,21 +79,28 @@ pub fn launch_codex(restart: bool) -> Result<Option<String>, String> {
     }
     let process_list = processes();
     let home = crate::config::get_home_dir();
-    let selected = ["Codex", "ChatGPT"].into_iter().find_map(|name| {
-        [PathBuf::from("/Applications"), home.join("Applications")]
-            .into_iter()
-            .find_map(|base| {
-                let path = base.join(format!("{name}.app"));
-                let executable = path.join(format!("Contents/MacOS/{name}"));
-                let supported = name == "Codex" || path.join("Contents/Resources/codex").is_file();
-                (executable.is_file() && supported).then_some((name, path, executable))
-            })
-    });
-    let Some((name, path, executable)) = selected else {
+    let candidates = ["Codex", "ChatGPT"]
+        .into_iter()
+        .flat_map(|name| {
+            [PathBuf::from("/Applications"), home.join("Applications")]
+                .into_iter()
+                .filter_map(move |base| {
+                    let path = base.join(format!("{name}.app"));
+                    let executable = path.join(format!("Contents/MacOS/{name}"));
+                    let supported =
+                        name == "Codex" || path.join("Contents/Resources/codex").is_file();
+                    (executable.is_file() && supported).then_some((
+                        name.to_owned(),
+                        path,
+                        executable,
+                    ))
+                })
+        })
+        .collect::<Vec<_>>();
+    let Some((name, path, executable)) = select_macos_host(&candidates, &process_list)? else {
         return Ok(None);
     };
-    let needle = executable.to_string_lossy();
-    if restart && process_list.contains(needle.as_ref()) {
+    if restart && process_is_running(&process_list, executable) {
         let status = Command::new("osascript")
             .args(["-e", &format!("tell application \"{name}\" to quit")])
             .status()
@@ -102,12 +109,12 @@ pub fn launch_codex(restart: bool) -> Result<Option<String>, String> {
             return Err("应用拒绝退出，请保存任务后重试".into());
         }
         for _ in 0..50 {
-            if !processes().contains(needle.as_ref()) {
+            if !process_is_running(&processes(), executable) {
                 break;
             }
             thread::sleep(Duration::from_millis(200));
         }
-        if processes().contains(needle.as_ref()) {
+        if process_is_running(&processes(), executable) {
             return Err("应用仍在运行，已停止重启，请处理当前任务后重试".into());
         }
     }
@@ -122,6 +129,62 @@ pub fn launch_codex(restart: bool) -> Result<Option<String>, String> {
         "{name} 已{}，新配置将在新请求中生效",
         if restart { "重新启动" } else { "打开" }
     )))
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn process_is_running(processes: &str, executable: &std::path::Path) -> bool {
+    let executable = executable.to_string_lossy();
+    processes.lines().any(|line| {
+        line.trim_start()
+            .strip_prefix(executable.as_ref())
+            .is_some_and(|tail| tail.is_empty() || tail.starts_with(' '))
+    })
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn select_macos_host<'a>(
+    candidates: &'a [(String, std::path::PathBuf, std::path::PathBuf)],
+    processes: &str,
+) -> Result<Option<&'a (String, std::path::PathBuf, std::path::PathBuf)>, String> {
+    let running = candidates
+        .iter()
+        .filter(|(_, _, executable)| process_is_running(processes, executable))
+        .collect::<Vec<_>>();
+    match running.as_slice() {
+        [] => Ok(candidates.first()),
+        [candidate] => Ok(Some(*candidate)),
+        _ => Err("检测到多个正在运行的 Codex 桌面宿主，请保存任务并手动关闭后重试".into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn oceanway_macos_restart_prefers_running_host_and_rejects_ambiguity() {
+        let candidates = ["Codex", "ChatGPT"].map(|name| {
+            (
+                name.to_owned(),
+                std::path::PathBuf::from(format!("/Applications/{name}.app")),
+                std::path::PathBuf::from(format!("/Applications/{name}.app/Contents/MacOS/{name}")),
+            )
+        });
+        let codex = candidates[0].2.to_string_lossy();
+        let chatgpt = candidates[1].2.to_string_lossy();
+        assert_eq!(
+            select_macos_host(&candidates, &chatgpt).unwrap().unwrap().0,
+            "ChatGPT"
+        );
+        assert!(select_macos_host(&candidates, &format!("{codex}\n{chatgpt}")).is_err());
+        assert_eq!(
+            select_macos_host(&candidates, "").unwrap().unwrap().0,
+            "Codex"
+        );
+        assert!(!process_is_running(
+            &format!("{codex} Helper"),
+            &candidates[1].2
+        ));
+    }
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]

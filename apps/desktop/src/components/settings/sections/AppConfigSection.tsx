@@ -1,3 +1,4 @@
+import { OCEANWAY_EDITION } from "@/config/edition";
 import { useTranslation } from "react-i18next";
 import { Loader2 } from "lucide-react";
 import type {
@@ -152,19 +153,21 @@ export function AppConfigSection({
           <SettingsCard>
             {app === "claude" && (
               <>
-                <SettingsSwitchRow
-                  label={t("settings.enableClaudePluginIntegration")}
-                  help={{
-                    title: t("settings.enableClaudePluginIntegration"),
-                    body: t(
-                      "settings.enableClaudePluginIntegrationDescription",
-                    ),
-                  }}
-                  checked={!!settings.enableClaudePluginIntegration}
-                  onCheckedChange={(value) =>
-                    void onAutoSave({ enableClaudePluginIntegration: value })
-                  }
-                />
+                {!OCEANWAY_EDITION && (
+                  <SettingsSwitchRow
+                    label={t("settings.enableClaudePluginIntegration")}
+                    help={{
+                      title: t("settings.enableClaudePluginIntegration"),
+                      body: t(
+                        "settings.enableClaudePluginIntegrationDescription",
+                      ),
+                    }}
+                    checked={!!settings.enableClaudePluginIntegration}
+                    onCheckedChange={(value) =>
+                      void onAutoSave({ enableClaudePluginIntegration: value })
+                    }
+                  />
+                )}
                 <SettingsSwitchRow
                   label={t("settings.skipClaudeOnboarding")}
                   help={{

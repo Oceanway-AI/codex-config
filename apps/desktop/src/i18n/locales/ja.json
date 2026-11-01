@@ -1,6 +1,6 @@
 {
   "app": {
-    "title": "CC Switch",
+    "title": "Oceanway Config",
     "description": "Claude Code・Codex・Gemini CLI のためのオールインワンアシスタント"
   },
   "common": {
@@ -53,9 +53,9 @@
     "required": "必須"
   },
   "firstRunNotice": {
-    "title": "CC Switch へようこそ",
-    "bodyDefault": "CC Switch は Claude Code / Codex / Gemini CLI の複数プロバイダーをワンクリックで切り替えられるツールです。すでにこれらのツールを設定済みの場合、CC Switch は現在の設定を「default」という名前のプロバイダーとして自動的に保存するので、既存の設定が失われることはありません。",
-    "bodyOfficial": "リストには「Official（公式）」プリセットも用意されており、公式バージョンに戻したくなったらクリックするだけで切り替えられます。切り替える前に現在の設定は自動で default にバックアップされるので、自由に行き来できます。これが CC Switch の仕組みです 😊",
+    "title": "Oceanway Config へようこそ",
+    "bodyDefault": "Oceanway Config で Codex、Claude Code などの対応アプリに Oceanway API を設定できます。API キーを入力し、アプリとモデルを選んで保存してください。",
+    "bodyOfficial": "保存後にアプリを開き直すと設定が反映されます。既存の会話は元のアプリに保持されます。画像生成用モデルは個別に選択します。",
     "confirm": "了解しました"
   },
   "apiKeyInput": {
@@ -119,8 +119,8 @@
     "stackBadgeNoModels": "モデルが設定されていないため、モデル選択には表示されません",
     "stackSaved": "保存しました。{{client}} を再起動すると反映されます",
     "stackSavedLive": "保存しました。{{client}} にすぐ反映されます",
-    "stackReselectHint": "CC Switch がクライアント設定を書き換えるたびに、モデル選択で集約したモデルを選び直してください",
-    "stackPartial": "一部だけ書き込まれました。次の操作時または CC Switch の再起動時に完了します",
+    "stackReselectHint": "Oceanway Config がクライアント設定を書き換えるたびに、モデル選択で集約したモデルを選び直してください",
+    "stackPartial": "一部だけ書き込まれました。次の操作時または Oceanway Config の再起動時に完了します",
     "stackFailed": "集約したモデルの保存に失敗しました：{{error}}",
     "stackDefaultCannotRemove": "デフォルトのプロバイダーは削除できません。先に別のプロバイダーをデフォルトに設定してください",
     "stackDefaultHint": "デフォルトのプロバイダーです：一覧の先頭のモデルが Claude Code の起動時とバックグラウンドタスクを担当します",
@@ -139,9 +139,9 @@
       "nothingUsable": "Codex 内蔵の一覧：使えるモデルがありません。Codex を最新版に更新してください"
     },
     "routeOwnsCatalog": "ルーティング先のプロバイダーが独自のモデルカタログファイル（model_catalog_json）を使っているため、集約したモデルは Codex に表示されません",
-    "adoptCatalog": "CC Switch のモデルカタログを使う",
-    "adoptCatalogDone": "CC Switch のモデルカタログに切り替えました。Codex を再起動すると反映されます",
-    "adoptCatalogFailed": "CC Switch のモデルカタログへの切り替えに失敗しました：{{error}}",
+    "adoptCatalog": "Oceanway Config のモデルカタログを使う",
+    "adoptCatalogDone": "Oceanway Config のモデルカタログに切り替えました。Codex を再起動すると反映されます",
+    "adoptCatalogFailed": "Oceanway Config のモデルカタログへの切り替えに失敗しました：{{error}}",
     "noRoutingSupport": "ルーティング非対応",
     "blockedByProxyHint": "ルーティングモードでは公式プロバイダーに切り替えできません",
     "editProvider": "プロバイダーを編集",
@@ -190,7 +190,7 @@
       "title": "どのフォルダでターミナルを開きますか？",
       "description": "選んだフォルダでターミナルを開き、「{{name}}」の設定で {{app}} を起動します。通常はプロジェクトのフォルダを選びます。",
       "isolationTitle": "このターミナルは分離されています",
-      "isolationBody": "常に「{{name}}」を使います。あとで CC Switch でプロバイダーを切り替えても影響を受けず、CC Switch で使用中のプロバイダーも変更しません。",
+      "isolationBody": "常に「{{name}}」を使います。あとで Oceanway Config でプロバイダーを切り替えても影響を受けず、Oceanway Config で使用中のプロバイダーも変更しません。",
       "isolationBodyAgy": "「{{name}}」のキーとエンドポイントはこのターミナルの agy にだけ渡され、ファイルには書き込まれません。別のターミナルで直接 agy を実行した場合は Google ログインのままです。",
       "noDir": "フォルダが未選択です",
       "choose": "フォルダを選択…",
@@ -225,8 +225,8 @@
         "modelHelp": "モデル一覧の表示名を入力してください（「モデル一覧を取得」から選べます）。そのセッションにのみ適用されます。",
         "keyFieldsHint": "モデル、キー、エンドポイントは「ターミナルを開く」でのみ使われ、Antigravity 自身の設定には書き込みません。",
         "envFile": "起動時の環境変数",
-        "envFileHint": "カードの「ターミナルを開く」から agy を起動すると、CC Switch は API キーとエンドポイントをその agy プロセスだけに渡し、ファイルには書き込みません。他の環境変数は適用されません。",
-        "configJson": "モデル設定（CC Switch 形式）",
+        "envFileHint": "カードの「ターミナルを開く」から agy を起動すると、Oceanway Config は API キーとエンドポイントをその agy プロセスだけに渡し、ファイルには書き込みません。他の環境変数は適用されません。",
+        "configJson": "モデル設定（Oceanway Config 形式）",
         "configJsonHint": "ここではモデル設定のみ対応しています。他の Antigravity 設定は agy で変更し、MCP は MCP パネルで管理してください。",
         "account": "アカウント",
         "accountFollow": "agy の現在のログインに従う",
@@ -396,7 +396,7 @@
     "deleteProvider": "プロバイダーを削除",
     "deleteProviderMessage": "プロバイダー「{{name}}」を削除してもよろしいですか？この操作は元に戻せません。",
     "removeProvider": "プロバイダーを解除",
-    "removeProviderMessage": "プロバイダー「{{name}}」を設定から解除してもよろしいですか？\n\n解除後、このプロバイダーは無効になりますが、設定データは CC Switch に保持されます。いつでも再追加できます。",
+    "removeProviderMessage": "プロバイダー「{{name}}」を設定から解除してもよろしいですか？\n\n解除後、このプロバイダーは無効になりますが、設定データは Oceanway Config に保持されます。いつでも再追加できます。",
     "piDefaultProviderWarning": "Pi のグローバルデフォルトは現在このプロバイダーを参照しています。続行すると、Pi は別の利用可能なモデルを試します。/model で再選択するか、/login で別のプロバイダーにログインできます。",
     "proxy": {
       "title": "ローカルルーティングの有効化",
@@ -410,7 +410,7 @@
     },
     "unifyCodexHistory": {
       "title": "Codex セッション履歴を統一",
-      "message": "オンにすると、Codex CLI の resume 一覧に公式サブスクリプションとサードパーティのセッションがまとめて表示されます（Codex デスクトップ版はアップデートで全セッションを表示できるようになったため影響しません）。注意：プロバイダーをまたいで古いセッションを再開すると、相手のバックエンドが encrypted_content の推論内容を復号できず失敗する場合があります。\n\n既存の公式セッション履歴を共有一覧へ移行することもできます（移行前に ~/.cc-switch/backups へ自動バックアップし、オフにする際に復元を選べます）。",
+      "message": "オンにすると、Codex CLI の resume 一覧に公式サブスクリプションとサードパーティのセッションがまとめて表示されます（Codex デスクトップ版はアップデートで全セッションを表示できるようになったため影響しません）。注意：プロバイダーをまたいで古いセッションを再開すると、相手のバックエンドが encrypted_content の推論内容を復号できず失敗する場合があります。\n\n既存の公式セッション履歴を共有一覧へ移行することもできます（移行前に ~/.oceanway-config/backups へ自動バックアップし、オフにする際に復元を選べます）。",
       "migrateExisting": "既存の公式セッション履歴も移行する",
       "confirm": "理解しました、オンにする"
     },
@@ -444,13 +444,13 @@
       "goToApps": "「アプリ」を開く",
       "updates": "各アプリの新しいバージョン",
       "checkToolUpdates": "起動時に各アプリの新しいバージョンを確認",
-      "checkToolUpdatesHelp": "オンにすると、CC Switch の起動時にインストール済みのコマンドラインアプリの新しいバージョンを確認し、見つかればサイドバーの「アプリ」に点を表示します。自動でアップグレードはしません。",
+      "checkToolUpdatesHelp": "オンにすると、Oceanway Config の起動時にインストール済みのコマンドラインアプリの新しいバージョンを確認し、見つかればサイドバーの「アプリ」に点を表示します。自動でアップグレードはしません。",
       "windowAndTerminal": "ウィンドウとターミナル",
       "trayStyle": "トレイの表示",
       "trayStylePanel": "パネル",
       "trayStyleMenu": "メニュー",
       "trayStyleHelp": "トレイアイコンをクリックしたときに開くものです（Windows では左クリックで常にメイン画面を開き、右クリックで選択した表示を開きます）。パネル：各アプリの使用中のプロバイダー、クォータ、使用量を表示し、検索して切り替えられます。メニュー：システム標準のメニュー。すぐに反映されます。",
-      "minimizeToTrayHelp": "オンのときは閉じるボタンでウィンドウを隠すだけで、CC Switch はシステムトレイで動き続けます（軽量モードはトレイメニューにあります）。オフのときは閉じるボタンで終了します。",
+      "minimizeToTrayHelp": "オンのときは閉じるボタンでウィンドウを隠すだけで、Oceanway Config はシステムトレイで動き続けます（軽量モードはトレイメニューにあります）。オフのときは閉じるボタンで終了します。",
       "terminalHelp": "プロバイダーカードの「ターミナルを開く」で使うターミナルです。使えない場合はシステムの既定のターミナルを使います。"
     },
     "tabGeneral": "一般",
@@ -458,7 +458,7 @@
     "tabAdvanced": "詳細",
     "tabProxy": "ルーティング",
     "authCenter": {
-      "description": "GitHub Copilot、ChatGPT、xAI のサブスクリプションをプロバイダーとして使えます。認証情報はルーティングサービスが注入するため、これらのプロバイダーはルーティングモードで使います（Codex の公式ログインのバインドを除く）。Antigravity アカウントは agy の公式ログインの切り替えに使います。",
+      "description": "接続ページで Oceanway API キーと各アプリで使うモデルを管理します。",
       "beta": "Beta",
       "copilotDescription": "GitHub Copilot アカウントを管理します",
       "codexOauthDescription": "ChatGPT アカウントを管理します",
@@ -491,7 +491,7 @@
       },
       "globalProxy": {
         "title": "グローバル送信プロキシ",
-        "description": "CC Switch が外部 API にアクセスする際のプロキシを設定"
+        "description": "Oceanway Config が外部 API にアクセスする際のプロキシを設定"
       },
       "data": {
         "title": "データ管理",
@@ -562,7 +562,7 @@
     "themeDark": "月の裏側",
     "themeSystem": "システムに合わせる",
     "importExport": "SQL インポート/エクスポート",
-    "importExportHint": "移行や復元用にデータベースの SQL バックアップをインポート/エクスポートします（インポートは CC Switch がエクスポートしたバックアップのみ対応）。",
+    "importExportHint": "移行や復元用にデータベースの SQL バックアップをインポート/エクスポートします（インポートは Oceanway Config がエクスポートしたバックアップのみ対応）。",
     "exportConfig": "SQL バックアップをエクスポート",
     "selectConfigFile": "SQL ファイルを選択",
     "noFileSelected": "ファイルが選択されていません。",
@@ -639,15 +639,15 @@
         },
         "codexHistoryUnifyRestore": {
           "name": "Codex セッション統合の復元バックアップ",
-          "hint": "「バックアップから復元」を実行する前のコピー。CC Switch が再び読み込むことはありません。"
+          "hint": "「バックアップから復元」を実行する前のコピー。Oceanway Config が再び読み込むことはありません。"
         },
         "codexHistoryProviderMigration": {
           "name": "Codex セッショングループ移行バックアップ",
-          "hint": "セッショングループを移行する前のコピー。CC Switch が再び読み込むことはありません。"
+          "hint": "セッショングループを移行する前のコピー。Oceanway Config が再び読み込むことはありません。"
         },
         "liveFirstWrite": {
           "name": "設定ファイル初回書き込みバックアップ",
-          "hint": "CC Switch が各クライアントの設定ファイルを初めて書き換える前の元ファイル。削除すると元のファイルは取り戻せません。次回の書き込み時にその時点のファイルが改めてバックアップされます。"
+          "hint": "Oceanway Config が各クライアントの設定ファイルを初めて書き換える前の元ファイル。削除すると元のファイルは取り戻せません。次回の書き込み時にその時点のファイルが改めてバックアップされます。"
         },
         "hermes": {
           "name": "Hermes 設定のバックアップ",
@@ -659,7 +659,7 @@
         },
         "proxyLiveBackup": {
           "name": "旧ルーティング引き継ぎバックアップ",
-          "hint": "アップグレード時に旧ルーティング引き継ぎバックアップから移した設定のコピー。CC Switch が再び読み込むことはありません。"
+          "hint": "アップグレード時に旧ルーティング引き継ぎバックアップから移した設定のコピー。Oceanway Config が再び読み込むことはありません。"
         },
         "envVars": {
           "name": "環境変数クリーンアップのバックアップ",
@@ -797,7 +797,7 @@
       "region": "リージョン",
       "regionPlaceholder": "例: us-east-1",
       "bucket": "バケット",
-      "bucketPlaceholder": "例: my-cc-switch-bucket",
+      "bucketPlaceholder": "例: my-oceanway-bucket",
       "accessKeyId": "Access Key ID",
       "accessKeyIdPlaceholder": "例: AKIA...",
       "secretAccessKey": "Secret Access Key",
@@ -879,7 +879,7 @@
     "windowBehavior": "ウィンドウ動作",
     "windowBehaviorHint": "最小化動作や Claude プラグイン連携を設定します。",
     "launchOnStartup": "起動時に自動実行",
-    "launchOnStartupDescription": "システム起動時に CC Switch を自動起動します",
+    "launchOnStartupDescription": "システム起動時に Oceanway Config を自動起動します",
     "silentStartup": "サイレント起動",
     "silentStartupDescription": "起動時にメインウィンドウを表示せず、トレイのみで起動",
     "autoLaunchFailed": "自動起動の設定に失敗しました",
@@ -900,7 +900,7 @@
     "codexStackClassicSubagentsDescription": "メインとサブのエージェントが別のプロバイダーを使う場合は必ずオンにしてください。オフだとサブエージェントにタスクが届きません。",
     "codexStackClassicSubagentsForcedV2": "Codex の config.toml で [features] multi_agent_v2 がオンになっています。こちらが優先されるため、この設定は効きません。",
     "codexSessionCompression": "Codex の古いセッションを圧縮",
-    "codexSessionCompressionDescription": "オンにすると、Codex は起動するたびに 7 日以上更新のないセッションファイルをバックグラウンドで圧縮し、ディスク使用量を大きく減らします。圧縮したセッションで会話を続けると Codex が自動的に展開します。CC Switch は圧縮されたセッションも通常どおり表示・集計しますが、一覧には最後の返信のプレビューが表示されません。Codex でまだ開発中の機能のため、オンの間は Codex の起動時に毎回通知が表示されます。新しめの Codex が必要で、Codex を再起動すると有効になります。オフにすると圧縮は止まりますが、圧縮済みのセッションはそのまま残ります。",
+    "codexSessionCompressionDescription": "オンにすると、Codex は起動するたびに 7 日以上更新のないセッションファイルをバックグラウンドで圧縮し、ディスク使用量を大きく減らします。圧縮したセッションで会話を続けると Codex が自動的に展開します。Oceanway Config は圧縮されたセッションも通常どおり表示・集計しますが、一覧には最後の返信のプレビューが表示されません。Codex でまだ開発中の機能のため、オンの間は Codex の起動時に毎回通知が表示されます。新しめの Codex が必要で、Codex を再起動すると有効になります。オフにすると圧縮は止まりますが、圧縮済みのセッションはそのまま残ります。",
     "codexSessionCompressionUsage": "セッションの現在の使用量: {{size}}",
     "codexSessionCompressionFailed": "Codex セッション圧縮の設定を変更できませんでした",
     "unifyCodexHistoryRestoreCompleted": "バックアップから公式セッション履歴を復元しました（セッションファイル {{files}} 件、インデックス {{rows}} 行）",
@@ -952,9 +952,9 @@
     },
     "configDirectoryOverride": "設定ディレクトリの上書き（詳細）",
     "configDirectoryDescription": "WSL などで Claude Code や Codex を使う場合、ここで設定ディレクトリを WSL 側に合わせるとデータを揃えられます。",
-    "appConfigDir": "CC Switch 設定ディレクトリ",
-    "appConfigDirDescription": "CC Switch の保存場所をカスタマイズします（クラウド同期フォルダを指定すると設定を同期できます）",
-    "browsePlaceholderApp": "例: C:\\\\Users\\\\Administrator\\\\.cc-switch",
+    "appConfigDir": "Oceanway Config 設定ディレクトリ",
+    "appConfigDirDescription": "Oceanway Config の保存場所をカスタマイズします（クラウド同期フォルダを指定すると設定を同期できます）",
+    "browsePlaceholderApp": "例: C:\\\\Users\\\\Administrator\\\\.oceanway-config",
     "claudeConfigDir": "Claude Code 設定ディレクトリ",
     "claudeConfigDirDescription": "Claude の設定ディレクトリ（settings.json）を上書きします。カスタムディレクトリでは .claude.json（MCP）をその中に保存し、既定の ~/.claude では Claude Code の既定どおり ~/.claude.json を使います。",
     "codexConfigDir": "Codex 設定ディレクトリ",
@@ -990,7 +990,7 @@
     "upToDate": "最新バージョンです",
     "aboutHint": "バージョン情報と更新状況を表示します。",
     "portableMode": "ポータブルモード: 更新は手動ダウンロードが必要です。",
-    "portableUpdateHint": "ポータブル版：上のボタンで新しい zip をダウンロードし、展開して既存の cc-switch.exe を上書きしてください。設定とデータはユーザーフォルダの .cc-switch に保存されており、上書きしても失われません。",
+    "portableUpdateHint": "ポータブル版：上のボタンで新しい zip をダウンロードし、展開して既存の cc-switch.exe を上書きしてください。設定とデータはユーザーフォルダの .oceanway-config に保存されており、上書きしても失われません。",
     "updateAvailable": "新しいバージョンがあります: {{version}}",
     "updateBadge": "更新あり",
     "updateFailed": "更新のインストールに失敗しました。ダウンロードページを開こうとしました。",
@@ -1001,7 +1001,7 @@
     "viewCurrentReleaseNotes": "現在のバージョンのリリースノートを見る",
     "officialWebsite": "公式サイト",
     "github": "GitHub",
-    "starPrompt": "CC Switch がお役に立てたなら、GitHub でスターをお願いします。私たちにとって大きな励みになります",
+    "starPrompt": "Oceanway Config がお役に立てたなら、GitHub でスターをお願いします。私たちにとって大きな励みになります",
     "starOnGithub": "GitHub でスター",
     "manualInstallCommands": "手動インストールコマンド",
     "manualUninstallCommands": "手動アンインストールコマンド",
@@ -1063,7 +1063,7 @@
     "toolUpgradeConfirmBtn": "アップグレードを実行",
     "toolUpgradeUnanchoredHint": "コマンドラインが実際に使用する箇所を特定できません。既定のアップグレードコマンドを実行します（PATH 上の最初の npm にインストールされる場合があります）。",
     "toolUpgradeUnmanagedTitle": "次のツールのアップグレードをスキップしました",
-    "toolUpgradeUnmanagedDetail": "{{tool}}（{{path}}）は npm または認識できるインストーラーでインストールされていないため、CC Switch ではアップグレード方法を判断できません。元のインストール方法でアップグレードしてください（例：winget、Scoop、公式インストールスクリプトの再実行）。",
+    "toolUpgradeUnmanagedDetail": "{{tool}}（{{path}}）は npm または認識できるインストーラーでインストールされていないため、Oceanway Config ではアップグレード方法を判断できません。元のインストール方法でアップグレードしてください（例：winget、Scoop、公式インストールスクリプトの再実行）。",
     "envBadge": {
       "wsl": "WSL",
       "windows": "Win",
@@ -1077,7 +1077,7 @@
     "importFailedError": "設定のインポートに失敗しました: {{message}}",
     "exportFailedError": "設定のエクスポートに失敗しました:",
     "restartRequired": "再起動が必要です",
-    "restartRequiredMessage": "CC Switch の設定ディレクトリを変更すると再起動が必要です。今すぐ再起動しますか？",
+    "restartRequiredMessage": "Oceanway Config の設定ディレクトリを変更すると再起動が必要です。今すぐ再起動しますか？",
     "restartNow": "今すぐ再起動",
     "restartLater": "後で再起動",
     "restartFailed": "アプリの再起動に失敗しました。手動で閉じて再度開いてください。",
@@ -1217,7 +1217,7 @@
     },
     "current": {
       "readFailed": "Pi のプロバイダー設定を読み込めません",
-      "stateUnavailableHint": "CC Switch が Pi のプロバイダー設定を読み込むまで、プロバイダーの変更は無効です。"
+      "stateUnavailableHint": "Oceanway Config が Pi のプロバイダー設定を読み込むまで、プロバイダーの変更は無効です。"
     },
     "prompts": {
       "globalTab": "ライブラリ",
@@ -1270,7 +1270,7 @@
       "libraryLabel": "Pi のライブラリ",
       "systemFilesLabel": "Pi のシステムプロンプトファイル",
       "templatesLabel": "Pi のプロンプトテンプレート",
-      "externalTitle": "AGENTS.md が CC Switch の外で変更されています",
+      "externalTitle": "AGENTS.md が Oceanway Config の外で変更されています",
       "externalDetail": "内容（{{size}}）がライブラリのどれとも異なるため、有効と表示されるものはありません。別のものを有効にする前にライブラリへ保存されます。",
       "saveToLibrary": "ライブラリに保存",
       "reloadAfterDelete": "開いている Pi ではアイドル時に /reload すると反映されます。",
@@ -1347,7 +1347,7 @@
     "expandContent": "全文を表示",
     "collapseContent": "折りたたむ",
     "helpTitle": "セッションの出どころ",
-    "helpBody": "CC Switch は各アプリがこのコンピューターに保存しているセッション記録を読み取ります。保存場所は右上の ⋯ の「セッションの保存場所」で確認できます。Claude Desktop には独自のセッション記録はありません。",
+    "helpBody": "Oceanway Config は各アプリがこのコンピューターに保存しているセッション記録を読み取ります。保存場所は右上の ⋯ の「セッションの保存場所」で確認できます。Claude Desktop には独自のセッション記録はありません。",
     "moreActions": "セッションのその他の操作",
     "refreshList": "一覧を更新",
     "listRefreshed": "セッション一覧を更新しました",
@@ -1355,7 +1355,7 @@
     "preferredTerminal": "優先ターミナル",
     "whereMenu": "セッションの保存場所",
     "whereTitle": "セッションの保存場所",
-    "whereLead": "CC Switch は次の場所からセッションを読み取ります。Claude Desktop には独自のセッション記録はありません。",
+    "whereLead": "Oceanway Config は次の場所からセッションを読み取ります。Claude Desktop には独自のセッション記録はありません。",
     "whereNote": "設定で構成ディレクトリを変更したアプリは、変更後のディレクトリから読み取ります。",
     "appPrefix": "アプリ：",
     "chooseApp": "アプリを選択",
@@ -1400,7 +1400,7 @@
     "hermesLimit": "Hermes は最新 500 件のセッションのみ表示します",
     "emptyApp": "{{app}} のセッション記録はまだありません",
     "emptyAll": "セッション記録はまだありません",
-    "emptyAppHint": "CC Switch は {{path}} のセッションデータを読み取ります",
+    "emptyAppHint": "Oceanway Config は {{path}} のセッションデータを読み取ります",
     "emptySearch": "タイトル・ディレクトリ・最初と最後のメッセージが「{{query}}」に一致するセッションはありません",
     "clearSearchAction": "検索をクリア",
     "backToList": "セッション一覧に戻る",
@@ -1958,8 +1958,8 @@
     "remove": {
       "titleOne": "アカウント「{{login}}」を削除しますか？",
       "titleAll": "{{service}} のアカウントをすべて削除しますか？",
-      "leadOne": "CC Switch に保存されているこのアカウントのログイン情報を削除します。元に戻せません。",
-      "leadAll": "CC Switch に保存されているこれら {{count}} 件のアカウントのログイン情報を削除します。元に戻せません。",
+      "leadOne": "Oceanway Config に保存されているこのアカウントのログイン情報を削除します。元に戻せません。",
+      "leadAll": "Oceanway Config に保存されているこれら {{count}} 件のアカウントのログイン情報を削除します。元に戻せません。",
       "brokenOne": "次のプロバイダーは、再ログインするか別のアカウントを選ぶまで使えなくなります：",
       "brokenAll": "次のプロバイダーは、再ログインするまで使えなくなります：",
       "moved": "次のプロバイダーはデフォルトのアカウントを使っているため、新しいデフォルトのアカウントに切り替わります：",
@@ -2121,7 +2121,7 @@
     "headerName": "ヘッダー",
     "headerValue": "値",
     "headerNamePlaceholder": "X-Title",
-    "headerValuePlaceholder": "CC Switch",
+    "headerValuePlaceholder": "Oceanway Config",
     "removeHeader": "ヘッダーを削除",
     "noHeaders": "カスタムヘッダーはありません",
     "extraOptions": "追加オプション",
@@ -2415,11 +2415,11 @@
     "modelsDevDefaultHint": "最新リリース順に {{shown}} 件を表示しています（全 {{total}} 件）。キーワード入力で全件検索できます",
     "modelsDevAutoSync": {
       "title": "models.dev 料金の自動同期",
-      "description": "有効にすると、CC Switch の起動時に選択したモデルの最新料金を定期的に取得し、ローカル料金ファイルに保存します。",
+      "description": "有効にすると、Oceanway Config の起動時に選択したモデルの最新料金を定期的に取得し、ローカル料金ファイルに保存します。",
       "enabled": "有効",
       "disabled": "無効",
       "enableConfirmTitle": "料金の自動同期を有効にしますか？",
-      "enableConfirmMessage": "有効にすると、CC Switch の起動時に models.dev から選択したモデルの料金を定期的に更新します（最大 6 時間に 1 回）。同じモデル ID の内蔵料金と手動設定した料金は上書きされます。",
+      "enableConfirmMessage": "有効にすると、Oceanway Config の起動時に models.dev から選択したモデルの料金を定期的に更新します（最大 6 時間に 1 回）。同じモデル ID の内蔵料金と手動設定した料金は上書きされます。",
       "enableConfirmAction": "自動同期を有効にする",
       "configure": "モデルを選択",
       "configureTitle": "料金を自動同期するモデルを選択",
@@ -2576,7 +2576,7 @@
     "sources": {
       "scanTitle": "セッションログを自動スキャン",
       "scanHelpTitle": "セッションログとは",
-      "scanHelp": "各アプリがこのコンピューターに書き込む会話記録です。CC Switch はここから使用量を読み取るので、ルーティングなしでもデータがあります。",
+      "scanHelp": "各アプリがこのコンピューターに書き込む会話記録です。Oceanway Config はここから使用量を読み取るので、ルーティングなしでもデータがあります。",
       "coverage": "対象の {{total}} アプリ：{{apps}}",
       "cadenceOn": "起動時とバックグラウンドで 10 分ごとにスキャン。使用量ページを開くとすぐにスキャンし、その後は選択した間隔でスキャン",
       "cadenceOff": "自動スキャンはオフです。「今すぐ同期」を押したときだけスキャンします",
@@ -2714,7 +2714,7 @@
   },
   "dbUpgrade": {
     "title": "データベースのバージョンが新しすぎます",
-    "description": "このデータベースは新しいバージョンの CC Switch で作成されています。続行するにはアプリを更新してください。更新してもデータは削除されません。",
+    "description": "このデータベースは新しいバージョンの Oceanway Config で作成されています。続行するにはアプリを更新してください。更新してもデータは削除されません。",
     "versionInfo": "データベース v{{db}} · アプリ対応 v{{supported}}",
     "dbPath": "データベースファイル",
     "checking": "利用可能な更新を確認中…",
@@ -2760,7 +2760,7 @@
       "deleteConfirm": "サーバー「{{id}}」を削除しますか？この操作は元に戻せません。",
       "noServers": "まだサーバーがありません",
       "enabledApps": "有効なアプリ",
-      "noImportFound": "インポートする MCP サーバーが見つかりませんでした。すべてのサーバーは CC Switch で管理されています。",
+      "noImportFound": "インポートする MCP サーバーが見つかりませんでした。すべてのサーバーは Oceanway Config で管理されています。",
       "importSuccess": "{{count}} 個の MCP サーバーをインポートしました",
       "searchPlaceholder": "MCP の名前、説明、タグ、コマンドを検索...",
       "searchAriaLabel": "管理中の MCP サーバーを検索",
@@ -2918,7 +2918,7 @@
     "name": "名前",
     "namePlaceholder": "例: チームのコーディング規約",
     "description": "説明",
-    "descriptionPlaceholder": "任意。CC Switch 内でのみ表示",
+    "descriptionPlaceholder": "任意。Oceanway Config 内でのみ表示",
     "content": "本文",
     "contentPlaceholder": "# {{filename}}\n\n{{appName}} への常設の指示を Markdown で…",
     "loadFailed": "プロンプトの読み込みに失敗しました",
@@ -2978,7 +2978,7 @@
     "deleteBlocked": "有効なものは削除できません。先に無効にしてください",
     "emptyTitle": "{{app}} のプロンプトはまだありません",
     "emptyTarget": "有効にしたものが {{path}} に書き込まれます。",
-    "emptyFile": "{{path}} には CC Switch にまだない {{size}} の内容があります",
+    "emptyFile": "{{path}} には Oceanway Config にまだない {{size}} の内容があります",
     "importExisting": "既存の内容を取り込む",
     "formDescription": "名前、説明、{{file}} に書き込む本文",
     "requiredMark": "（必須）",
@@ -3019,7 +3019,7 @@
       "savedActive": "「{{name}}」を保存し、{{path}} を上書きしました",
       "savedActivePi": "「{{name}}」を保存し、AGENTS.md に書き込みました",
       "deleted": "「{{name}}」を削除しました",
-      "deletedSub": "CC Switch からのみ削除しました。{{path}} は変更していません",
+      "deletedSub": "Oceanway Config からのみ削除しました。{{path}} は変更していません",
       "deletedPiSub": "ライブラリからのみ削除しました。AGENTS.md は変更していません",
       "restored": "「{{name}}」を復元しました",
       "imported": "{{path}} の内容を取り込みました。ファイルは変更していません",
@@ -3338,7 +3338,7 @@
     "installSuccess": "スキル {{name}} をインストールしました",
     "installFailed": "インストールに失敗しました",
     "uninstallSuccess": "スキル {{name}} をアンインストールしました",
-    "uninstallPiPreserved": "Pi のコピーが CC Switch 管理下であることを確認できなかったため、そのまま残しました: {{path}}",
+    "uninstallPiPreserved": "Pi のコピーが Oceanway Config 管理下であることを確認できなかったため、そのまま残しました: {{path}}",
     "uninstallPiCleanupIncomplete": "Pi のクリーンアップを完了できませんでした。Pi Skills ディレクトリにコピーが残っていないか手動で確認してください。",
     "uninstallFailed": "アンインストールに失敗しました",
     "update": "更新",
@@ -3438,10 +3438,10 @@
     "noInstalledDescription": "リポジトリからスキルを発見してインストールするか、既存のスキルをインポートしてください",
     "discover": "スキルを発見",
     "import": "既存をインポート",
-    "importDescription": "CC Switch 統合管理にインポートするスキルを選択してください",
+    "importDescription": "Oceanway Config 統合管理にインポートするスキルを選択してください",
     "importSuccess": "{{count}} 件のスキルをインポートしました",
     "importSelected": "選択をインポート ({{count}})",
-    "noUnmanagedFound": "インポートするスキルが見つかりませんでした。すべてのスキルは CC Switch で管理されています。",
+    "noUnmanagedFound": "インポートするスキルが見つかりませんでした。すべてのスキルは Oceanway Config で管理されています。",
     "unmanagedAvailable": "インポート可能なスキルがあります",
     "foundIn": "発見場所",
     "local": "ローカル",
@@ -3499,7 +3499,7 @@
       "resyncPartial": "{{count}} 個のアプリで同期が完了しませんでした：{{apps}}",
       "resyncSkillItem": "{{directory}}：{{error}}",
       "locationTitle": "マスターコピーの保存先",
-      "locationCcSwitch": "CC Switch フォルダ",
+      "locationCcSwitch": "Oceanway Config フォルダ",
       "locationUnified": "共通フォルダ",
       "openFolder": "開く",
       "openFolderAria": "{{path}} を開く",
@@ -3507,7 +3507,7 @@
       "move": "移動して切り替え",
       "moving": "移動中…",
       "moveConfirmTitle": "{{count}} 個の Skill を {{path}} に移動しますか？",
-      "moveConfirmBody": "マスターコピーを 1 つずつ移動し、各アプリのリンクを新しい場所に向け直します。移動が終わるまで CC Switch を終了しないでください。",
+      "moveConfirmBody": "マスターコピーを 1 つずつ移動し、各アプリのリンクを新しい場所に向け直します。移動が終わるまで Oceanway Config を終了しないでください。",
       "moveConfirmButton": "移動して切り替え",
       "moveDone": "{{count}} 個の Skill を {{path}} に移動しました",
       "movePartial": "{{migrated}} 個の Skill を移動、{{errors}} 個が失敗しました。詳細はログを確認してください。",
@@ -3523,7 +3523,7 @@
   },
   "deeplink": {
     "confirmImport": "プロバイダーのインポートを確認",
-    "confirmImportDescription": "次の設定をディープリンクから CC Switch へインポートします",
+    "confirmImportDescription": "次の設定をディープリンクから Oceanway Config へインポートします",
     "importPrompt": "プロンプトをインポート",
     "importPromptDescription": "このシステムプロンプトをインポートするか確認してください",
     "importMcp": "MCP サーバーをインポート",
@@ -3812,7 +3812,7 @@
         "authTitle": "Codex が以前のアカウントをキャッシュしている可能性があります。新しいログインを読み込むにはバックグラウンドサーバーを再起動してください",
         "title": "Codex が古いモデル一覧を使っているため、切り替え後のモデルが表示されません",
         "unverifiedTitle": "切り替え前から開いている Codex は、以前のアカウントやモデル一覧を使い続けている可能性があります",
-        "unverifiedHint": "CC Switch からはデスクトップ版やエディター拡張が起動中かどうか確認できません。開いていなければ、この通知を閉じてください。",
+        "unverifiedHint": "Oceanway Config からはデスクトップ版やエディター拡張が起動中かどうか確認できません。開いていなければ、この通知を閉じてください。",
         "daemon": "CLI：codex を開き直すだけでは反映されません。バックグラウンドのデーモンを再起動する必要があります。",
         "others": "デスクトップ版：完全に終了してから開き直してください（macOS では ⌘Q。ウィンドウを閉じるだけでは不十分です）。エディター拡張：エディターのウィンドウを開き直してください。",
         "restart": "Codex デーモンを再起動",
@@ -4224,7 +4224,7 @@
     "appsTitle": "アプリ：インストール、アップグレード、サイドバーに表示するもの",
     "appsHasUpdate": "アプリ · 更新があります",
     "settings": "設定",
-    "settingsHasUpdate": "設定 · CC Switch の新しいバージョンがあります",
+    "settingsHasUpdate": "設定 · Oceanway Config の新しいバージョンがあります",
     "mode": {
       "route": "ルーティング",
       "stack": "集約"
@@ -4249,7 +4249,7 @@
     "columnVersion": "バージョン",
     "columnVisible": "表示",
     "visibleHelp": "オフにすると、このアプリはサイドバー、トレイメニュー、MCP / Skills のアプリ列、プロンプトとセッションのアプリ選択に表示されなくなります。表示しないだけで、プロバイダーや MCP などの設定はそのまま残り、アプリ自身の設定ファイルも変更されません。",
-    "desktopHelp": "Claude Desktop はデスクトップアプリのため、ここではインストールやアップグレードはできません。CC Switch は設定ファイル経由で接続します。",
+    "desktopHelp": "Claude Desktop はデスクトップアプリのため、ここではインストールやアップグレードはできません。Oceanway Config は設定ファイル経由で接続します。",
     "desktopUnsupported": "このシステムには対応していません",
     "desktopConnected": "接続済み",
     "desktopNotConnected": "未接続",
@@ -4358,18 +4358,18 @@
       "routeTitle": "{{app}} でルーティングを使いますか？",
       "stackTitle": "{{app}} で集約を使いますか？",
       "switchTitle": "{{app}} を「{{from}}」から「{{to}}」に切り替えますか？",
-      "routeLead": "リクエストはまずこのマシンの CC Switch を経由し、選んだプロバイダーに転送されます。",
+      "routeLead": "リクエストはまずこのマシンの Oceanway Config を経由し、選んだプロバイダーに転送されます。",
       "stackLead": "既定のプロバイダーがプレフィックスなしのリクエストを受けます。",
       "routeTo": "転送先",
       "stackDefault": "既定のプロバイダー",
       "officialOption": "{{name}}（公式）",
       "stackOfficialNote": "公式サブスクリプションを使っている場合は、公式アカウントを既定のプロバイダーにしてください。",
-      "routeNoteFile": "{{file}} のアドレスとキーを書き換えます。本物のキーは CC Switch に残り、ほかの設定は変わりません。",
+      "routeNoteFile": "{{file}} のアドレスとキーを書き換えます。本物のキーは Oceanway Config に残り、ほかの設定は変わりません。",
       "routeNoteSwitch": "以後「ルーティング」タブでプロバイダーを変えても設定ファイルは書き換えません。",
-      "routeNoteKeepRunning": "CC Switch を起動したままにしてください。終了時に直接接続へ書き戻し、次回起動時に再接続します。",
+      "routeNoteKeepRunning": "Oceanway Config を起動したままにしてください。終了時に直接接続へ書き戻し、次回起動時に再接続します。",
       "desktopRouteNoteModels": "Claude Desktop のモデル一覧がルーティング先のモデルに変わります。あとでルーティング先を変えると設定ファイルを書き換えます。",
       "desktopRouteNoteRestart": "{{app}} は起動時にしか設定を読みません。確認後に {{app}} を再起動してください。",
-      "desktopRouteNoteKeepRunning": "{{app}} のリクエストを転送するため、CC Switch を起動したままにしてください。",
+      "desktopRouteNoteKeepRunning": "{{app}} のリクエストを転送するため、Oceanway Config を起動したままにしてください。",
       "stackNoteMembers": "ほかに {{names}} の計 {{count}} モデルが、ccs- プレフィックス付きで /model に表示されます。",
       "desktopStackNoteMembers": "ほかに {{names}} の計 {{count}} モデルが、「プロバイダー / モデル」として Claude Desktop のモデル一覧に表示されます。",
       "stackNoteEmpty": "ほかのプロバイダーはまだ追加されていないため、切り替え後は既定のプロバイダーだけです。あとで「集約」タブで追加できます。",
@@ -4379,7 +4379,7 @@
       "leaveStackNote": "ccs- で始まる集約モデルは /model から消えます。集約リストは残り、集約に戻すと復活します。そのどれかを使用中なら、/model で通常のモデルに切り替えてください。",
       "desktopLeaveStackNote": "集約モデルは再起動後に Claude Desktop のモデル一覧から外れます。集約リストは残り、集約に戻すと復活します。そのどれかを使用中なら、通常のモデルに切り替えてください。",
       "exitTitle": "{{app}} を「{{from}}」から直接接続に戻しますか？",
-      "exitLead": "{{app}} は {{provider}} に直接接続し、リクエストは CC Switch を経由しなくなります。",
+      "exitLead": "{{app}} は {{provider}} に直接接続し、リクエストは Oceanway Config を経由しなくなります。",
       "exitNoteFile": "{{file}} のアドレスとキーを {{provider}} のものに書き戻します。ほかの設定は変わりません。",
       "exitNoteRouteKept": "ルーティング先、フェイルオーバーのキューと設定は保持され、次にルーティングを開始すると復元されます。",
       "desktopExitNoteRouteKept": "ルーティング先は保持され、次にルーティングを開始すると復元されます。",
@@ -4393,8 +4393,8 @@
     },
     "help": {
       "title": "接続モードの違い",
-      "direct": "直接接続：CC Switch はリクエストに一切関与せず、クライアントが選んだプロバイダーに直接つながる、最もネイティブな使い方です。",
-      "route": "ルーティング：リクエストはこのマシンの CC Switch を経由し、プロバイダーのホットスイッチ、フェイルオーバー、フォーマット変換などの高度な機能が使えます。",
+      "direct": "直接接続：Oceanway Config はリクエストに一切関与せず、クライアントが選んだプロバイダーに直接つながる、最もネイティブな使い方です。",
+      "route": "ルーティング：リクエストはこのマシンの Oceanway Config を経由し、プロバイダーのホットスイッチ、フェイルオーバー、フォーマット変換などの高度な機能が使えます。",
       "stack": "集約：複数のプロバイダーのモデルが /model に並び、クライアント内でシームレスに切り替えられます。"
     }
   },
@@ -4486,7 +4486,7 @@
     "clientHost": "接続先アドレス",
     "clientHostHint": "クライアントの接続先。空欄なら待ち受けアドレス",
     "clientHostInvalid": "クライアントから到達できる IP アドレスまたはホスト名を入力してください",
-    "clientHostHelp": "CC Switch がクライアント設定（Claude Desktop のゲートウェイ URL を含む）に書き込むホストです。空欄の場合は待ち受けアドレスから決まります。クライアントがループバックでこのマシンに届かない場合に設定します。例：WSL2（NAT モード）内の Claude Desktop セッションでは、待ち受けアドレスを 0.0.0.0 にし、WSL から到達できる Windows の IP（vEthernet (WSL) アダプターのアドレスなど）を入力し、ファイアウォールでポートを許可してください。",
+    "clientHostHelp": "Oceanway Config がクライアント設定（Claude Desktop のゲートウェイ URL を含む）に書き込むホストです。空欄の場合は待ち受けアドレスから決まります。クライアントがループバックでこのマシンに届かない場合に設定します。例：WSL2（NAT モード）内の Claude Desktop セッションでは、待ち受けアドレスを 0.0.0.0 にし、WSL から到達できる Windows の IP（vEthernet (WSL) アダプターのアドレスなど）を入力し、ファイアウォールでポートを許可してください。",
     "logging": "リクエストの使用量を記録",
     "loggingHelp": "オフにすると、使用量にルーティング経由のリクエストの明細が残りません。",
     "usingApps": "ルーティングを使用中のアプリ · {{count}}",
@@ -4570,7 +4570,7 @@
     },
     "ompDiscovery": {
       "title": "Oh My Pi が実際に読み込む範囲",
-      "help": "Oh My Pi は ~/.omp/agent 自身の設定に加え、他の Agent のディレクトリ（Claude の ~/.claude、Codex の ~/.codex など）からも MCP サーバー、スキル、コマンド、フック、ルール、設定を発見します。Oh My Pi の実際の読み込み内容を CC Switch の表示と一致させるには、~/.omp/agent/config.yml の disabledProviders で不要な発行元を無効化してください（id はドキュメント準拠：claude、codex、gemini、opencode、github、agents など）。",
+      "help": "Oh My Pi は ~/.omp/agent 自身の設定に加え、他の Agent のディレクトリ（Claude の ~/.claude、Codex の ~/.codex など）からも MCP サーバー、スキル、コマンド、フック、ルール、設定を発見します。Oh My Pi の実際の読み込み内容を Oceanway Config の表示と一致させるには、~/.omp/agent/config.yml の disabledProviders で不要な発行元を無効化してください（id はドキュメント準拠：claude、codex、gemini、opencode、github、agents など）。",
       "docsLink": "Oh My Pi に他の Agent の設定を読み込ませない方法"
     }
   },
@@ -4590,7 +4590,7 @@
     "failNoticeTitle": "{{app}} の設定に書き込めません",
     "failNoticeBody": "{{error}}。ファイルを直してから「再試行」を押してください。",
     "loadFailed": "MCP リストを読み込めませんでした",
-    "noFilesChanged": "CC Switch はファイルを変更していません。",
+    "noFilesChanged": "Oceanway Config はファイルを変更していません。",
     "emptyTitle": "MCP サーバーはまだありません",
     "emptyBody": "アプリで設定済みの MCP はそのまま取り込めます",
     "importHelpTitle": "取り込みで読む設定",
@@ -4610,8 +4610,8 @@
     "disableEverywhere": "すべてオフ",
     "deleteEllipsis": "削除",
     "deleteTitle": "{{id}} を削除しますか？",
-    "deleteBodyApps": "CC Switch と {{apps}} の設定ファイルからこの項目を削除します。元に戻せません。",
-    "deleteBody": "CC Switch からこの項目を削除します。元に戻せません。",
+    "deleteBodyApps": "Oceanway Config と {{apps}} の設定ファイルからこの項目を削除します。元に戻せません。",
+    "deleteBody": "Oceanway Config からこの項目を削除します。元に戻せません。",
     "toast": {
       "written": "{{app}} に書き込みました",
       "rowAllOn": "{{id}} を全 {{count}} アプリで有効化しました",
@@ -4630,7 +4630,7 @@
       "title": "取り込み完了",
       "added": "MCP を {{count}} 件追加しました：{{names}}。",
       "none": "新しい MCP は見つかりませんでした。",
-      "sameName": "同名の MCP は該当アプリのスイッチをオンにしただけで、設定は CC Switch のものが優先されます。",
+      "sameName": "同名の MCP は該当アプリのスイッチをオンにしただけで、設定は Oceanway Config のものが優先されます。",
       "failedTitle": "読み込めなかったアプリがあります",
       "filesTitle": "読み込んだファイル",
       "claudeNote": "（トップレベルの mcpServers）",
@@ -4731,7 +4731,7 @@
       "metaHint": "表示名・説明・タグ・ホームページ・ドキュメント",
       "displayName": "表示名",
       "displayNameHelpTitle": "表示名の使われ方",
-      "displayNameHelp": "CC Switch 内でだけ表示し、アプリの設定には書き込みません。",
+      "displayNameHelp": "Oceanway Config 内でだけ表示し、アプリの設定には書き込みません。",
       "description": "説明",
       "tags": "タグ",
       "tagsPlaceholder": "カンマ区切り（例：docs, web）",
@@ -4743,7 +4743,7 @@
   "skillsPage": {
     "noun": "Skill",
     "helpTitle": "Skills の同期のしくみ",
-    "help": "本体は CC Switch のフォルダーに置き、チェックしたアプリへ同期します。Claude Desktop と OpenClaw は Skills 非対応のため列がありません。",
+    "help": "本体は Oceanway Config のフォルダーに置き、チェックしたアプリへ同期します。Claude Desktop と OpenClaw は Skills 非対応のため列がありません。",
     "add": "Skill を追加",
     "addMenu": {
       "discover": "「見つける」で探す",
@@ -4762,7 +4762,7 @@
     "lastChecked": "前回の確認：{{when}}",
     "justNow": "たった今",
     "banner": {
-      "unmanaged": "このコンピューターに CC Switch の管理外の Skill が {{count}} 件あります。",
+      "unmanaged": "このコンピューターに Oceanway Config の管理外の Skill が {{count}} 件あります。",
       "reviewImport": "確認して取り込む",
       "ignore": "無視",
       "close": "閉じる"
@@ -4812,7 +4812,7 @@
     "confirm": {
       "uninstallOne": "{{name}} をアンインストールしますか？",
       "uninstallMany": "{{count}} 件の Skill をアンインストールしますか？",
-      "uninstallBody": "すべてのアプリから外し、CC Switch の本体も削除します。削除前に {{path}} へ自動でバックアップします。",
+      "uninstallBody": "すべてのアプリから外し、Oceanway Config の本体も削除します。削除前に {{path}} へ自動でバックアップします。",
       "uninstallManyButton": "{{count}} 件をアンインストール",
       "updateAll": "{{count}} 件の Skill を更新しますか？",
       "updateBody": "更新するとローカルのフォルダーをリポジトリの内容で置き換えます。ローカルの変更はバックアップ（{{path}}）にだけ残ります。",
@@ -4882,14 +4882,14 @@
     "import": {
       "title": "このコンピューターの Skill を取り込む",
       "helpTitle": "対象になるもの",
-      "help": "SKILL.md があり、まだ CC Switch が管理していないフォルダーです。",
-      "lead": "取り込むと CC Switch のフォルダーにコピーします。元のファイルはそのままです。",
+      "help": "SKILL.md があり、まだ Oceanway Config が管理していないフォルダーです。",
+      "lead": "取り込むと Oceanway Config のフォルダーにコピーします。元のファイルはそのままです。",
       "searchPlaceholder": "名前か場所を検索",
       "searchAria": "取り込む Skill を検索",
       "selectAll": "すべて選択",
       "selectNone": "選択を解除",
       "foundIn": "見つかった場所：{{places}}",
-      "foundCcSwitch": "CC Switch のフォルダー",
+      "foundCcSwitch": "Oceanway Config のフォルダー",
       "appsTitle": "取り込み後に有効にするアプリ",
       "appsHelpTitle": "既定でチェックされるアプリ",
       "appsHelp": "「見つかった場所」のアプリは既定でチェックされ、そこで見つかった Skill だけを有効にします。追加でチェックしたアプリでは取り込むすべての Skill を有効にします。Pi はフォルダーで判定するためここにはありません。",
@@ -5010,7 +5010,7 @@
       "loginMaybeExpired": "ログインの有効期限が切れている可能性があります。切り替える前に再ログインしてください",
       "statusLoadFailed": "Claude アカウントを読み込めませんでした。再試行してください。",
       "empty": "Claude アカウントはまだありません。複数のサブスクリプションアカウントを切り替えるときはここでログインします。",
-      "removeNote": "CC Switch がこのアカウント用に保存したログインだけを削除します。他の場所でログアウトされることはなく、Claude Code の現在のログイン（~/.claude）も変わりません。このアカウントを使うカードは Claude Code の現在のログインに切り替わります。",
+      "removeNote": "Oceanway Config がこのアカウント用に保存したログインだけを削除します。他の場所でログアウトされることはなく、Claude Code の現在のログイン（~/.claude）も変わりません。このアカウントを使うカードは Claude Code の現在のログインに切り替わります。",
       "wslUnsupported": "Claude の設定フォルダーが WSL にあるため、Claude アカウントの追加と切り替えにはまだ対応していません。"
     },
     "openBrowser": {
@@ -5037,7 +5037,7 @@
       "cancelled": "ログインがキャンセルされたか、別のログインに置き換えられました。再ログインしてください。",
       "success": "Kimi Code にログインし、公式モデルを追加しました。",
       "removeConfirm": "{{name}} を削除しますか？Kimi Code からこのアカウントのプロバイダーとモデルを削除し、ローカル認証情報とカードも削除します。他のアカウントには影響しません。",
-      "dismissConfirm": "{{name}} を一覧から外しますか？これは Kimi Code 自身のログインです。CC Switch はログアウトせず、認証情報とモデルも保持します。ログアウトする場合は Kimi Code で /logout を実行してください。再度ログインすると一覧に戻ります。",
+      "dismissConfirm": "{{name}} を一覧から外しますか？これは Kimi Code 自身のログインです。Oceanway Config はログアウトせず、認証情報とモデルも保持します。ログアウトする場合は Kimi Code で /logout を実行してください。再度ログインすると一覧に戻ります。",
       "primaryHidden": "Kimi Code 自身のログインは一覧から外されています。同じアカウントで再ログインすると戻ります",
       "removeCurrentHint": "このアカウントは使用中です。別のアカウントに切り替えてから削除してください",
       "manageAccounts": "Kimi アカウントを管理",
@@ -5085,7 +5085,7 @@
     },
     "current": {
       "readFailed": "Oh My Pi のプロバイダー設定を読み込めません",
-      "stateUnavailableHint": "CC Switch が Oh My Pi のプロバイダー設定を読み込むまで、プロバイダーの変更は無効です。"
+      "stateUnavailableHint": "Oceanway Config が Oh My Pi のプロバイダー設定を読み込むまで、プロバイダーの変更は無効です。"
     },
     "form": {
       "discoveryType": "モデルの自動検出",
@@ -5108,7 +5108,7 @@
       "invalidMcp": "Oh My Pi の MCP JSON が無効です。ルートと mcpServers はオブジェクトである必要があります。",
       "invalidYaml": "Oh My Pi の YAML が無効です。ルートと providers はマッピングにしてください。",
       "invalidProvider": "Oh My Pi のプロバイダ設定が無効です。必須項目、API 形式、値の型を確認してください。",
-      "manualEdit": "この YAML の構造は CC Switch で安全に編集できません。models.yml を手動で編集してください。",
+      "manualEdit": "この YAML の構造は Oceanway Config で安全に編集できません。models.yml を手動で編集してください。",
       "duplicateProvider": "この Oh My Pi プロバイダキーは既に存在します。",
       "renameProvider": "Oh My Pi プロバイダキーは変更できません。",
       "providerMissing": "この Oh My Pi プロバイダは保存済みリストにありません。",

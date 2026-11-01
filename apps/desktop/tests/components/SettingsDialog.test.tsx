@@ -4,6 +4,7 @@ import "@testing-library/jest-dom";
 import type { ComponentProps } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { SettingsPage } from "@/components/settings/SettingsPage";
+vi.mock("@/config/edition", () => ({ OCEANWAY_EDITION: false }));
 
 const toastSuccessMock = vi.fn();
 const toastErrorMock = vi.fn();

@@ -3,6 +3,12 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { ImportExportSection } from "@/components/settings/ImportExportSection";
 
 const tMock = vi.fn((key: string) => key);
+const edition = vi.hoisted(() => ({ oceanway: false }));
+vi.mock("@/config/edition", () => ({
+  get OCEANWAY_EDITION() {
+    return edition.oceanway;
+  },
+}));
 
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({ t: tMock }),
@@ -22,11 +28,30 @@ describe("ImportExportSection Component", () => {
   };
 
   beforeEach(() => {
+    edition.oceanway = false;
     tMock.mockImplementation((key: string) => key);
     baseProps.onSelectFile.mockReset();
     baseProps.onImport.mockReset();
     baseProps.onExport.mockReset();
     baseProps.onClear.mockReset();
+  });
+
+  it("keeps export available without import controls in Oceanway", () => {
+    edition.oceanway = true;
+    render(<ImportExportSection {...baseProps} selectedFile="/existing.sql" />);
+    expect(
+      screen.queryByRole("button", {
+        name: /settings\.(import|selectConfigFile)/,
+      }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "common.clear" }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: "settings.exportConfig" }),
+    );
+    expect(baseProps.onExport).toHaveBeenCalledTimes(1);
+    expect(baseProps.onImport).not.toHaveBeenCalled();
   });
 
   it("should disable import button and show placeholder when no file selected", () => {

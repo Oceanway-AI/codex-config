@@ -389,7 +389,7 @@ fn config_paths(id: &str) -> Result<Vec<PathBuf>, String> {
 const IMAGE_RULE_START: &str = "<!-- OCEANWAY:IMAGES:BEGIN -->";
 const IMAGE_RULE_END: &str = "<!-- OCEANWAY:IMAGES:END -->";
 fn merge_image_rule(original: &str) -> Result<String, String> {
-    let rule = format!("{IMAGE_RULE_START}\nWhen the user requests image generation or image editing, use the oceanway_images MCP tools: generate_images, then get_image_job until completion. Omit the model to use the configured Oceanway image model. Return the actual generated image files to the user. Do not use built-in imagegen or an image CLI as a fallback. Do not automatically retry failed paid requests.\n{IMAGE_RULE_END}");
+    let rule = format!("{IMAGE_RULE_START}\nWhen the user requests image generation or image editing, use the oceanway_images MCP tools: generate_images, then get_image_job until completion. Omit the model to use the configured Oceanway image model. For multiple images, submit one generate_images call with count equal to the total requested and prompts for distinct images; the service handles concurrency. Return completed image files as they become available while polling the same job until completion. Do not use built-in imagegen or an image CLI as a fallback. Do not automatically retry failed paid requests.\n{IMAGE_RULE_END}");
     match (
         original.find(IMAGE_RULE_START),
         original.find(IMAGE_RULE_END),
@@ -426,7 +426,7 @@ fn install_image_rule(state: &AppState, app: &AppType) -> Result<(), String> {
     Ok(())
 }
 
-fn verify_live_image_server(app: &AppType, expected: &Value) -> Result<(), String> {
+fn read_live_image_server(app: &AppType) -> Result<Option<Value>, String> {
     let value = match app {
         AppType::Codex => {
             let content = crate::codex_config::read_and_validate_codex_config_text()
@@ -446,25 +446,88 @@ fn verify_live_image_server(app: &AppType, expected: &Value) -> Result<(), Strin
             .map_err(|e| e.to_string())?
             .remove("oceanway_images")
             .unwrap_or(Value::Null),
-        AppType::OpenCode => {
-            let value = crate::opencode_config::get_mcp_servers()
-                .map_err(|e| e.to_string())?
-                .remove("oceanway_images")
-                .unwrap_or(Value::Null);
-            let expected_command = json!([expected["command"], "--image-mcp-stdio"]);
-            if value["command"] == expected_command && value["enabled"] != false {
-                return Ok(());
-            }
-            return Err("OpenCode 图片 MCP 写入校验失败".into());
-        }
+        AppType::OpenCode => crate::opencode_config::get_mcp_servers()
+            .map_err(|e| e.to_string())?
+            .remove("oceanway_images")
+            .unwrap_or(Value::Null),
         _ => return Err("此应用的图片 MCP 尚未适配".into()),
     };
-    if value["command"] != expected["command"]
-        || value["args"] != expected["args"]
-        || value.pointer("/env/OCEANWAY_CONFIG_HOME")
-            != expected.pointer("/env/OCEANWAY_CONFIG_HOME")
-    {
+    Ok((!value.is_null()).then_some(value))
+}
+
+fn expected_live_image_server(app: &AppType, spec: &Value) -> Value {
+    if *app == AppType::OpenCode {
+        let mut command = vec![spec["command"].clone()];
+        command.extend(spec["args"].as_array().cloned().unwrap_or_default());
+        return json!({"type":"local", "command":command,
+            "environment":spec["env"], "enabled":true});
+    }
+    let mut expected = spec.clone();
+    if *app == AppType::Codex {
+        if let Some(object) = expected.as_object_mut() {
+            object.remove("type");
+        }
+    }
+    expected
+}
+
+fn verify_live_image_server(app: &AppType, expected: &Value) -> Result<(), String> {
+    if read_live_image_server(app)?.as_ref() != Some(&expected_live_image_server(app, expected)) {
         return Err("图片 MCP 未完整写入客户端配置，请重试".into());
+    }
+    Ok(())
+}
+
+fn ensure_image_server_ownership(
+    previous: Option<&crate::McpServer>,
+    apps: &crate::McpApps,
+    spec: &Value,
+) -> Result<(), String> {
+    if let Some(previous) = previous {
+        let owned = previous.homepage.as_deref() == Some(ORIGIN)
+            && previous.tags.iter().any(|tag| tag == "oceanway-managed")
+            && previous.server["args"] == json!(["--image-mcp-stdio"])
+            && previous.server.pointer("/env/OCEANWAY_CONFIG_HOME")
+                == spec.pointer("/env/OCEANWAY_CONFIG_HOME");
+        if !owned {
+            return Err(
+                "已有同名 oceanway_images 工具，已保留原设置；请先在 MCP 管理中为原工具改名".into(),
+            );
+        }
+    }
+    for app in apps.enabled_apps() {
+        let Some(live) = read_live_image_server(&app)? else {
+            continue;
+        };
+        let is_current = live == expected_live_image_server(&app, spec);
+        let is_previous =
+            previous.is_some_and(|saved| live == expected_live_image_server(&app, &saved.server));
+        if !is_current && !is_previous {
+            return Err(format!(
+                "{} 已有同名或被手动修改的 oceanway_images 工具，已保留原设置",
+                app.as_str()
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn check_image_runtime(spec: &Value, home: &Path) -> Result<(), String> {
+    let executable = spec["command"]
+        .as_str()
+        .ok_or("图片工具缺少可执行文件路径")?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|_| "无法创建图片工具检查任务")?;
+    let checked = runtime.block_on(crate::oceanway_images::mcp_stdio::check(
+        Path::new(executable),
+        home,
+    ));
+    runtime.shutdown_timeout(Duration::from_secs(5));
+    let checked = checked.map_err(|error| format!("图片工具启动检查未通过：{error}"))?;
+    if !checked.tools_available {
+        return Err("图片工具未返回完整工具列表，请重新安装 Oceanway Config".into());
     }
     Ok(())
 }
@@ -478,14 +541,21 @@ fn backup_configs(root: &Path, selections: &[AppSelection]) -> Result<PathBuf, S
         .join(uuid::Uuid::new_v4().to_string());
     std::fs::create_dir_all(&destination).map_err(|e| e.to_string())?;
     let mut manifest = Vec::new();
-    for selection in selections {
-        for (index, source) in config_paths(&selection.app_id)?.into_iter().enumerate() {
+    let mut paths = selections
+        .iter()
+        .map(|selection| {
+            config_paths(&selection.app_id).map(|paths| (selection.app_id.as_str(), paths))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    paths.push(("oceanway", vec![root.join("image-provider.json")]));
+    for (app_id, paths) in paths {
+        for (index, source) in paths.into_iter().enumerate() {
             if !source.exists() {
                 manifest.push(json!({"source":source,"existed":false}));
                 continue;
             }
             let bytes = std::fs::read(&source).map_err(|e| format!("配置备份失败：{e}"))?;
-            let target = destination.join(format!("{}-{index}.backup", selection.app_id));
+            let target = destination.join(format!("{app_id}-{index}.backup"));
             crate::config::atomic_write_private(&target, &bytes).map_err(|e| e.to_string())?;
             if std::fs::read(&target).map_err(|e| e.to_string())? != bytes {
                 return Err("配置备份校验失败，已停止配置".into());
@@ -526,6 +596,32 @@ fn validate_selection(request: &ApplyRequest, models: &[Model]) -> Result<(), St
     Ok(())
 }
 
+fn retained_image_settings(
+    selected: Option<&str>,
+    allowed: &[String],
+    previous: Option<&crate::oceanway_images::ProviderSummary>,
+    available: &[Model],
+) -> (Option<String>, Vec<String>, Option<String>) {
+    if let Some(model) = selected {
+        let mut models = allowed.to_vec();
+        if !models.iter().any(|item| item == model) {
+            models.push(model.to_owned());
+        }
+        return (Some(model.to_owned()), models, None);
+    }
+    let default_model = previous.and_then(|value| value.default_image_model.clone());
+    let models = previous
+        .map(|value| value.allowed_image_models.clone())
+        .unwrap_or_default();
+    let warning = default_model
+        .as_ref()
+        .filter(|model| !available.iter().any(|item| &item.id == *model))
+        .map(|model| {
+            format!("已保留原图片设置；当前 Key 无权使用图片模型 {model}，请重新选择图片模型")
+        });
+    (default_model, models, warning)
+}
+
 #[tauri::command]
 pub async fn oceanway_apply_config(
     state: tauri::State<'_, AppState>,
@@ -538,19 +634,31 @@ pub async fn oceanway_apply_config(
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let home = crate::config::get_app_config_dir();
-        let backup = backup_configs(&home, &request.apps)?;
+        let previous_mcp = state.db.get_all_mcp_servers().map_err(|e| e.to_string())?
+            .get("oceanway_images").cloned();
+        let mut backup_apps = request.apps.clone();
+        if request.image_model.as_deref().is_some_and(|model| !model.is_empty()) {
+            if let Some(previous) = &previous_mcp {
+                for app in previous.apps.enabled_apps() {
+                    if APPS.iter().any(|(id, _)| *id == app.as_str())
+                        && !backup_apps.iter().any(|selection| selection.app_id == app.as_str()) {
+                        backup_apps.push(AppSelection { app_id:app.as_str().into(), model:String::new() });
+                    }
+                }
+            }
+        }
+        let backup = backup_configs(&home, &backup_apps)?;
         // Upstream supports preserving the original ChatGPT login alongside the
         // custom provider. Oceanway makes this invariant, not a user toggle.
         let mut settings = crate::settings::get_settings();
         settings.preserve_codex_official_auth_on_switch = true;
         crate::settings::update_settings(settings).map_err(|e| e.to_string())?;
         let image_model = request.image_model.as_deref().filter(|s| !s.is_empty());
-        let mut image_models = request.allowed_image_models.clone();
-        if let Some(model) = image_model {
-            if !image_models.iter().any(|m| m == model) {
-                image_models.push(model.to_owned());
-            }
-        }
+        let previous_images = if home.join("image-provider.json").exists() {
+            Some(crate::oceanway_images::read_provider_summary(&home)?)
+        } else { None };
+        let (effective_image_model, image_models, preserved_image_warning) = retained_image_settings(
+            image_model, &request.allowed_image_models, previous_images.as_ref(), &models);
         let mut results = Vec::new();
         let mut mcp_apps = crate::McpApps::default();
         for selection in request.apps {
@@ -609,20 +717,15 @@ pub async fn oceanway_apply_config(
             if !results.iter().any(|r| r.ok) {
                 return Ok(());
             }
-            crate::oceanway_images::configure(&home, &key, image_model, &image_models)?;
+            crate::oceanway_images::configure(&home, &key, effective_image_model.as_deref(), &image_models)?;
             if image_model.is_some() && !mcp_apps.is_empty() {
                 let spec = crate::oceanway_images::mcp_server_spec(&home)?;
-                let previous = state
-                    .db
-                    .get_all_mcp_servers()
-                    .map_err(|e| e.to_string())?
-                    .get("oceanway_images")
-                    .cloned();
-                if let Some(previous) = previous {
+                if let Some(previous) = &previous_mcp {
                     for app in previous.apps.enabled_apps() {
                         mcp_apps.set_enabled_for(&app, true);
                     }
                 }
+                ensure_image_server_ownership(previous_mcp.as_ref(), &mcp_apps, &spec)?;
                 let rule_apps = mcp_apps.enabled_apps().into_iter().filter(|app|
                     results.iter().any(|r|r.ok && r.app_id == app.as_str())).collect::<Vec<_>>();
                 let sync_error=crate::McpService::upsert_server(
@@ -637,21 +740,32 @@ pub async fn oceanway_apply_config(
                         ),
                         homepage: Some(ORIGIN.into()),
                         docs: None,
-                        tags: vec!["image".into()],
+                        tags: vec!["image".into(), "oceanway-managed".into()],
                     },
                 ).err().map(|e|e.to_string());
+                let runtime_check = check_image_runtime(&spec, &home);
                 for app in rule_apps {
-                    let outcome=verify_live_image_server(&app,&spec).and_then(|_|install_image_rule(&state,&app));
+                    let outcome=verify_live_image_server(&app,&spec)
+                        .and_then(|_|runtime_check.clone())
+                        .and_then(|_|install_image_rule(&state,&app));
                     if let Some(result)=results.iter_mut().find(|r|r.app_id==app.as_str()) {
                         result.image_configured=outcome.is_ok();
                         result.image_message=Some(match outcome {
-                            Ok(())=>"图片 MCP 已写入应用；首次调用若提示授权，只需授权 Oceanway 图片工具".into(),
+                            Ok(())=>"图片 MCP 已写入，并通过本机启动和四项工具检查；首次调用若提示授权，只需授权 Oceanway 图片工具".into(),
                             Err(e)=>crate::redact_known_secrets_strict(&format!("{e}{}",sync_error.as_ref().map(|s|format!("：{s}")).unwrap_or_default()),&[key.clone()]),
                         });
                         if !result.image_configured {result.message.push_str("；图片配置未完成，请查看图片状态");}
                     }
                 }
                 images_configured=results.iter().filter(|r|r.ok).all(|r|r.image_configured);
+            } else if image_model.is_none() && previous_images.is_some() {
+                for result in results.iter_mut().filter(|result| result.ok) {
+                    result.image_message=Some(preserved_image_warning.clone()
+                        .unwrap_or_else(|| "本次未修改已有图片设置".into()));
+                    if let Some(warning) = &preserved_image_warning {
+                        result.message.push_str(&format!("；{warning}"));
+                    }
+                }
             }
             Ok(())
         })();
@@ -821,6 +935,33 @@ mod tests {
         assert!(merge_image_rule(IMAGE_RULE_START).is_err());
     }
 
+    #[test]
+    fn skipping_image_configuration_retains_previous_model_and_reports_lost_permission() {
+        let previous = crate::oceanway_images::ProviderSummary {
+            endpoint: API_BASE.into(),
+            key_configured: true,
+            default_image_model: Some("image-fixture".into()),
+            allowed_image_models: vec!["image-fixture".into()],
+        };
+        let (model, allowed, warning) = retained_image_settings(None, &[], Some(&previous), &[]);
+        assert_eq!(model.as_deref(), Some("image-fixture"));
+        assert_eq!(allowed, previous.allowed_image_models);
+        assert!(warning.unwrap().contains("当前 Key 无权使用"));
+        let available = vec![Model {
+            id: "image-fixture".into(),
+        }];
+        assert!(
+            retained_image_settings(None, &[], Some(&previous), &available)
+                .2
+                .is_none()
+        );
+        let (model, allowed, warning) =
+            retained_image_settings(Some("new-image"), &[], Some(&previous), &[]);
+        assert_eq!(model.as_deref(), Some("new-image"));
+        assert_eq!(allowed, vec!["new-image".to_owned()]);
+        assert!(warning.is_none());
+    }
+
     struct FixtureHome {
         previous: Option<std::ffi::OsString>,
         directory: tempfile::TempDir,
@@ -844,6 +985,117 @@ mod tests {
                 None => std::env::remove_var("CC_SWITCH_TEST_HOME"),
             }
         }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn codex_override_rule_and_backup_preserve_original_files_fixture() {
+        let fixture = FixtureHome::new();
+        let codex = fixture.directory.path().join(".codex");
+        std::fs::create_dir_all(&codex).unwrap();
+        let standard = "Keep standard instructions byte-for-byte.\n";
+        let original = "# Existing override\nNever remove the customer's files.\n";
+        std::fs::write(codex.join("AGENTS.md"), standard).unwrap();
+        std::fs::write(codex.join("AGENTS.override.md"), original).unwrap();
+        let backup = backup_configs(
+            &crate::config::get_app_config_dir(),
+            &[AppSelection {
+                app_id: "codex".into(),
+                model: "fixture".into(),
+            }],
+        )
+        .unwrap();
+        let state = AppState::new(std::sync::Arc::new(crate::Database::memory().unwrap()));
+        install_image_rule(&state, &AppType::Codex).unwrap();
+        let effective = std::fs::read_to_string(codex.join("AGENTS.override.md")).unwrap();
+        assert!(effective.starts_with(original));
+        assert!(effective.contains(IMAGE_RULE_START));
+        assert_eq!(
+            std::fs::read_to_string(codex.join("AGENTS.md")).unwrap(),
+            standard
+        );
+        let manifest: Value = crate::config::read_json_file(&backup.join("manifest.json")).unwrap();
+        let entry = manifest
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| {
+                entry["source"]
+                    .as_str()
+                    .is_some_and(|source| source.ends_with("AGENTS.override.md"))
+            })
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(entry["backup"].as_str().unwrap()).unwrap(),
+            original
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn image_registration_preserves_other_tools_and_refuses_same_name_conflicts_fixture() {
+        let _fixture = FixtureHome::new();
+        let codex = crate::codex_config::get_codex_config_dir();
+        std::fs::create_dir_all(&codex).unwrap();
+        std::fs::write(
+            codex.join("config.toml"),
+            "[mcp_servers.customer_tool]\ncommand = \"keep-me\"\n",
+        )
+        .unwrap();
+        let claude = crate::config::get_claude_settings_path();
+        std::fs::create_dir_all(claude.parent().unwrap()).unwrap();
+        crate::claude_mcp::set_mcp_servers_map(&std::collections::HashMap::from([(
+            "customer_tool".into(),
+            json!({"command":"keep-me"}),
+        )]))
+        .unwrap();
+        let state = AppState::new(std::sync::Arc::new(crate::Database::memory().unwrap()));
+        let apps = crate::McpApps {
+            codex: true,
+            claude: true,
+            ..Default::default()
+        };
+        let spec = json!({"command":"fixture-oceanway", "args":["--image-mcp-stdio"],
+            "env":{"OCEANWAY_CONFIG_HOME":crate::config::get_app_config_dir()},
+            "startup_timeout_sec":30, "tool_timeout_sec":60});
+        ensure_image_server_ownership(None, &apps, &spec).unwrap();
+        let server = crate::McpServer {
+            id: "oceanway_images".into(),
+            name: "Oceanway 图片".into(),
+            server: spec.clone(),
+            apps: apps.clone(),
+            description: None,
+            homepage: Some(ORIGIN.into()),
+            docs: None,
+            tags: vec!["oceanway-managed".into()],
+        };
+        crate::McpService::upsert_server(&state, server.clone()).unwrap();
+        for app in [AppType::Codex, AppType::Claude] {
+            verify_live_image_server(&app, &spec).unwrap();
+        }
+        ensure_image_server_ownership(Some(&server), &apps, &spec).unwrap();
+        assert!(std::fs::read_to_string(codex.join("config.toml"))
+            .unwrap()
+            .contains("customer_tool"));
+        let mut claude_servers = crate::claude_mcp::read_mcp_servers_map().unwrap();
+        assert_eq!(claude_servers["customer_tool"]["command"], "keep-me");
+        claude_servers.insert(
+            "oceanway_images".into(),
+            json!({"command":"customer-owned"}),
+        );
+        crate::claude_mcp::set_mcp_servers_map(&claude_servers).unwrap();
+        let before = std::fs::read(crate::config::get_claude_mcp_path()).unwrap();
+        assert!(ensure_image_server_ownership(Some(&server), &apps, &spec).is_err());
+        assert_eq!(
+            std::fs::read(crate::config::get_claude_mcp_path()).unwrap(),
+            before
+        );
+        let mut unrelated = server;
+        unrelated.tags.clear();
+        assert!(
+            ensure_image_server_ownership(Some(&unrelated), &crate::McpApps::default(), &spec)
+                .is_err()
+        );
     }
 
     #[test]
@@ -923,13 +1175,13 @@ mod tests {
             app_id: "codex".into(),
             model: "gpt-fixture".into(),
         };
-        ProviderService::add_without_switching(
+        let configured = ProviderService::add_without_switching(
             &state,
             AppType::Codex,
             provider_for(&selection, "fixture-key").unwrap(),
         )
-        .unwrap();
-        assert!(ProviderService::switch(&state, AppType::Codex, PROVIDER_ID).is_err());
+        .and_then(|_| ProviderService::switch(&state, AppType::Codex, PROVIDER_ID));
+        assert!(configured.is_err());
         assert_eq!(
             std::fs::read_to_string(codex.join("config.toml")).unwrap(),
             malformed

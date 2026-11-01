@@ -1,3 +1,4 @@
+import { OCEANWAY_EDITION } from "@/config/edition";
 import { useRef, type ComponentType } from "react";
 import { useTranslation } from "react-i18next";
 import { useQuery } from "@tanstack/react-query";
@@ -755,7 +756,9 @@ function SettingsDirectory({
         aria-label={t("nav.settings")}
         className={cn("flex min-h-0 flex-1 flex-col", collapsed && "mt-2")}
       >
-        {SETTINGS_ITEMS.map(({ section, icon }) => (
+        {SETTINGS_ITEMS.filter(
+          ({ section }) => !OCEANWAY_EDITION || section !== "routing",
+        ).map(({ section, icon }) => (
           <NavItem
             key={section}
             collapsed={collapsed}

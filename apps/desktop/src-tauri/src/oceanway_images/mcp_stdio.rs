@@ -41,6 +41,7 @@ const PREVIEW_SOURCE_LIMIT: usize = 512 * 1024;
 const PREVIEW_BYTES_LIMIT: usize = 256 * 1024;
 const RESPONSE_PREVIEW_LIMIT: usize = 512 * 1024;
 const MAX_PREVIEWS: usize = 4;
+const CHECK_ONLY_ENV: &str = "OCEANWAY_MCP_CHECK_ONLY";
 
 #[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -150,11 +151,14 @@ fn tools() -> Vec<Tool> {
              user asks for images to be made or changed. Uses the configured image provider. \
              Honor the requested model, total count, size, and ordered original reference files; \
              use the saved Oceanway image model, one image, and 1024x1024 when unspecified. For different \
-             subjects or styles supply one prompt per output slot. For edits use actual original \
+             subjects or styles supply one prompt per output slot. Submit the entire requested \
+             batch in one call with count instead of serial count=1 calls; the engine runs up to \
+             two requests concurrently and fills free slots automatically. For edits use actual original \
              attachments or previous output files, never text substitutes or invented paths. \
              Do not call for analysis-only or prompt-writing requests, or without a generation \
              or edit prompt. Requests may be charged. Poll get_image_job while running and \
-             display the saved images; never silently resubmit paid requests.",
+             display each completed image as it becomes available, without waiting for the whole \
+             batch; never silently resubmit paid requests.",
             JsonObject::new(),
         )
         .with_input_schema::<GenerateArgs>()
@@ -163,7 +167,8 @@ fn tools() -> Vec<Tool> {
             TOOL_NAMES[1],
             "Wait for and inspect an image job without submitting new image requests. \
              Waits 20 seconds by default, up to 30, and returns counts, saved output paths, \
-             previews, request IDs, errors, and warnings. Poll while running. Paused or \
+             previews, request IDs, errors, and warnings. Progress changes can return early. \
+             Display completed images while other images are still running. Poll while running. Paused or \
              interrupted jobs need an explicit retry; polling does not resume them. \
              Cancelling a pending poll also cancels the job's queued work.",
             JsonObject::new(),
@@ -191,9 +196,11 @@ fn tools() -> Vec<Tool> {
 
 #[derive(Default)]
 struct Session {
+    discovery_only: bool,
     closing: AtomicBool,
     operations: AtomicUsize,
     previews_sent: Mutex<HashSet<(String, usize)>>,
+    outputs_sent: Mutex<HashSet<(String, usize)>>,
 }
 
 type CancellationGuard = Arc<dyn Fn() -> bool + Send + Sync>;
@@ -248,6 +255,9 @@ impl<R: AsyncRead + Unpin> AsyncRead for DisconnectReader<R> {
         if disconnected && !this.disconnected {
             this.disconnected = true;
             this.session.closing.store(true, Ordering::SeqCst);
+            if this.session.discovery_only {
+                return result;
+            }
             let jobs = this.jobs.clone();
             let guard = Operation::new(this.session.clone());
             // Stop queued charges at EOF, before rmcp's response-drain grace.
@@ -338,7 +348,7 @@ impl ImageMcp {
         let mut job = timeout(Duration::from_secs(30), status())
             .await
             .map_err(|_| "The image job status lookup timed out.")??;
-        if args.wait_seconds == 0 || terminal(&job) {
+        if args.wait_seconds == 0 || terminal(&job) || has_new_outputs(&job, &self.session)? {
             return Ok(job);
         }
         let baseline = progress(&job);
@@ -382,6 +392,11 @@ impl ImageMcp {
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> CallToolResult {
+        if self.session.discovery_only {
+            return tool_error(
+                "Image calls are disabled during the non-billing MCP discovery check.".into(),
+            );
+        }
         let ct = context.ct.clone();
         let (active, cancelled) = pending_cancellation(move || ct.is_cancelled());
         let arguments = request.arguments.unwrap_or_default();
@@ -561,16 +576,42 @@ fn render_job(mut job: ImageJob, session: &Session) -> Result<CallToolResult, St
         }
     }
     drop(sent);
+    let outputs = job
+        .items
+        .iter()
+        .filter(|item| item.status == "succeeded" && item.path.is_some())
+        .map(|item| (job.id.clone(), item.index))
+        .collect::<Vec<_>>();
     // The engine owns credential redaction. Preserve its diagnostic evidence;
     // only remove duplicated preview data URLs from the structured job.
     let value = serde_json::to_value(job).map_err(|_| "Could not serialize the image job.")?;
     let mut result = CallToolResult::structured(value);
     result.content.extend(images);
+    session
+        .outputs_sent
+        .lock()
+        .map_err(|_| "Could not track delivered image results.")?
+        .extend(outputs);
     Ok(result)
+}
+
+fn has_new_outputs(job: &ImageJob, session: &Session) -> Result<bool, String> {
+    let delivered = session
+        .outputs_sent
+        .lock()
+        .map_err(|_| "Could not inspect delivered image results.")?;
+    Ok(job.items.iter().any(|item| {
+        item.status == "succeeded"
+            && item.path.is_some()
+            && !delivered.contains(&(job.id.clone(), item.index))
+    }))
 }
 
 async fn shutdown(server: &ImageMcp) -> Result<(), String> {
     server.session.closing.store(true, Ordering::SeqCst);
+    if server.session.discovery_only {
+        return Ok(());
+    }
     let drain = async {
         let mut previous_submissions = true;
         loop {
@@ -597,9 +638,23 @@ async fn shutdown(server: &ImageMcp) -> Result<(), String> {
 }
 
 pub async fn serve_stdio() -> Result<(), String> {
-    // Recovery reads owned manifests only, never provider credentials or HTTP.
-    let jobs = blocking(|| ImageJobs::with_home(super::app_home()?)).await?;
-    let server = ImageMcp::new(jobs);
+    let server = if std::env::var_os(CHECK_ONLY_ENV).as_deref() == Some(std::ffi::OsStr::new("1")) {
+        // Validate only the explicit directory. A configuration-time discovery
+        // check must not recover, claim, rewrite, or cancel existing image jobs.
+        let _ = super::app_home()?;
+        ImageMcp {
+            jobs: ImageJobs::default(),
+            session: Arc::new(Session {
+                discovery_only: true,
+                ..Session::default()
+            }),
+        }
+    } else {
+        // Normal Agent use recovers owned manifests without loading credentials
+        // or sending HTTP; explicit generate/retry calls start paid work.
+        let jobs = blocking(|| ImageJobs::with_home(super::app_home()?)).await?;
+        ImageMcp::new(jobs)
+    };
     let (input, output) = stdio();
     let input = DisconnectReader {
         inner: input,
@@ -630,6 +685,7 @@ pub async fn check(executable: &Path, home: &Path) -> Result<McpCheck, String> {
     command
         .arg("--image-mcp-stdio")
         .env("OCEANWAY_CONFIG_HOME", home)
+        .env(CHECK_ONLY_ENV, "1")
         .kill_on_drop(true);
     #[cfg(windows)]
     command.creation_flags(0x08000000); // CREATE_NO_WINDOW
@@ -993,6 +1049,220 @@ mod tests {
             assert_eq!(result.content.len(), MAX_PREVIEWS + 1);
         }
         assert_eq!(render_job(job, &session).unwrap().content.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn mcp_poll_returns_precompleted_image_without_waiting_and_then_waits_for_new_progress() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let _serial = super::super::image_api::tests::WORKER_TEST.lock().unwrap();
+        let home = std::env::temp_dir().join(format!(
+            "oceanway-mcp-live-poll-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&home).unwrap();
+        let home = std::fs::canonicalize(home).unwrap();
+        let fast_ready = Arc::new(AtomicBool::new(false));
+        let slow_ready = Arc::new(AtomicBool::new(false));
+        let stop = Arc::new(AtomicBool::new(false));
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
+        let fast_gate = fast_ready.clone();
+        let slow_gate = slow_ready.clone();
+        let stopping = stop.clone();
+        let mock = std::thread::spawn(move || {
+            let mut handlers = Vec::new();
+            while handlers.len() < 2 && !stopping.load(Ordering::SeqCst) {
+                let (mut stream, _) = match listener.accept() {
+                    Ok(connection) => connection,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(5));
+                        continue;
+                    }
+                    Err(error) => panic!("loopback accept: {error}"),
+                };
+                let fast = fast_gate.clone();
+                let slow = slow_gate.clone();
+                handlers.push(std::thread::spawn(move || {
+                    stream.set_nonblocking(false).unwrap();
+                    stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                    stream.set_write_timeout(Some(Duration::from_secs(5))).unwrap();
+                    let mut request = Vec::new();
+                    let boundary = loop {
+                        let mut buffer = [0; 2048];
+                        let length = stream.read(&mut buffer).unwrap();
+                        assert!(length > 0);
+                        request.extend_from_slice(&buffer[..length]);
+                        assert!(request.len() < 64 * 1024);
+                        if let Some(index) = request.windows(4).position(|part| part == b"\r\n\r\n") {
+                            break index + 4;
+                        }
+                    };
+                    let headers = String::from_utf8(request[..boundary].to_vec()).unwrap();
+                    assert!(headers.starts_with("POST /v1/images/generations "));
+                    let length: usize = headers.lines().find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length").then(|| value.trim().parse().unwrap())
+                    }).unwrap();
+                    while request.len() < boundary + length {
+                        let mut buffer = [0; 2048];
+                        let length = stream.read(&mut buffer).unwrap();
+                        assert!(length > 0);
+                        request.extend_from_slice(&buffer[..length]);
+                    }
+                    let body: serde_json::Value = serde_json::from_slice(&request[boundary..boundary + length]).unwrap();
+                    assert_eq!(body["n"], 1);
+                    let gate = if body["prompt"] == "fast-image" { fast } else { slow };
+                    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+                    while !gate.load(Ordering::SeqCst) {
+                        assert!(std::time::Instant::now() < deadline, "test did not release response");
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    let mut png = Cursor::new(Vec::new());
+                    image::DynamicImage::new_rgb8(32, 32).write_to(&mut png, ImageFormat::Png).unwrap();
+                    let reply = json!({"data": [{"b64_json": STANDARD.encode(png.into_inner())}]}).to_string();
+                    write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", reply.len(), reply).unwrap();
+                }));
+            }
+            for handler in handlers {
+                handler.join().unwrap();
+            }
+        });
+        struct FixtureCleanup {
+            home: PathBuf,
+            fast: Arc<AtomicBool>,
+            slow: Arc<AtomicBool>,
+            stop: Arc<AtomicBool>,
+            thread: Option<std::thread::JoinHandle<()>>,
+        }
+        impl Drop for FixtureCleanup {
+            fn drop(&mut self) {
+                self.fast.store(true, Ordering::SeqCst);
+                self.slow.store(true, Ordering::SeqCst);
+                self.stop.store(true, Ordering::SeqCst);
+                if let Some(thread) = self.thread.take() {
+                    let result = thread.join();
+                    if !std::thread::panicking() {
+                        result.unwrap();
+                    }
+                }
+                let _ = std::fs::remove_dir_all(&self.home);
+            }
+        }
+        let _cleanup = FixtureCleanup {
+            home: home.clone(),
+            fast: fast_ready.clone(),
+            slow: slow_ready.clone(),
+            stop,
+            thread: Some(mock),
+        };
+        super::super::provider::fixture(
+            &home,
+            &endpoint,
+            "oceanway-local-fixture",
+            "fixture-image-v1",
+        );
+        let jobs = ImageJobs::with_home(home.clone()).unwrap();
+        let server = ImageMcp::new(jobs.clone());
+        let (server_io, client_io) = tokio::io::duplex(64 * 1024);
+        let task = tokio::spawn(async move {
+            let service = server.serve(server_io).await.unwrap();
+            service.waiting().await.unwrap();
+        });
+        let mut client = timeout(Duration::from_secs(5), ().serve(client_io))
+            .await
+            .unwrap()
+            .unwrap();
+        let generated = client.call_tool(CallToolRequestParams::new("generate_images").with_arguments(
+            json!({"workspace_directory": home, "count": 2, "prompts": ["fast-image", "slow-image"]}).as_object().unwrap().clone()
+        )).await.unwrap();
+        assert_ne!(generated.is_error, Some(true));
+        let initial: ImageJob =
+            serde_json::from_value(generated.structured_content.unwrap()).unwrap();
+        assert_eq!(initial.completed, 0);
+        fast_ready.store(true, Ordering::SeqCst);
+        timeout(Duration::from_secs(5), async {
+            loop {
+                let owned = jobs.clone();
+                let id = initial.id.clone();
+                if blocking(move || owned.status(&id)).await.unwrap().completed == 1 {
+                    break;
+                }
+                sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let poll_args = CallToolRequestParams::new("get_image_job").with_arguments(
+            json!({"job_id": initial.id, "wait_seconds": 20})
+                .as_object()
+                .unwrap()
+                .clone(),
+        );
+        // The first image completed BEFORE the poll. The old implementation
+        // waited for the blocked second image or the full twenty-second timer.
+        let partial = timeout(Duration::from_secs(1), client.call_tool(poll_args.clone()))
+            .await
+            .expect("already completed image must return immediately")
+            .unwrap();
+        assert_ne!(partial.is_error, Some(true));
+        let returned: ImageJob =
+            serde_json::from_value(partial.structured_content.unwrap()).unwrap();
+        assert_eq!((returned.completed, returned.total), (1, 2));
+        assert_eq!(
+            partial
+                .content
+                .iter()
+                .filter(|block| matches!(block, ContentBlock::Image(_)))
+                .count(),
+            1
+        );
+        assert!(std::path::Path::new(
+            returned
+                .items
+                .iter()
+                .find_map(|item| item.path.as_deref())
+                .unwrap()
+        )
+        .is_file());
+
+        {
+            let next_poll = client.call_tool(poll_args);
+            tokio::pin!(next_poll);
+            assert!(
+                timeout(Duration::from_millis(350), &mut next_poll)
+                    .await
+                    .is_err(),
+                "an already delivered image must not cause a busy poll loop"
+            );
+            slow_ready.store(true, Ordering::SeqCst);
+            let completed = timeout(Duration::from_secs(2), &mut next_poll)
+                .await
+                .unwrap()
+                .unwrap();
+            let returned: ImageJob =
+                serde_json::from_value(completed.structured_content.unwrap()).unwrap();
+            assert_eq!((returned.completed, returned.total), (2, 2));
+            assert_eq!(
+                completed
+                    .content
+                    .iter()
+                    .filter(|block| matches!(block, ContentBlock::Image(_)))
+                    .count(),
+                1
+            );
+        }
+        client.close().await.unwrap();
+        timeout(Duration::from_secs(5), task)
+            .await
+            .unwrap()
+            .unwrap();
     }
 
     #[tokio::test]

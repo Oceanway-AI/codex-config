@@ -145,8 +145,7 @@ import {
 } from "@/config/appConfig";
 import type { PiFamilyAppId } from "@/lib/api/pi";
 
-// Retain upstream implementation for traceable merges; Oceanway routes use the simplified configuration.
-const OCEANWAY_EDITION = true;
+import { OCEANWAY_EDITION } from "@/config/edition";
 
 interface SyncStatusUpdatedPayload {
   source?: string;
@@ -1402,7 +1401,8 @@ function App() {
         }
         actions={
           <>
-            {currentView === "providers" &&
+            {!OCEANWAY_EDITION &&
+              currentView === "providers" &&
               activeApp !== "mcode" &&
               activeApp !== "dsh" &&
               activeApp !== "kimi" &&

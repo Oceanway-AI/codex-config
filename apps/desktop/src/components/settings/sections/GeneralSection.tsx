@@ -1,3 +1,4 @@
+import { OCEANWAY_EDITION } from "@/config/edition";
 import { useTranslation } from "react-i18next";
 import { ChevronRight, Monitor, Moon, Sun } from "lucide-react";
 import type { SettingsFormState } from "@/hooks/useSettings";
@@ -142,17 +143,21 @@ export function GeneralSection({
               </Button>
             }
           />
-          <SettingsSwitchRow
-            label={t("settings.appVisibility.showProfileSwitcher")}
-            help={{
-              title: t("settings.appVisibility.showProfileSwitcher"),
-              body: t("settings.appVisibility.showProfileSwitcherDescription"),
-            }}
-            checked={settings.showProfileSwitcher ?? false}
-            onCheckedChange={(value) =>
-              void onAutoSave({ showProfileSwitcher: value })
-            }
-          />
+          {!OCEANWAY_EDITION && (
+            <SettingsSwitchRow
+              label={t("settings.appVisibility.showProfileSwitcher")}
+              help={{
+                title: t("settings.appVisibility.showProfileSwitcher"),
+                body: t(
+                  "settings.appVisibility.showProfileSwitcherDescription",
+                ),
+              }}
+              checked={settings.showProfileSwitcher ?? false}
+              onCheckedChange={(value) =>
+                void onAutoSave({ showProfileSwitcher: value })
+              }
+            />
+          )}
           <SettingsSwitchRow
             label={t("settings.appVisibility.showProviderSearch")}
             help={{

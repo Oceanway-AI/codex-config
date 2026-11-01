@@ -1,3 +1,4 @@
+import { OCEANWAY_EDITION } from "@/config/edition";
 import { useCallback, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "@/lib/toast";
@@ -155,6 +156,7 @@ export function useSettings(): UseSettingsResult {
       enabled: boolean | undefined,
       prevEnabled: boolean | undefined,
     ): Promise<boolean> => {
+      if (OCEANWAY_EDITION) return false;
       if (enabled === undefined || enabled === prevEnabled) return false;
       try {
         if (enabled) {
@@ -485,12 +487,21 @@ export function useSettings(): UseSettingsResult {
             opencodeDirChanged ||
             openclawDirChanged)
         ) {
-          const syncResult = await syncCurrentProvidersLiveSafe();
-          if (!syncResult.ok) {
-            console.warn(
-              "[useSettings] Failed to sync current providers after directory change",
-              syncResult.error,
+          if (OCEANWAY_EDITION) {
+            toast.info(
+              t("oceanway.settings.directoryChanged", {
+                defaultValue:
+                  "目录已保存，请返回 Oceanway 配置页重新保存连接配置。",
+              }),
             );
+          } else {
+            const syncResult = await syncCurrentProvidersLiveSafe();
+            if (!syncResult.ok) {
+              console.warn(
+                "[useSettings] Failed to sync current providers after directory change",
+                syncResult.error,
+              );
+            }
           }
         }
         if (piDirChanged) {

@@ -1,5 +1,7 @@
 // Explicit local renderer fixture. Not included in the production build inputs.
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
+import liveModelCatalog from "./test-fixtures/oceanway-model-catalog.json";
+import liveImageCatalog from "./test-fixtures/oceanway-image-catalog.json";
 if (!import.meta.env.DEV) throw new Error("Fixture is for development only");
 const apps = [
   ["codex", "Codex"],
@@ -46,15 +48,11 @@ mockIPC(async (command, args: any) => {
   if (command === "oceanway_check_key") {
     if (!configured && args.apiKey !== "fixture-key")
       throw new Error("界面测试请填写 fixture-key，不使用真实 Key。");
+    // The user supplied a separate image test connection while the main Key
+    // has no image access. Only model IDs enter this renderer fixture.
     return {
-      models: [
-        "gpt-5",
-        "claude-sonnet-4-5",
-        "gemini-2.5-pro",
-        "gpt-image-1",
-      ].map((id) => ({ id })),
-      baseUrl: "https://console.oceanway.tech/v1",
-      checkedAt: "2026-11-02",
+      ...liveModelCatalog,
+      models: [...liveModelCatalog.models, ...liveImageCatalog.models],
     };
   }
   if (command === "oceanway_apply_config") {
@@ -105,7 +103,8 @@ mockIPC(async (command, args: any) => {
   )
     return [];
   if (command === "plugin:app|version") return "0.1.0-fixture";
-  if (command === "get_init_error" || command === "take_tray_navigation") return null;
+  if (command === "get_init_error" || command === "take_tray_navigation")
+    return null;
   if (command.startsWith("plugin:event|")) return 1;
   if (command.startsWith("plugin:log|")) return null;
   if (command.startsWith("plugin:window|"))

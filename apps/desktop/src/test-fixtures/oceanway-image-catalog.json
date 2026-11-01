@@ -1,0 +1,39 @@
+{
+  "baseUrl": "https://new.ocean-way.top/v1",
+  "models": [
+    {
+      "id": "gemini-2.5-flash-image"
+    },
+    {
+      "id": "gemini-3-pro-image"
+    },
+    {
+      "id": "gemini-3-pro-image-preview"
+    },
+    {
+      "id": "gemini-3.1-flash-image"
+    },
+    {
+      "id": "gemini-3.1-flash-image-preview"
+    },
+    {
+      "id": "gemini-nano-banana-2.1"
+    },
+    {
+      "id": "gpt-image-2"
+    },
+    {
+      "id": "gpt-image-2.5-flare"
+    },
+    {
+      "id": "gpt-image-2.5-sunburst"
+    },
+    {
+      "id": "grok-imagine-image"
+    },
+    {
+      "id": "grok-imagine-image-2.0"
+    }
+  ],
+  "checkedAt": "2026-11-01T19:48:30.693054+00:00"
+}

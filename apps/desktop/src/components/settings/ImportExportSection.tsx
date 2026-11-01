@@ -1,3 +1,4 @@
+import { OCEANWAY_EDITION } from "@/config/edition";
 import { useMemo } from "react";
 import {
   AlertCircle,
@@ -46,57 +47,67 @@ export function ImportExportSection({
     <section className="space-y-4">
       <header className="space-y-2">
         <h3 className="text-base font-semibold text-fg-1">
-          {t("settings.importExport")}
+          {t(
+            OCEANWAY_EDITION
+              ? "settings.exportConfig"
+              : "settings.importExport",
+          )}
         </h3>
-        <p className="text-sm text-fg-2">{t("settings.importExportHint")}</p>
+        {!OCEANWAY_EDITION && (
+          <p className="text-sm text-fg-2">{t("settings.importExportHint")}</p>
+        )}
       </header>
 
       <div className="space-y-4 rounded-lg border border-border bg-subtle p-6">
         {/* Import and Export Buttons Side by Side */}
-        <div className="grid grid-cols-2 gap-4 items-stretch">
+        <div
+          className={`grid ${OCEANWAY_EDITION ? "grid-cols-1" : "grid-cols-2"} gap-4 items-stretch`}
+        >
           {/* Import Button */}
-          <div className="relative">
-            <Button
-              type="button"
-              className={`w-full h-auto py-3 px-4 bg-action hover:bg-action-hover text-action-fg ${selectedFile && !isImporting ? "flex-col items-start" : "items-center"}`}
-              onClick={!selectedFile ? onSelectFile : onImport}
-              disabled={isImporting}
-            >
-              <div className="flex items-center gap-2 w-full justify-center">
-                {isImporting ? (
-                  <Loader2 className="h-4 w-4 animate-spin flex-shrink-0" />
-                ) : selectedFile ? (
-                  <CheckCircle2 className="h-4 w-4 flex-shrink-0" />
-                ) : (
-                  <FolderOpen className="h-4 w-4 flex-shrink-0" />
-                )}
-                <span className="font-medium">
-                  {isImporting
-                    ? t("settings.importing")
-                    : selectedFile
-                      ? t("settings.import")
-                      : t("settings.selectConfigFile")}
-                </span>
-              </div>
-              {selectedFile && !isImporting && (
-                <div className="mt-2 w-full text-left">
-                  <p className="text-xs font-mono opacity-80 truncate">
-                    📄 {selectedFileName}
-                  </p>
-                </div>
-              )}
-            </Button>
-            {selectedFile && (
-              <button
+          {!OCEANWAY_EDITION && (
+            <div className="relative">
+              <Button
                 type="button"
-                onClick={onClear}
-                className="absolute -top-2 -right-2 h-6 w-6 rounded-full bg-danger hover:bg-danger text-white flex items-center justify-center shadow-lg transition-colors z-10"
-                aria-label={t("common.clear")}
+                className={`w-full h-auto py-3 px-4 bg-action hover:bg-action-hover text-action-fg ${selectedFile && !isImporting ? "flex-col items-start" : "items-center"}`}
+                onClick={!selectedFile ? onSelectFile : onImport}
+                disabled={isImporting}
               >
-                <XCircle className="h-4 w-4" />
-              </button>
-            )}
-          </div>
+                <div className="flex items-center gap-2 w-full justify-center">
+                  {isImporting ? (
+                    <Loader2 className="h-4 w-4 animate-spin flex-shrink-0" />
+                  ) : selectedFile ? (
+                    <CheckCircle2 className="h-4 w-4 flex-shrink-0" />
+                  ) : (
+                    <FolderOpen className="h-4 w-4 flex-shrink-0" />
+                  )}
+                  <span className="font-medium">
+                    {isImporting
+                      ? t("settings.importing")
+                      : selectedFile
+                        ? t("settings.import")
+                        : t("settings.selectConfigFile")}
+                  </span>
+                </div>
+                {selectedFile && !isImporting && (
+                  <div className="mt-2 w-full text-left">
+                    <p className="text-xs font-mono opacity-80 truncate">
+                      📄 {selectedFileName}
+                    </p>
+                  </div>
+                )}
+              </Button>
+              {selectedFile && (
+                <button
+                  type="button"
+                  onClick={onClear}
+                  className="absolute -top-2 -right-2 h-6 w-6 rounded-full bg-danger hover:bg-danger text-white flex items-center justify-center shadow-lg transition-colors z-10"
+                  aria-label={t("common.clear")}
+                >
+                  <XCircle className="h-4 w-4" />
+                </button>
+              )}
+            </div>
+          )}
 
           {/* Export Button */}
           <div>
@@ -111,11 +122,13 @@ export function ImportExportSection({
           </div>
         </div>
 
-        <ImportStatusMessage
-          status={status}
-          errorMessage={errorMessage}
-          backupId={backupId}
-        />
+        {!OCEANWAY_EDITION && (
+          <ImportStatusMessage
+            status={status}
+            errorMessage={errorMessage}
+            backupId={backupId}
+          />
+        )}
       </div>
     </section>
   );

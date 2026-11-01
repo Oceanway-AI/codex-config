@@ -17,6 +17,13 @@ const getQueryDataMock = vi.fn();
 const invalidatePiDirectoryCachesMock = vi.fn();
 const toastErrorMock = vi.fn();
 const toastSuccessMock = vi.fn();
+const toastInfoMock = vi.fn();
+const edition = vi.hoisted(() => ({ oceanway: false }));
+vi.mock("@/config/edition", () => ({
+  get OCEANWAY_EDITION() {
+    return edition.oceanway;
+  },
+}));
 
 let settingsFormMock: any;
 let directorySettingsMock: any;
@@ -27,6 +34,7 @@ vi.mock("sonner", () => ({
   toast: {
     error: (...args: unknown[]) => toastErrorMock(...args),
     success: (...args: unknown[]) => toastSuccessMock(...args),
+    info: (...args: unknown[]) => toastInfoMock(...args),
   },
 }));
 
@@ -145,6 +153,8 @@ const createMetadataMock = (overrides: Record<string, unknown> = {}) => ({
 
 describe("useSettings hook", () => {
   beforeEach(() => {
+    edition.oceanway = false;
+    toastInfoMock.mockReset();
     mutateAsyncMock.mockReset();
     useSettingsQueryMock.mockReset();
     setAppConfigDirOverrideMock.mockReset();
@@ -199,6 +209,26 @@ describe("useSettings hook", () => {
     getAllMock.mockResolvedValue({});
     // 默认将 queryClient 缓存对齐到 serverSettings，既有断言的 "prev === data" 语义保持不变
     getQueryDataMock.mockImplementation(() => serverSettings);
+  });
+
+  it("saves Oceanway directory changes without removed provider or plugin IPC", async () => {
+    edition.oceanway = true;
+    settingsFormMock = createSettingsFormMock({
+      settings: {
+        ...serverSettings,
+        claudeConfigDir: "/new/claude",
+        enableClaudePluginIntegration: true,
+      },
+    });
+    const { result } = renderHook(() => useSettings());
+    await act(async () => {
+      await result.current.saveSettings();
+    });
+    expect(mutateAsyncMock).toHaveBeenCalled();
+    expect(applyClaudePluginConfigMock).not.toHaveBeenCalled();
+    expect(syncCurrentProvidersLiveMock).not.toHaveBeenCalled();
+    expect(toastInfoMock).toHaveBeenCalled();
+    expect(toastErrorMock).not.toHaveBeenCalled();
   });
 
   it("auto-saves and applies Claude onboarding skip when toggled on", async () => {
