@@ -2,7 +2,7 @@
 
 代码工作分支：codex/oceanway-config-rebuild。
 
-需求正文唯一维护在 [Oceanway-AI/oceanway-docs](https://github.com/Oceanway-AI/oceanway-docs)，文档工作分支同名。2026-11-02 的这一批文档当前位于本地工作分支；提交、推送和站点发布分别以实际交付记录为准。本仓保留入口、使用和运行说明，不复制维护另一套需求。
+需求正文唯一维护在 [Oceanway-AI/oceanway-docs](https://github.com/Oceanway-AI/oceanway-docs)，文档工作分支同名。现行需求更新已推送至同名开发分支，包含六款应用、默认安装、图片/视频 MCP 与上传入口延期安排；站点发布以文档仓合并部署为准。本仓保留入口、使用和运行说明，不复制维护另一套需求。
 
 文档目录：content/docs/06_开发/07_内部工具/。
 

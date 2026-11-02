@@ -101,3 +101,17 @@ cargo test --locked --lib live::project::codex::tests -- --test-threads=1
 - MCP/Skills 的外部服务和安装来源、提示词写入所有 Agent、系统安装/卸载、macOS 终端恢复、费用与账户实际账单未逐客户端完成真实 GUI 验收。
 - 本轮未访问真实用户会话正文，未改动当前 Codex 配置或进程；客户真实旧账号历史可见性与旧会话继续聊天尚未作为全客户端通过项。
 - 上游扫描按可解析文件返回列表；部分目录或单文件读取失败会记日志并跳过，尚未逐项在页面展示诊断。辅助子 Agent 记录按上游规则省略。
+
+
+## 2026-11-03 平台文档与主服务复验
+
+图片/视频按 https://docs.oceanway.tech/docs/ 及当前模型公开能力接入。图片分别使用 OpenAI Images 和 Gemini 协议；任务 ID 持久化、按原任务查询/下载、Key 变化校验和 Retry-After 退避纳入原生回归。
+
+- 同一个主 Key 读取 49 个模型：36 文本、9 图片、4 视频。
+- 修正版独立 Windows Codex 正常发现并调用默认 Oceanway MCP；一次 count=2 图片批次实际返回 HTTP 400，无图片，未自动重提；现用 Codex/Claude 配置 hash 不变。
+- 最小异步图片请求返回 `account asset storage is full`。平台请求 ID：`202611021706141114096698268d9d6AlMabJng`。需平台处理账户存储额度后重新验收真实生成。
+- 最小视频请求返回 HTTP 413；请求 ID：`202611021630451831257558268d9d6s6px3Lfr`。源码中账户存储预留失败也会被包装成请求体过大，实际根因需日志确认。
+- Windows Codex、Claude Desktop 默认安装的修复脚本在独立 GitHub Windows 环境均成功；线上 EXE 尚未重打包切换，下载服务器 SSH 当前连接超时。
+- API Key 本地素材上传由技术人员后续处理；本期视频参考传真实 HTTPS 图片/视频/音频链接。
+
+本轮原生媒体回归：[41488357344](https://github.com/Oceanway-AI/codex-config/actions/runs/41488357344)。完整应用安装包构建与主服务实际生成单独验收，不以工具发现或本地 fixture 成功替代。详细记录维护在文档仓 PROC-02-027 第 6 节。
