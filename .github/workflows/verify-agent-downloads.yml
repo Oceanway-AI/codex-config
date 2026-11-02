@@ -1,0 +1,59 @@
+name: Verify desktop offline downloads
+on:
+  workflow_dispatch:
+  push:
+    branches: ["codex/oceanway-config-rebuild"]
+    paths:
+      - ".github/workflows/verify-agent-downloads.yml"
+      - "scripts/agent-downloads/**"
+permissions:
+  contents: read
+jobs:
+  macos:
+    name: Verify macOS ${{ matrix.arch }} desktop packages
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            arch: arm64
+            sha256: a22e81ff9e52e7f3006c657ff2006c034982876a5a8a002bbf9c00fbf8307f23
+          - os: macos-15-intel
+            arch: x64
+            sha256: 6c6a6d2ebc6913681521d5a5962f8b5638e872d9f2bd83b72c44b7570f10bd11
+    steps:
+      - name: Download official Codex desktop archive
+        env:
+          ARCH: ${{ matrix.arch }}
+          EXPECTED_SHA: ${{ matrix.sha256 }}
+        run: |
+          curl --fail --location --retry 3 --connect-timeout 15 --max-time 600 "https://persistent.oaistatic.com/codex-app-prod/ChatGPT-darwin-$ARCH-26.1027.61615.zip" -o Codex.zip
+          echo "$EXPECTED_SHA  Codex.zip" | shasum -a 256 -c -
+          ditto -xk Codex.zip payload
+      - name: Verify publisher signature and build drag-to-install DMG
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          codesign --verify --deep --strict --verbose=2 payload/ChatGPT.app
+          spctl --assess --type execute --verbose=2 payload/ChatGPT.app
+          plutil -extract CFBundleIdentifier raw payload/ChatGPT.app/Contents/Info.plist | grep -Fx com.openai.codex
+          ln -s /Applications payload/Applications
+          mkdir -p output
+          hdiutil create -volname "Codex 安装" -srcfolder payload -ov -format UDZO "output/codex-macos-$ARCH.dmg"
+          hdiutil verify "output/codex-macos-$ARCH.dmg"
+      - name: Verify Claude universal official installer
+        if: matrix.arch == 'arm64'
+        run: |
+          curl --fail --location --retry 3 --connect-timeout 15 --max-time 600 https://downloads.claude.ai/releases/darwin/universal/4.4212.0/Claude-cbfe3c56d49c49332ad5a9588303c9dbc70a5e7f.pkg -o output/claude-desktop-macos-universal.pkg
+          pkgutil --check-signature output/claude-desktop-macos-universal.pkg
+          spctl --assess --type install --verbose=2 output/claude-desktop-macos-universal.pkg
+      - name: Record package hashes
+        run: cd output && shasum -a 256 * > SHA256SUMS.txt
+      - uses: actions/upload-artifact@v6
+        with:
+          name: agent-offline-macos-${{ matrix.arch }}
+          path: output/*
+          compression-level: 0
+          retention-days: 14
