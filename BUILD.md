@@ -42,6 +42,8 @@ cargo test --locked --lib session_manager::providers::codex -- --test-threads=1
 cargo test --locked --lib session_manager::providers::claude -- --test-threads=1
 cargo test --locked --lib services::prompt::tests -- --test-threads=1
 cargo test --locked --lib live::project::codex::tests -- --test-threads=1
+cargo test --locked --lib codex_fresh_install -- --test-threads=1
+cargo test --locked --lib tool_install_runtime -- --test-threads=1
 ```
 
 当前功能验证结果见 [功能核验记录](docs/functional-verification.md)。
@@ -84,7 +86,7 @@ CI 使用 `ditto -c -k --keepParent` 将 `.app` 打包为：
 
 ## GitHub Actions
 
-[build.yml](.github/workflows/build.yml) 在 `codex/**`、main/master、PR 或手动触发时构建 Windows x64、macOS arm64 和 macOS Intel，依次执行依赖安装、typecheck、全量前端测试、五组原生测试、安装包构建和包内 MCP smoke。五组原生测试分别作为独立步骤执行，任一失败都会停止该平台的后续打包。
+[build.yml](.github/workflows/build.yml) 在 `codex/**`、main/master、PR 或手动触发时构建 Windows x64、macOS arm64 和 macOS Intel，依次执行依赖安装、typecheck、全量前端测试、七组原生测试、安装包构建和包内 MCP smoke。七组原生测试分别作为独立步骤执行，任一失败都会停止该平台的后续打包。
 
 产物名称为 `Oceanway-Config-<platform>-<commit>`；Windows 另有 `Oceanway-Config-windows-native-<commit>` 供隔离集成测试。Actions 产物保留 14 天。
 

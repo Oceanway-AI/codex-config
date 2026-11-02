@@ -1889,6 +1889,24 @@ describe("AppsPage concurrent CLI upgrades", () => {
     }
   });
 
+  it("keeps oversized installer errors from covering the application", async () => {
+    const failure = `installer failed\n<!DOCTYPE html>${"x".repeat(12000)}\nnpm: command not found`;
+    mocks.runToolLifecycleAction.mockRejectedValueOnce(new Error(failure));
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await renderApps();
+      fireEvent.click(updateButton("Claude Code"));
+      await waitFor(() => expect(mocks.error).toHaveBeenCalled());
+      const options = mocks.error.mock.calls.at(-1)?.[1];
+      expect(options.description.length).toBeLessThanOrEqual(600);
+      expect(options.description).toContain("installer failed");
+      expect(options.description).toContain("npm: command not found");
+      expect(updateButton("Claude Code")).toBeEnabled();
+    } finally {
+      errorLog.mockRestore();
+    }
+  });
+
   it("does not report success or failure when all requested tools are already running", async () => {
     mocks.runToolLifecycleAction.mockRejectedValue("TOOL_ACTION_IN_PROGRESS");
     await renderApps();

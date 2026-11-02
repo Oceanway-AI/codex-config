@@ -6,10 +6,10 @@ import { OceanwayConfigPanel } from "@/components/oceanway/OceanwayConfigPanel";
 import { oceanwayApi, type DetectedApp } from "@/lib/api/oceanway";
 import { settingsApi } from "@/lib/api/settings";
 import type { AppId } from "@/lib/api";
-import {
-  CODEX_DESKTOP_DOWNLOAD_URL,
-  OFFICIAL_TOOL_INSTALL_URLS,
-} from "@/components/apps/officialInstallLinks";
+const installAction = vi.hoisted(() => vi.fn());
+vi.mock("@/components/apps/useToolManagement", () => ({
+  useToolManagement: () => ({ handleRunToolAction: installAction }),
+}));
 import liveCatalog from "@/test-fixtures/oceanway-model-catalog.json";
 import liveImageCatalog from "@/test-fixtures/oceanway-image-catalog.json";
 import {
@@ -84,6 +84,7 @@ async function expandModel(
 }
 beforeEach(() => {
   vi.clearAllMocks();
+  installAction.mockResolvedValue(undefined);
   vi.mocked(oceanwayApi.connection).mockResolvedValue({
     configured: false,
     keyPreview: null,
@@ -414,7 +415,7 @@ describe("Oceanway guided configuration", () => {
     );
   });
 
-  it("shows official install actions immediately on an empty computer", async () => {
+  it("installs apps directly on an empty computer and refreshes detection", async () => {
     vi.mocked(oceanwayApi.detectApps).mockResolvedValue(
       detectedApps().map((app) => ({
         ...app,
@@ -432,12 +433,13 @@ describe("Oceanway guided configuration", () => {
       screen.getByRole("checkbox", { name: "配置 Claude Code" }),
     ).toBeDisabled();
     await user.click(codexInstall);
-    expect(settingsApi.openExternal).toHaveBeenCalledWith(
-      CODEX_DESKTOP_DOWNLOAD_URL,
-    );
+    expect(installAction).toHaveBeenCalledWith(["codex"], "install");
+    await waitFor(() => expect(codexInstall).toBeEnabled());
     await user.click(screen.getByRole("button", { name: "安装 Claude Code" }));
-    expect(settingsApi.openExternal).toHaveBeenCalledWith(
-      OFFICIAL_TOOL_INSTALL_URLS.claude,
+    expect(installAction).toHaveBeenCalledWith(["claude"], "install");
+    expect(settingsApi.openExternal).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(oceanwayApi.detectApps).toHaveBeenCalledTimes(3),
     );
     expect(oceanwayApi.apply).not.toHaveBeenCalled();
   });
@@ -456,6 +458,70 @@ describe("Oceanway guided configuration", () => {
     );
     expect(claude).not.toBeChecked();
     expect(screen.getByRole("checkbox", { name: "配置 Codex" })).toBeChecked();
+  });
+
+  it("keeps the Key and prevents duplicate clicks while installing, then selects the new app", async () => {
+    vi.mocked(oceanwayApi.detectApps)
+      .mockResolvedValueOnce(
+        detectedApps().map((app) => ({
+          ...app,
+          installed: false,
+          configExists: false,
+        })),
+      )
+      .mockResolvedValue(
+        detectedApps().map((app) => ({
+          ...app,
+          installed: app.appId === "codex",
+          configExists: false,
+        })),
+      );
+    let finish!: () => void;
+    installAction.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const user = userEvent.setup();
+    mount();
+    const install = await screen.findByRole("button", { name: "安装 Codex" });
+    await user.type(
+      screen.getByLabelText("Oceanway API Key", { selector: "input" }),
+      "kept-fixture-key",
+    );
+    await user.click(install);
+    expect(
+      screen.getByRole("button", { name: "正在安装 Codex" }),
+    ).toBeDisabled();
+    expect(installAction).toHaveBeenCalledTimes(1);
+    finish();
+    await waitFor(() =>
+      expect(
+        screen.getByRole("checkbox", { name: "配置 Codex" }),
+      ).toBeChecked(),
+    );
+    expect(
+      screen.getByLabelText("Oceanway API Key", { selector: "input" }),
+    ).toHaveValue("kept-fixture-key");
+    expect(screen.queryByRole("button", { name: "安装 Codex" })).toBeNull();
+  });
+
+  it("keeps the install action available after a failed installation", async () => {
+    vi.mocked(oceanwayApi.detectApps).mockResolvedValue(
+      detectedApps().map((app) => ({
+        ...app,
+        installed: false,
+        configExists: false,
+      })),
+    );
+    installAction.mockRejectedValueOnce(new Error("下载失败，请重试"));
+    const user = userEvent.setup();
+    mount();
+    await user.click(await screen.findByRole("button", { name: "安装 Codex" }));
+    expect(await screen.findByText("下载失败，请重试")).toBeVisible();
+    expect(screen.getByRole("button", { name: "安装 Codex" })).toBeEnabled();
+    expect(screen.getByRole("checkbox", { name: "配置 Codex" })).toBeDisabled();
   });
 
   it("selects a newly installed common application after detection", async () => {
@@ -529,8 +595,9 @@ describe("Oceanway guided configuration", () => {
     expect(codex).toHaveValue("gpt-5");
     await user.selectOptions(codex, "gpt-5-mini");
     await user.click(install);
-    expect(settingsApi.openExternal).toHaveBeenCalledWith(
-      CODEX_DESKTOP_DOWNLOAD_URL,
+    expect(installAction).toHaveBeenCalledWith(["codex"], "install");
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "一键配置" })).toBeEnabled(),
     );
     await user.click(screen.getByRole("button", { name: "一键配置" }));
     await waitFor(() =>

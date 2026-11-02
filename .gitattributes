@@ -1,0 +1,2 @@
+apps/desktop/src-tauri/src/commands/install_node.sh text eol=lf
+apps/desktop/src-tauri/src/commands/install_node.ps1 text eol=lf

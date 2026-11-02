@@ -4267,7 +4267,7 @@
     "wslFlag": "标志",
     "installHint": {
       "claude": "安装时运行官方安装脚本，失败时改用 npm",
-      "codex": "通过 npm 安装",
+      "codex": "官方独立安装，无需 Node.js",
       "gemini": "通过 npm 安装",
       "grok": "通过 npm 安装",
       "opencode": "安装时运行官方安装脚本，失败时改用 npm",

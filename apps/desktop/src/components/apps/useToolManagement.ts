@@ -827,18 +827,23 @@ export function useToolManagement() {
         return;
       }
 
-      // 批量场景每个失败只摘取错误末行（最相关），单工具场景给出完整详情。
+      // Keep installer output from covering the application (e.g. an HTML error
+      // page returned instead of an install script). Full errors stay in the log.
       const lastLine = (text: string) => {
         const lines = text.trim().split("\n").filter(Boolean);
         return lines[lines.length - 1] ?? text;
       };
-      const failureDescription = isBatch
+      const rawFailureDescription = isBatch
         ? failures
             .map(
               (f) => `${TOOL_DISPLAY_NAMES[f.toolName]}: ${lastLine(f.detail)}`,
             )
             .join("\n")
         : failures[0]?.detail;
+      const failureDescription =
+        rawFailureDescription && rawFailureDescription.length > 600
+          ? `${rawFailureDescription.slice(0, 180)}\n…\n${rawFailureDescription.slice(-350)}`
+          : rawFailureDescription;
 
       const hardFailures = failures.filter((f) => !f.soft);
       const allSoftVersionUnchanged =

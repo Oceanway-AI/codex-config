@@ -161,7 +161,7 @@ function isToolPresent(
 
 // 表头和应用行共用列宽；操作列宽取各行按钮和表头量宽按钮的最大值，最后一列是行尾的「⋯」菜单。
 const APP_ROW_GRID =
-  "grid grid-cols-[minmax(0,1fr)_168px_var(--apps-actions-width,0px)_56px_28px] items-center gap-x-4";
+  "grid grid-cols-[minmax(0,1fr)_120px_var(--apps-actions-width,0px)_56px_28px] items-center gap-x-4";
 
 function formatCheckedAt(timestamp: number, locale: string): string {
   const date = new Date(timestamp);
@@ -711,7 +711,7 @@ function AppRow({
         <div className="text-end">{version}</div>
         <div
           data-tool-actions
-          className="flex w-max items-center justify-self-end gap-2 [&>button]:shrink-0"
+          className="flex w-max max-w-[220px] flex-wrap items-center justify-end justify-self-end gap-2 [&>button]:shrink-0"
         >
           {action}
         </div>

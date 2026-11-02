@@ -68,7 +68,8 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
       - name: Test all desktop frontend features
-        run: pnpm exec vitest run --maxWorkers=4 --minWorkers=1
+        # Intel macOS runners need more time for the full component suite.
+        run: pnpm exec vitest run --maxWorkers=2 --minWorkers=1 --testTimeout=15000 --hookTimeout=15000
       - name: Test native Oceanway services
         working-directory: apps/desktop/src-tauri
         run: cargo test --locked --lib oceanway -- --test-threads=1
@@ -84,6 +85,12 @@ jobs:
       - name: Test native Codex configuration projection
         working-directory: apps/desktop/src-tauri
         run: cargo test --locked --lib live::project::codex::tests -- --test-threads=1
+      - name: Test Codex installation without Node.js
+        working-directory: apps/desktop/src-tauri
+        run: cargo test --locked --lib codex_fresh_install -- --test-threads=1
+      - name: Test agent runtime installation
+        working-directory: apps/desktop/src-tauri
+        run: cargo test --locked --lib tool_install_runtime -- --test-threads=1
       - name: Build desktop installer
         run: pnpm tauri build ${{ matrix.bundle_args }}
       - name: Verify packaged MCP in an isolated home

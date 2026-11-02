@@ -4267,7 +4267,7 @@
     "wslFlag": "Flag",
     "installHint": {
       "claude": "Installs with the official script, falls back to npm",
-      "codex": "Installs with npm",
+      "codex": "Standalone installer; no Node.js required",
       "gemini": "Installs with npm",
       "grok": "Installs with npm",
       "opencode": "Installs with the official script, falls back to npm",

@@ -23,6 +23,10 @@ import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { settingsApi } from "@/lib/api/settings";
+import {
+  useToolManagement,
+  type ToolName,
+} from "@/components/apps/useToolManagement";
 import { cn } from "@/lib/utils";
 import {
   CODEX_DESKTOP_DOWNLOAD_URL,
@@ -76,6 +80,8 @@ export function OceanwayConfigPanel({
   onOpenApps?: () => void;
 }) {
   const queryClient = useQueryClient();
+  const tools = useToolManagement();
+  const [installingApp, setInstallingApp] = useState<string>();
   const [connection, setConnection] = useState<ConnectionSummary>();
   const [apps, setApps] = useState<DetectedApp[]>([]);
   const [key, setKey] = useState("");
@@ -91,9 +97,9 @@ export function OceanwayConfigPanel({
   const [selected, setSelected] = useState<string[]>([]);
   const [models, setModels] = useState<Record<string, string>>({});
   const [imageModel, setImageModel] = useState("");
-  const [busy, setBusy] = useState<"load" | "check" | "save" | "launch" | null>(
-    "load",
-  );
+  const [busy, setBusy] = useState<
+    "load" | "check" | "save" | "launch" | "install" | null
+  >("load");
   const [error, setError] = useState("");
   const [result, setResult] = useState<ApplyResult>();
   const [launchMessage, setLaunchMessage] = useState("");
@@ -261,10 +267,22 @@ export function OceanwayConfigPanel({
     }
   }
   async function install(id: string) {
+    setError("");
+    setInstallingApp(id);
+    setBusy("install");
     try {
-      await settingsApi.openExternal(INSTALL_URLS[id]);
+      if (id === "claude-desktop") {
+        await settingsApi.openExternal(INSTALL_URLS[id]);
+      } else {
+        const tool = (id === "grokbuild" ? "grok" : id) as ToolName;
+        await tools.handleRunToolAction([tool], "install");
+        await refresh();
+      }
     } catch (e) {
       setError(errorText(e));
+    } finally {
+      setInstallingApp(undefined);
+      setBusy(null);
     }
   }
 
@@ -605,8 +623,15 @@ export function OceanwayConfigPanel({
                               disabled={!!busy}
                               onClick={() => void install(app.appId)}
                             >
-                              <Download className="h-3.5 w-3.5" />
-                              安装 {app.name}
+                              {installingApp === app.appId ? (
+                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                              ) : (
+                                <Download className="h-3.5 w-3.5" />
+                              )}
+                              {installingApp === app.appId
+                                ? "正在安装"
+                                : "安装"}{" "}
+                              {app.name}
                             </Button>
                           )}
                           {app.configurable &&
@@ -731,7 +756,7 @@ export function OceanwayConfigPanel({
                 )}
                 {displayed.some((a) => !a.installed) && (
                   <p className="text-caption text-fg-3">
-                    安装完成后，点右上角“重新检测”。左下角“应用”可管理所有安装。
+                    点击安装，所需运行环境会一起配好。左下角“应用”可管理所有安装。
                   </p>
                 )}
               </section>

@@ -14,6 +14,8 @@ use tauri::AppHandle;
 use tauri::State;
 use tauri_plugin_opener::OpenerExt;
 
+#[path = "tool_install_runtime.rs"]
+mod tool_install_runtime;
 #[path = "tool_node_requirement.rs"]
 mod tool_node_requirement;
 #[path = "tool_uninstall.rs"]
@@ -399,7 +401,10 @@ fn run_tool_lifecycle_silently(command_line: &str, _label: &str) -> Result<(), S
     // `login_shell_path` doc。命令自身用绝对路径不受影响，但工具**内部** spawn 的
     // npm/node 等子进程、以及 install 链里裸的 npm fallback 都需要真实 PATH。
     if let Some(login_path) = login_shell_path(None) {
-        let inherited = std::env::var("PATH").unwrap_or_default();
+        let inherited = effective_path_os()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
         cmd.env("PATH", merge_path_segments(&login_path, &inherited));
     }
     let output = cmd.output().map_err(|e| format!("启动安装进程失败: {e}"))?;
@@ -662,12 +667,17 @@ const MCODE_INSTALL_UNIX: &str =
 const CODEX_INSTALL_UNIX: &str =
     "bash -c 'tmp=$(mktemp) && curl -fsSL https://chatgpt.com/codex/install.sh -o $tmp && sh $tmp; status=$?; rm -f $tmp; exit $status'";
 
+// Fresh installs use OpenAI's standalone release installer, which includes the
+// runtime and is also usable on machines without Node.js or npm.
+const CODEX_FRESH_INSTALL_UNIX: &str =
+    "CODEX_NON_INTERACTIVE=1 bash -c 'tmp=$(mktemp) && curl -fsSL https://github.com/openai/codex/releases/latest/download/install.sh -o $tmp && sh $tmp; status=$?; rm -f $tmp; exit $status'";
+
 /// Hermes 官方安装器会自带/选择合适的 Python 运行时。不要再用
 /// `python3 -m pip ... || python -m pip ...`:Hermes PyPI 包要求 Python >=3.11,
 /// 但 macOS 系统 `python3` 常是 3.9,而 pyenv 下 `python` shim 还可能不存在,会把
 /// 真正的 Python 版本问题盖成 "python command exists in these Python versions"。
 const HERMES_INSTALL_UNIX: &str =
-    "bash -c 'tmp=$(mktemp) && curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh -o $tmp && bash $tmp; status=$?; rm -f $tmp; exit $status'";
+    "bash -c 'tmp=$(mktemp) && curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh -o $tmp && bash $tmp --non-interactive; status=$?; rm -f $tmp; exit $status'";
 const HERMES_UPDATE_UNIX: &str =
     "hermes update || bash -c 'tmp=$(mktemp) && curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh -o $tmp && bash $tmp; status=$?; rm -f $tmp; exit $status'";
 
@@ -693,7 +703,7 @@ const AGY_INSTALL_UNIX: &str =
 
 #[cfg(target_os = "windows")]
 const HERMES_INSTALL_WINDOWS_SCRIPT: &str =
-    "irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1 | iex";
+    "$ErrorActionPreference = 'Stop'; & ([scriptblock]::Create((irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1))) -NonInteractive";
 #[cfg(target_os = "windows")]
 const GROK_INSTALL_WINDOWS_SCRIPT: &str = "irm https://x.ai/cli/install.ps1 | iex";
 #[cfg(target_os = "windows")]
@@ -1000,6 +1010,20 @@ fn tool_action_shell_command_for_shell(
     action: ToolLifecycleAction,
     shell: LifecycleCommandShell,
 ) -> Option<String> {
+    if tool == "codex" && matches!(action, ToolLifecycleAction::Install) {
+        return match shell {
+            LifecycleCommandShell::Posix => Some(CODEX_FRESH_INSTALL_UNIX.to_string()),
+            #[cfg(target_os = "windows")]
+            LifecycleCommandShell::WindowsBatch => Some(format!(
+                "powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand {}",
+                powershell_encoded_command(
+                    "$ErrorActionPreference = 'Stop'; $env:CODEX_NON_INTERACTIVE = '1'; irm https://github.com/openai/codex/releases/latest/download/install.ps1 | iex",
+                )
+            )),
+            #[cfg(not(target_os = "windows"))]
+            LifecycleCommandShell::WindowsBatch => None,
+        };
+    }
     if matches!(tool, "kimi" | "omp") {
         let install = match shell {
             LifecycleCommandShell::Posix if tool == "kimi" => KIMI_INSTALL_UNIX.to_string(),
@@ -1135,6 +1159,11 @@ fn build_tool_action_line(
         if let Some(distro) = wsl_distro_for_tool(tool) {
             let command = wsl_tool_action_shell_command(tool, action)
                 .ok_or_else(|| format!("Unsupported tool action target: {tool}"))?;
+            let command = if matches!(action, ToolLifecycleAction::Install) {
+                tool_install_runtime::posix(tool, command)
+            } else {
+                command
+            };
             return build_wsl_tool_action_line(&distro, &command, wsl_shell, wsl_shell_flag);
         }
         // ② Windows 原生 update 锚定;install 走静态(install.sh 是 bash 脚本,Windows
@@ -1164,7 +1193,11 @@ fn build_tool_action_line(
         // (npm/pnpm)或 .exe(volta),静态命令头部是 `npm`(也是 .cmd)、`py` 等——
         // 全部加 `call ` 前缀,风格统一且语义正确。含空格的头部已被 `win_quote_path_for_batch`
         // 加上双引号,call 对带引号的路径解析正常。
-        Ok(format!("call {command}"))
+        Ok(if matches!(action, ToolLifecycleAction::Install) {
+            tool_install_runtime::windows(tool, command)
+        } else {
+            format!("call {command}")
+        })
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -1188,7 +1221,11 @@ fn build_tool_action_line(
         if command.is_empty() {
             return Err(format!("Unsupported tool action target: {tool}"));
         }
-        Ok(command)
+        Ok(if matches!(action, ToolLifecycleAction::Install) {
+            tool_install_runtime::posix(tool, command)
+        } else {
+            command
+        })
     }
 }
 
@@ -2433,7 +2470,13 @@ fn effective_path_string() -> String {
     .map(|dir| dir.to_string_lossy().into_owned())
     .collect::<Vec<_>>()
     .join(";");
-    merge_path_segments_win(&[&process, &user, &machine, &fnm])
+    let managed = tool_install_runtime::bin();
+    let managed = if managed.join("node.exe").is_file() {
+        managed.to_string_lossy().into_owned()
+    } else {
+        String::new()
+    };
+    merge_path_segments_win(&[&process, &user, &machine, &fnm, &managed])
 }
 
 /// fnm only puts Node on PATH through `fnm env`, which prepends a per-shell
@@ -2477,7 +2520,13 @@ fn effective_path_os() -> Option<std::ffi::OsString> {
 
 #[cfg(not(target_os = "windows"))]
 fn effective_path_os() -> Option<std::ffi::OsString> {
-    std::env::var_os("PATH")
+    let inherited = std::env::var_os("PATH").unwrap_or_default();
+    let managed = tool_install_runtime::bin();
+    if managed.join("node").is_file() {
+        Some(prepend_search_dir_to_path(&managed, &inherited))
+    } else {
+        Some(inherited)
+    }
 }
 
 /// Prepend a candidate directory without converting the existing PATH to
@@ -6925,11 +6974,11 @@ mod tests {
     fn portable_zip_url_matches_release_asset_names() {
         assert_eq!(
             portable_zip_url("4.0.12", false).as_deref(),
-            Some("https://github.com/Oceanway-AI/codex-config/releases/download/v4.0.12/CC-Switch-v4.0.12-Windows-Portable.zip")
+            Some("https://github.com/Oceanway-AI/codex-config/releases/download/v4.0.12/Oceanway-Config-v4.0.12-Windows-Portable.zip")
         );
         assert_eq!(
             portable_zip_url("v4.1.0-beta.1", true).as_deref(),
-            Some("https://github.com/Oceanway-AI/codex-config/releases/download/v4.1.0-beta.1/CC-Switch-v4.1.0-beta.1-Windows-arm64-Portable.zip")
+            Some("https://github.com/Oceanway-AI/codex-config/releases/download/v4.1.0-beta.1/Oceanway-Config-v4.1.0-beta.1-Windows-arm64-Portable.zip")
         );
         for bad in ["", "v", "latest", "4.0/../x", "4.0.0?x=1"] {
             assert!(portable_zip_url(bad, false).is_none(), "{bad}");
@@ -8885,6 +8934,30 @@ mod tests {
         }
 
         #[test]
+        fn codex_fresh_install_windows_uses_standalone_without_node() {
+            let command = tool_action_shell_command_for_shell(
+                "codex",
+                ToolLifecycleAction::Install,
+                LifecycleCommandShell::WindowsBatch,
+            )
+            .unwrap();
+            let expected = powershell_encoded_command(
+                "$ErrorActionPreference = 'Stop'; $env:CODEX_NON_INTERACTIVE = '1'; irm https://github.com/openai/codex/releases/latest/download/install.ps1 | iex",
+            );
+            assert_eq!(
+                command
+                    .split_once("-EncodedCommand ")
+                    .map(|(_, encoded)| encoded),
+                Some(expected.as_str())
+            );
+            assert!(!command.contains("npm"));
+            assert_eq!(
+                wsl_tool_action_shell_command("codex", ToolLifecycleAction::Install).unwrap(),
+                CODEX_FRESH_INSTALL_UNIX
+            );
+        }
+
+        #[test]
         fn codex_standalone_windows_reruns_installer_in_place() {
             // #7650:独立安装的 codex.exe 旁边没有 npm.cmd,此前退回 `call npm i -g`
             // 另装一份 npm 版。
@@ -9288,7 +9361,7 @@ mod tests {
 
             let codex =
                 wsl_tool_action_shell_command("codex", ToolLifecycleAction::Install).unwrap();
-            assert_eq!(codex, "npm i -g @openai/codex@latest");
+            assert_eq!(codex, CODEX_FRESH_INSTALL_UNIX);
 
             let grok = wsl_tool_action_shell_command("grok", ToolLifecycleAction::Install).unwrap();
             assert!(
@@ -10613,11 +10686,14 @@ mod tests {
         }
 
         #[test]
-        fn codex_install_keeps_static_npm() {
-            // OpenAI 暂无独立 native installer,保持原裸 npm,不引入兜底链(无东西可兜底)。
+        fn codex_fresh_install_uses_standalone_without_node() {
             let cmd = install_command_for("codex");
-            assert_eq!(cmd, "npm i -g @openai/codex@latest");
-            assert!(!cmd.contains("||"));
+            assert!(cmd.starts_with("CODEX_NON_INTERACTIVE=1 "));
+            assert!(
+                cmd.contains("https://github.com/openai/codex/releases/latest/download/install.sh")
+            );
+            assert!(cmd.contains(" -o $tmp && sh $tmp; status=$?;"));
+            assert!(!cmd.contains("npm") && !cmd.contains("| sh"));
         }
 
         #[test]
