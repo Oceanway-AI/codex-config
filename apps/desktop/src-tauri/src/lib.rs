@@ -36,6 +36,8 @@ pub mod mode;
 mod model_capabilities;
 mod oceanway;
 mod oceanway_desktop;
+mod agent_desktops;
+mod oceanway_install;
 pub mod oceanway_images;
 mod omp_config;
 mod openclaw_config;
@@ -775,7 +777,7 @@ pub fn run() {
             // 落成 "default" provider 设为 current，再追加官方预设（is_current=false）。
             // 降级回旧版时，旧版的回填和整份写入仍靠这一行保住用户原来的 live 配置。
             //
-            // 捕获首次运行快照：所有全新装用户都会看到欢迎弹窗介绍 CC Switch 的工作方式。
+            // 捕获首次运行快照：所有全新装用户都会看到欢迎弹窗介绍 Oceanway Config 的工作方式。
             // 读失败时默认不弹，宁可漏弹也不要因为故障打扰用户。
             let first_run_already_confirmed = crate::settings::get_settings()
                 .first_run_notice_confirmed
@@ -1282,7 +1284,7 @@ pub fn run() {
                 std::thread::spawn(move || {
                     // 上次切换登录时崩溃、断电：先补完（配置操作在前面已补完，指针已落定）
                     crate::services::provider::claude_official::recover_login_switch(&db);
-                    // 默认目录的设置、MCP 可能在 CC Switch 没运行时改过
+                    // 默认目录的设置、MCP 可能在 Oceanway Config 没运行时改过
                     crate::services::claude_account::sync_all_shared(&data_dir)
                 });
             }
@@ -1498,6 +1500,9 @@ pub fn run() {
             oceanway::oceanway_detect_apps,
             oceanway::oceanway_apply_config,
             oceanway::oceanway_launch_app,
+            oceanway_install::oceanway_start_install,
+            oceanway_install::oceanway_get_install,
+            oceanway_install::oceanway_cancel_install,
             oceanway::oceanway_start_image_job,
             oceanway::oceanway_get_image_job,
             oceanway::oceanway_cancel_image_job,
@@ -1967,7 +1972,7 @@ pub fn run() {
 /// 应用退出前的清理工作
 ///
 /// 把接上代理的客户端都指回直连（模式和代理路由保留，下次启动再接上），再停止代理。
-/// 客户端不能一直指着代理：开机自启默认关闭，CC Switch 一关客户端就连不上了。
+/// 客户端不能一直指着代理：开机自启默认关闭，Oceanway Config 一关客户端就连不上了。
 pub async fn cleanup_before_exit(app_handle: &tauri::AppHandle) {
     if let Some(state) = app_handle.try_state::<store::AppState>() {
         crate::mode::controller::detach_all(state.inner()).await;
@@ -2128,7 +2133,7 @@ fn show_migration_error_dialog(app: &tauri::AppHandle, error: &str) -> bool {
         format!(
             "从旧版本迁移配置时发生错误：\n\n{error}\n\n\
             您的数据尚未丢失，旧配置文件仍然保留。\n\
-            建议回退到旧版本 CC Switch 以保护数据。\n\n\
+            建议回退到旧版本 Oceanway Config 以保护数据。\n\n\
             点击「重试」重新尝试迁移\n\
             点击「退出」关闭程序（可回退版本后重新打开）"
         )
@@ -2136,7 +2141,7 @@ fn show_migration_error_dialog(app: &tauri::AppHandle, error: &str) -> bool {
         format!(
             "An error occurred while migrating configuration:\n\n{error}\n\n\
             Your data is NOT lost - the old config file is still preserved.\n\
-            Consider rolling back to an older CC Switch version.\n\n\
+            Consider rolling back to an older Oceanway Config version.\n\n\
             Click 'Retry' to attempt migration again\n\
             Click 'Exit' to close the program"
         )
@@ -2201,7 +2206,7 @@ fn show_database_init_error_dialog(
             Common causes include: newer database version, corrupted file, permission issues, or low disk space.\n\n\
             Suggestions:\n\
             1) Back up the entire config directory (including oceanway-config.db)\n\
-            2) If you see “database version is newer”, please upgrade CC Switch\n\
+            2) If you see “database version is newer”, please upgrade Oceanway Config\n\
             3) If this happened right after upgrading, consider rolling back to export/backup then upgrade again\n\n\
             Click 'Retry' to attempt initialization again\n\
             Click 'Exit' to close the program",

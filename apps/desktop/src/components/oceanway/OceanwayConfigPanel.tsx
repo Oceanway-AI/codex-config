@@ -22,16 +22,11 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import { settingsApi } from "@/lib/api/settings";
-import {
-  useToolManagement,
-  type ToolName,
-} from "@/components/apps/useToolManagement";
+
 import { cn } from "@/lib/utils";
 import {
-  CODEX_DESKTOP_DOWNLOAD_URL,
-  CLAUDE_DESKTOP_DOWNLOAD_URL,
-  OFFICIAL_TOOL_INSTALL_URLS,
+  desktopDownloadUrl,
+  type DownloadApp,
 } from "@/components/apps/officialInstallLinks";
 import {
   oceanwayApi,
@@ -49,6 +44,11 @@ import {
   recommendedImageModel,
 } from "./models";
 
+import {
+  AgentInstallProgress,
+  useAgentInstaller,
+} from "./AgentInstallProgress";
+
 const errorText = (e: unknown) =>
   e instanceof Error
     ? e.message
@@ -56,12 +56,6 @@ const errorText = (e: unknown) =>
       ? e
       : "操作失败，请重试。";
 const COMMON_APPS = ["codex", "claude"];
-const INSTALL_URLS: Record<string, string> = {
-  ...OFFICIAL_TOOL_INSTALL_URLS,
-  codex: CODEX_DESKTOP_DOWNLOAD_URL,
-  "claude-desktop": CLAUDE_DESKTOP_DOWNLOAD_URL,
-  grokbuild: OFFICIAL_TOOL_INSTALL_URLS.grok,
-};
 const FAMILY_LABELS: Record<string, string> = {
   codex: "GPT",
   claude: "Claude",
@@ -80,7 +74,7 @@ export function OceanwayConfigPanel({
   onOpenApps?: () => void;
 }) {
   const queryClient = useQueryClient();
-  const tools = useToolManagement();
+  const installer = useAgentInstaller();
   const [installingApp, setInstallingApp] = useState<string>();
   const [connection, setConnection] = useState<ConnectionSummary>();
   const [apps, setApps] = useState<DetectedApp[]>([]);
@@ -103,6 +97,7 @@ export function OceanwayConfigPanel({
   const [error, setError] = useState("");
   const [result, setResult] = useState<ApplyResult>();
   const [launchMessage, setLaunchMessage] = useState("");
+  const [downloadMessage, setDownloadMessage] = useState("");
   const [restartApp, setRestartApp] = useState<string>();
   const generation = useRef(0);
   const initialized = useRef(false);
@@ -178,6 +173,10 @@ export function OceanwayConfigPanel({
       generation.current++;
     };
   }, [appId]);
+
+  useEffect(() => {
+    if (installer.job?.stage === "installed") void refresh();
+  }, [installer.job?.stage]);
 
   function changeKey(value: string) {
     generation.current++;
@@ -268,16 +267,11 @@ export function OceanwayConfigPanel({
   }
   async function install(id: string) {
     setError("");
+    setDownloadMessage("");
     setInstallingApp(id);
     setBusy("install");
     try {
-      if (id === "claude-desktop") {
-        await settingsApi.openExternal(INSTALL_URLS[id]);
-      } else {
-        const tool = (id === "grokbuild" ? "grok" : id) as ToolName;
-        await tools.handleRunToolAction([tool], "install");
-        await refresh();
-      }
+      await installer.start(id);
     } catch (e) {
       setError(errorText(e));
     } finally {
@@ -343,6 +337,7 @@ export function OceanwayConfigPanel({
         className="min-h-0 flex-1 overflow-y-auto scroll-stable px-4 pb-8 pt-6 sm:px-6"
       >
         <div className="mx-auto max-w-[760px] space-y-6">
+          <AgentInstallProgress />
           <ol
             aria-label="配置进度"
             className="flex items-center gap-2 text-caption sm:gap-4"
@@ -616,24 +611,31 @@ export function OceanwayConfigPanel({
                               </span>
                             </div>
                           </label>
-                          {!app.installed && INSTALL_URLS[app.appId] && (
-                            <Button
-                              variant="outline"
-                              size="regular"
-                              disabled={!!busy}
-                              onClick={() => void install(app.appId)}
-                            >
-                              {installingApp === app.appId ? (
-                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                              ) : (
-                                <Download className="h-3.5 w-3.5" />
-                              )}
-                              {installingApp === app.appId
-                                ? "正在安装"
-                                : "安装"}{" "}
-                              {app.name}
-                            </Button>
-                          )}
+                          {!app.installed &&
+                            desktopDownloadUrl(app.appId as DownloadApp) && (
+                              <Button
+                                variant="outline"
+                                size="regular"
+                                disabled={
+                                  !!busy ||
+                                  installer.busy ||
+                                  app.installAvailable === false
+                                }
+                                onClick={() => void install(app.appId)}
+                              >
+                                {installingApp === app.appId ? (
+                                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                ) : (
+                                  <Download className="h-3.5 w-3.5" />
+                                )}
+                                {installingApp === app.appId
+                                  ? "正在准备"
+                                  : app.installAvailable === false
+                                    ? "当前系统暂无安装包"
+                                    : "下载安装"}{" "}
+                                {app.name}
+                              </Button>
+                            )}
                           {app.configurable &&
                             (app.installed || app.configExists) && (
                               <div className="flex min-w-0 items-center gap-2 ps-7 sm:ps-0">
@@ -756,7 +758,13 @@ export function OceanwayConfigPanel({
                 )}
                 {displayed.some((a) => !a.installed) && (
                   <p className="text-caption text-fg-3">
-                    点击安装，所需运行环境会一起配好。左下角“应用”可管理所有安装。
+                    Codex 和 Claude Desktop 从 Oceanway
+                    下载离线包。安装完成后点击“重新检测”。左下角“应用”可管理所有安装。
+                  </p>
+                )}
+                {downloadMessage && (
+                  <p role="status" className="text-body text-fg-2">
+                    {downloadMessage}
                   </p>
                 )}
               </section>
@@ -887,7 +895,7 @@ export function OceanwayConfigPanel({
                             if (
                               !apps.find((a) => a.appId === item.appId)
                                 ?.installed &&
-                              INSTALL_URLS[item.appId]
+                              desktopDownloadUrl(item.appId as DownloadApp)
                             )
                               void install(item.appId);
                             else if (

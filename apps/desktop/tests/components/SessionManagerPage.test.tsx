@@ -288,8 +288,8 @@ describe("SessionManagerPage", () => {
     await openAppMenu();
     const menu = await screen.findByRole("menu");
     const items = within(menu).getAllByRole("menuitemradio");
-    // Oceanway 默认隐藏 Antigravity：全部应用 + 12 个来源。
-    expect(items).toHaveLength(13);
+    // Oceanway 的五个会话来源（Claude Desktop 共用 Claude）以及“全部”。
+    expect(items).toHaveLength(6);
     expect(items[0]).toHaveTextContent("全部应用5");
     expect(items[1]).toHaveTextContent("Codex3");
     expect(items[items.length - 1]).toHaveTextContent("无会话");

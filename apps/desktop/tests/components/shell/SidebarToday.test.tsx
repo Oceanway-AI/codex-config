@@ -128,8 +128,10 @@ describe("Oceanway simple navigation", () => {
   const visibleApps = {
     codex: true,
     claude: true,
-    gemini: true,
-    opencode: true,
+    "claude-desktop": true,
+    dsh: true,
+    hermes: true,
+    kimi: true,
   } as VisibleApps;
 
   it("starts with connection and keeps common apps, sessions and installation accessible", async () => {
@@ -159,8 +161,8 @@ describe("Oceanway simple navigation", () => {
     more.focus();
     await user.keyboard("{Enter}");
     expect(more).toHaveAttribute("aria-expanded", "true");
-    await user.click(screen.getByRole("button", { name: "Gemini CLI" }));
-    expect(onSelectApp).toHaveBeenCalledWith("gemini");
+    await user.click(screen.getByRole("button", { name: "DeepSeek Harness" }));
+    expect(onSelectApp).toHaveBeenCalledWith("dsh");
 
     const advanced = screen.getByRole("button", { name: "高级功能" });
     advanced.focus();
@@ -174,16 +176,16 @@ describe("Oceanway simple navigation", () => {
 
   it("keeps an active extra app visible even when its group is folded", async () => {
     const user = userEvent.setup();
-    renderSidebar({}, { visibleApps, view: "providers", activeApp: "gemini" });
-    expect(screen.getByRole("button", { name: "Gemini CLI" })).toHaveAttribute(
+    renderSidebar({}, { visibleApps, view: "providers", activeApp: "dsh" });
+    expect(screen.getByRole("button", { name: "DeepSeek Harness" })).toHaveAttribute(
       "aria-current",
       "page",
     );
-    expect(screen.queryByRole("button", { name: "OpenCode" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Hermes" })).toBeNull();
     await user.click(screen.getByRole("button", { name: "更多应用" }));
-    expect(screen.getByRole("button", { name: "OpenCode" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Hermes" })).toBeVisible();
     await user.click(screen.getByRole("button", { name: "更多应用" }));
-    expect(screen.getByRole("button", { name: "Gemini CLI" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "DeepSeek Harness" })).toBeVisible();
   });
 
   it("keeps Skills selected when the discovery screen is active", async () => {
@@ -204,7 +206,7 @@ describe("Oceanway simple navigation", () => {
       screen.getByRole("button", { name: "nav.expandSidebar" }),
     ).toBeVisible();
     await user.click(screen.getByRole("button", { name: "更多应用" }));
-    expect(screen.getByRole("button", { name: "OpenCode" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Hermes" })).toBeVisible();
     await user.click(screen.getByRole("button", { name: "高级功能" }));
     await user.click(screen.getByRole("button", { name: "nav.prompts" }));
     expect(onSelectPage).toHaveBeenCalledWith("prompts");

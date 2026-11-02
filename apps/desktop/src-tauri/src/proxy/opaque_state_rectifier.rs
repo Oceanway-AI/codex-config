@@ -2,7 +2,7 @@
 //!
 //! 同一个 Codex 线程可以在官方和第三方之间来回切，每家 Responses 后端只认自己签发的密文：
 //! 推理条目的 `encrypted_content`、压缩条目、函数输出里的加密片段。发送前的清理
-//! （`providers::codex_compaction`）只认得出 CC Switch 自己包装的内容；别家原生 Responses
+//! （`providers::codex_compaction`）只认得出 Oceanway Config 自己包装的内容；别家原生 Responses
 //! 上游签发的密文看不出来源，只能等上游明确说"验不了"之后，去掉请求里的推理条目和加密
 //! 片段，对同一家重发一次（先例：thinking 签名整流器）。
 //!
@@ -36,7 +36,7 @@ const ENCRYPTED_PART_PLACEHOLDER: &str = "[encrypted content omitted]";
 const UNREADABLE_AGENT_TASK_CODE: &str = "unreadable_encrypted_agent_task";
 
 /// 子 agent 读不到任务时返回给 Codex 的说明。
-const UNREADABLE_AGENT_TASK_MESSAGE: &str = "子 agent 的任务由主 agent 那家供应商加密，当前供应商解不开（主、子 agent 不在同一家）。可以在 CC Switch 设置 → 应用配置 → Codex 里打开「聚合模式下子 agent 用经典工具」后重启 Codex，或让子 agent 用和主 agent 同一家的模型。 (The sub-agent task was encrypted by the main agent's provider and this provider cannot read it. Turn on \"Classic sub-agent tools in aggregation\" under CC Switch Settings > App config > Codex and restart Codex, or give the sub-agent a model from the main agent's provider.)";
+const UNREADABLE_AGENT_TASK_MESSAGE: &str = "子 agent 的任务由主 agent 那家供应商加密，当前供应商解不开（主、子 agent 不在同一家）。可以在 Oceanway Config 设置 → 应用配置 → Codex 里打开「聚合模式下子 agent 用经典工具」后重启 Codex，或让子 agent 用和主 agent 同一家的模型。 (The sub-agent task was encrypted by the main agent's provider and this provider cannot read it. Turn on \"Classic sub-agent tools in aggregation\" under Oceanway Config Settings > App config > Codex and restart Codex, or give the sub-agent a model from the main agent's provider.)";
 
 /// 上游拒绝了请求里的密文，重试前要去掉哪些状态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,7 +45,7 @@ pub struct OpaqueStateRejection {
     /// 占位文字，前缀和条目类型对不上的 id 去掉。
     pub reasoning: bool,
     /// 压缩条目换成文字（没有载荷的标记直接去掉）。压缩条目是整段早期对话的唯一载体：
-    /// - 官方：只有错误明确点名压缩时才换。第三方回合的压缩由 CC Switch 包装、发送前已经
+    /// - 官方：只有错误明确点名压缩时才换。第三方回合的压缩由 Oceanway Config 包装、发送前已经
     ///   转成文字，到得了官方的压缩密文都是官方自己签发的。
     /// - 第三方：一被拒就换。它收到的压缩密文多半是官方签发的（Stack 模式下切换过来）。
     pub compaction: bool,
@@ -287,7 +287,7 @@ fn carries_plaintext_reasoning(request: &Value) -> bool {
 ///   派给子 agent 的任务）不动。
 /// - 消息、函数调用的 id 不是 OpenAI 格式的（别家签发的）去掉，和推理条目同一个开关：两者都
 ///   来自别家回合，被拒时一次处理掉，一次重试就够。
-/// - 压缩条目换成文字（CC Switch 的摘要解回正文，别家的换成一句说明），没有载荷的
+/// - 压缩条目换成文字（Oceanway Config 的摘要解回正文，别家的换成一句说明），没有载荷的
 ///   标记直接去掉。
 ///
 /// 只动 `input` 里的条目，压缩触发等其他条目原样保留，交给转发时的常规处理。

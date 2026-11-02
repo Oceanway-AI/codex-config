@@ -407,7 +407,8 @@ fn run_tool_lifecycle_silently(command_line: &str, _label: &str) -> Result<(), S
             .into_owned();
         cmd.env("PATH", merge_path_segments(&login_path, &inherited));
     }
-    let output = cmd.output().map_err(|e| format!("启动安装进程失败: {e}"))?;
+    isolate_child_process_group(&mut cmd);
+    let output = bounded_lifecycle_output(cmd)?;
     finish_lifecycle_output(&output)
 }
 
@@ -423,9 +424,8 @@ fn run_tool_lifecycle_silently(command_line: &str, label: &str) -> Result<(), St
     let bat_file = script_dir.path().join(format!("{label}.bat"));
     std::fs::write(&bat_file, command_line).map_err(|e| format!("写入批处理文件失败: {e}"))?;
 
-    let output = windows_lifecycle_command(&bat_file, &effective_path_string()).output();
-
-    finish_lifecycle_output(&output.map_err(|e| format!("启动安装进程失败: {e}"))?)
+    let output = bounded_lifecycle_output(windows_lifecycle_command(&bat_file, &effective_path_string()))?;
+    finish_lifecycle_output(&output)
 }
 
 #[cfg(target_os = "windows")]
@@ -439,6 +439,13 @@ fn windows_lifecycle_command(bat_file: &Path, effective_path: &str) -> std::proc
         .env("PATH", effective_path)
         .creation_flags(CREATE_NO_WINDOW);
     command
+}
+
+fn bounded_lifecycle_output(mut command: std::process::Command) -> Result<std::process::Output, String> {
+    command.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+    let child=command.spawn().map_err(|e|format!("启动安装进程失败: {e}"))?;
+    wait_child_output(child,CommandDeadline::from_timeout(Some(std::time::Duration::from_secs(300))))
+        .map_err(|e|format!("应用操作未完成：{e}。请使用 Oceanway 应用安装页重试。"))
 }
 
 /// 把子进程退出结果转成 `Result`：成功返回 `Ok`；失败提取 stderr（空则回退 stdout）

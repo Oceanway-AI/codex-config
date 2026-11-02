@@ -19,7 +19,75 @@ use crate::mode::state::{self, PendingTarget};
 use crate::provider::{ClaudeDesktopMode, Provider};
 
 pub const PROFILE_ID: &str = "00000000-0000-4000-8000-000000157210";
-pub const PROFILE_NAME: &str = "CC Switch";
+pub const PROFILE_NAME: &str = "Oceanway Config";
+
+pub(crate) fn oceanway_backup_paths() -> Result<Vec<PathBuf>, AppError> {
+    let paths = current_platform_paths()?;
+    Ok(vec![paths.normal_config_path, paths.threep_config_path, paths.profile_path, paths.meta_path])
+}
+
+pub(crate) fn managed_mcp_spec(id: &str, spec: &Value) -> Result<Value, AppError> {
+    let command=spec.get("command").and_then(Value::as_str).filter(|v|!v.is_empty())
+        .ok_or_else(||AppError::Message("Claude Desktop 的本地 MCP 需要有效的启动命令".into()))?;
+    let mut result=json!({"name":id,"transport":"stdio","command":command,
+        "args":spec.get("args").cloned().unwrap_or_else(||json!([])),
+        "env":spec.get("env").cloned().unwrap_or_else(||json!({})),
+        "startupTimeoutSec":spec.get("startup_timeout_sec").cloned().unwrap_or(json!(30)),
+        "toolTimeoutSec":spec.get("tool_timeout_sec").cloned().unwrap_or(json!(60))});
+    if result["args"].as_array().is_none_or(|args|args.iter().any(|v|!v.is_string())) || !result["env"].is_object() {
+        return Err(AppError::Message("Claude Desktop MCP 参数格式不正确".into()));
+    }
+    // Desktop accepts its own schema, not Codex's type/timeout field names.
+    result.as_object_mut().unwrap().retain(|_,v|!v.is_null());
+    Ok(result)
+}
+
+pub(crate) fn read_managed_mcp(id: &str) -> Result<Option<Value>, AppError> {
+    let profile=read_json_or_empty(&current_platform_paths()?.profile_path)?;
+    Ok(profile.get("managedMcpServers").and_then(Value::as_array)
+        .and_then(|rows|rows.iter().find(|row|row["name"].as_str()==Some(id))).cloned())
+}
+
+fn patch_managed_mcp(profile:&mut Value,id:&str,spec:Option<&Value>)->Result<(),AppError> {
+    if !profile.is_object() {return Err(AppError::Message("Claude Desktop 配置不是 JSON 对象".into()));}
+    let mut rows=match profile.get("managedMcpServers") {
+        None=>Vec::new(),Some(Value::Array(rows))=>rows.clone(),
+        _=>return Err(AppError::Message("现有 Claude Desktop MCP 列表格式无效".into())),
+    };
+    let position=rows.iter().position(|row|row["name"].as_str()==Some(id));
+    match (position,spec) {
+        (Some(i),Some(spec))=>rows[i]=managed_mcp_spec(id,spec)?,
+        (None,Some(spec))=>rows.push(managed_mcp_spec(id,spec)?),
+        (Some(i),None)=>{rows.remove(i);},
+        (None,None)=>return Ok(()),
+    }
+    profile["managedMcpServers"]=json!(rows);
+    Ok(())
+}
+
+pub(crate) fn sync_managed_mcp(id:&str,spec:Option<&Value>)->Result<(),AppError> {
+    let path=current_platform_paths()?.profile_path;
+    if !path.exists() && spec.is_none(){return Ok(());}
+    let mut profile=read_json_or_empty(&path)?;
+    if spec.is_some() && profile.get("inferenceProvider").is_none() {
+        return Err(AppError::Message("请先为 Claude Desktop 配置 Oceanway 接入".into()));
+    }
+    patch_managed_mcp(&mut profile,id,spec)?;
+    crate::config::write_json_file_private(&path,&profile)
+}
+
+pub(crate) fn install_oceanway_media_rule()->Result<(),String> {
+    let path=current_platform_paths().map_err(|e|e.to_string())?.profile_path;
+    let mut profile=read_json_or_empty(&path).map_err(|e|e.to_string())?;
+    let original=match profile.get("organizationInstructions") {
+        None=>"",Some(Value::String(value))=>value.as_str(),
+        _=>return Err("现有 Claude Desktop 指令格式无效".into()),
+    };
+    let merged=crate::oceanway::merge_image_rule(original)?;
+    if merged.chars().count()>3000 {return Err("Claude Desktop 指令超过 3000 字符，请缩短原有指令后重新配置".into());}
+    profile["organizationInstructions"]=json!(merged);
+    crate::config::write_json_file_private(&path,&profile).map_err(|e|e.to_string())
+}
 
 #[cfg(any(target_os = "macos", windows, target_os = "linux", test))]
 const CONFIG_FILE: &str = "claude_desktop_config.json";
@@ -149,7 +217,7 @@ pub fn apply_provider(db: &Database, provider: &Provider) -> Result<(), AppError
 
 /// 写进 Desktop 配置的内容。
 pub enum DesktopTarget<'a> {
-    /// 官方：两个配置文件改回 `1p`，摘掉 CC Switch 的 profile。
+    /// 官方：两个配置文件改回 `1p`，摘掉 Oceanway Config 的 profile。
     Official,
     /// 第三方网关 profile（直连那家的，或指向本地路由的）。
     Profile(&'a Value),
@@ -1264,7 +1332,7 @@ fn write_profile_at_paths(
 }
 
 /// 切回官方：两个配置文件改回 `1p`，清掉旧版写进 `enterpriseConfig` 的网关设置，
-/// 把 CC Switch 的 profile 从 `_meta.json` 里摘掉。
+/// 把 Oceanway Config 的 profile 从 `_meta.json` 里摘掉。
 ///
 /// profile 文件本身保留、只清关键字段：用户在 Desktop 里对这个 profile 改的设置
 /// （#4774 的 auto 模式）下次切回第三方时还在，Key 也从磁盘上清掉了。Desktop 只按
@@ -1389,7 +1457,7 @@ fn gateway_profile_patch(profile: Value) -> JsonPatch {
     patch
 }
 
-/// `configLibrary/_meta.json`：`entries` 里登记 CC Switch 的 profile，`appliedId`
+/// `configLibrary/_meta.json`：`entries` 里登记 Oceanway Config 的 profile，`appliedId`
 /// 指向当前生效的那个。已有条目原位更新，不挪位置。
 struct MetaPatch {
     applied: bool,
@@ -1509,7 +1577,7 @@ fn meta_has_profile_entry(path: &Path) -> bool {
 }
 
 /// Claude Desktop 没有可调的命令，只能推断装没装：它第一次启动就会建自己的数据目录
-/// （`claude_desktop_config.json` 所在的 `Claude`，不看 CC Switch 也会写的 `Claude-3p`），
+/// （`claude_desktop_config.json` 所在的 `Claude`，不看 Oceanway Config 也会写的 `Claude-3p`），
 /// macOS 上另认应用包。
 fn detect_installed(paths: &ClaudeDesktopPaths, app_bundles: &[PathBuf]) -> bool {
     paths.normal_config_path.parent().is_some_and(Path::is_dir)
@@ -1563,7 +1631,7 @@ fn current_platform_paths() -> Result<ClaudeDesktopPaths, AppError> {
 /// not expose a directory override or attempt to recover a host-custom
 /// XDG_CONFIG_HOME: Flatpak replaces that variable with its private path, so
 /// its original host value is not available reliably from the sandbox. Users
-/// with a custom host XDG_CONFIG_HOME should run the native CC Switch package.
+/// with a custom host XDG_CONFIG_HOME should run the native Oceanway Config package.
 #[cfg(target_os = "linux")]
 fn linux_config_dir() -> PathBuf {
     let xdg_config_home = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from);
@@ -1923,7 +1991,7 @@ mod tests {
         let bundle = temp.path().join("Claude.app");
         assert!(!detect_installed(&paths, std::slice::from_ref(&bundle)));
 
-        // 只有 CC Switch 写的 Claude-3p 不算
+        // 只有 Oceanway Config 写的 Claude-3p 不算
         fs::create_dir_all(paths.threep_config_path.parent().unwrap()).unwrap();
         assert!(!detect_installed(&paths, std::slice::from_ref(&bundle)));
 
@@ -2957,7 +3025,7 @@ mod tests {
             .any(|entry| entry["id"] == json!(PROFILE_ID)));
     }
 
-    /// #4774：用户在 Desktop 里给 CC Switch 的 profile 打开的设置，切换供应商、
+    /// #4774：用户在 Desktop 里给 Oceanway Config 的 profile 打开的设置，切换供应商、
     /// 切回官方再切回来都不能丢；用户收紧过的出站白名单也不能被改回 `*`。
     #[test]
     fn claude_desktop_switches_keep_the_users_own_profile_settings() {

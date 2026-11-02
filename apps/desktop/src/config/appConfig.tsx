@@ -1,4 +1,5 @@
 import React from "react";
+import { OCEANWAY_EDITION } from "@/config/edition";
 import type { AppId } from "@/lib/api/types";
 import type { PiFamilyAppId } from "@/lib/api/pi";
 import type { VisibleApps } from "@/types";
@@ -33,6 +34,32 @@ export const APP_IDS: AppId[] = [
   "agy",
   "omp",
 ];
+
+export const OCEANWAY_APP_IDS: AppId[] = [
+  "codex",
+  "claude-desktop",
+  "claude",
+  "dsh",
+  "hermes",
+  "kimi",
+];
+
+export function isOceanwayApp(app: string): app is AppId {
+  return OCEANWAY_APP_IDS.includes(app as AppId);
+}
+
+export function oceanwayVisibleApps(saved?: Partial<VisibleApps>): VisibleApps {
+  if (!OCEANWAY_EDITION) return { ...DEFAULT_VISIBLE_APPS, ...saved };
+  return Object.fromEntries(
+    APP_IDS.map((app) => [app, isOceanwayApp(app) && (saved?.[app] ?? true)]),
+  ) as unknown as VisibleApps;
+}
+
+export function orderOceanwayAppIds(saved?: readonly string[]): AppId[] {
+  if (!OCEANWAY_EDITION) return orderAppIds(saved);
+  const ordered = [...new Set([...(saved ?? []), ...OCEANWAY_APP_IDS])];
+  return ordered.filter(isOceanwayApp);
+}
 
 export const DEFAULT_VISIBLE_APPS: VisibleApps = {
   claude: true,

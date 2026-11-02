@@ -1,0 +1,53 @@
+name: Verify in-app default agent installation
+on:
+  push:
+    branches: [codex/oceanway-config-rebuild]
+    paths:
+      - apps/desktop/src-tauri/src/oceanway_install.rs
+      - .github/workflows/verify-oceanway-installation.yml
+  workflow_dispatch:
+    inputs:
+      app:
+        type: choice
+        description: Agent to install on disposable GitHub runners
+        options: [codex, claude-desktop, claude, dsh, hermes, kimi]
+        required: true
+        default: codex
+permissions:
+  contents: read
+jobs:
+  install:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.12.3
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: apps/desktop/pnpm-lock.yaml
+      - uses: dtolnay/rust-toolchain@1.94.1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri -> target
+      - name: Prepare renderer build inputs
+        working-directory: apps/desktop
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build:renderer
+      - name: Compile and test native installation service
+        working-directory: apps/desktop/src-tauri
+        run: cargo test --locked --lib oceanway_install -- --test-threads=1
+      - name: Install from Oceanway using the production default installation code
+        if: ${{ !(inputs.app == 'hermes' && matrix.os == 'macos-15-intel') }}
+        working-directory: apps/desktop/src-tauri
+        env:
+          OCEANWAY_INSTALL_TEST_TARGET: ${{ inputs.app || 'codex' }}
+        run: cargo test --locked --lib oceanway_install::tests::install_on_disposable_runner -- --ignored --nocapture --test-threads=1

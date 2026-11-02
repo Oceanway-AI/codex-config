@@ -198,9 +198,9 @@ async fn respond(
     stream.shutdown().await
 }
 
-const PAGE_DONE: &str = "<!doctype html><meta charset=utf-8><title>CC Switch</title><body style=\"font-family:system-ui;padding:48px\"><h2>登录成功 · Signed in</h2><p>可以关闭这个页面，回到 CC Switch。<br>You can close this page and return to CC Switch.</p></body>";
-const PAGE_FAILED: &str = "<!doctype html><meta charset=utf-8><title>CC Switch</title><body style=\"font-family:system-ui;padding:48px\"><h2>登录没有完成 · Sign-in not completed</h2><p>回到 CC Switch 重新添加账号。<br>Return to CC Switch and add the account again.</p></body>";
-const PAGE_MISMATCH: &str = "<!doctype html><meta charset=utf-8><title>CC Switch</title><body style=\"font-family:system-ui;padding:48px\"><h2>这个登录链接已过期 · This sign-in link has expired</h2></body>";
+const PAGE_DONE: &str = "<!doctype html><meta charset=utf-8><title>Oceanway Config</title><body style=\"font-family:system-ui;padding:48px\"><h2>登录成功 · Signed in</h2><p>可以关闭这个页面，回到 Oceanway Config。<br>You can close this page and return to Oceanway Config.</p></body>";
+const PAGE_FAILED: &str = "<!doctype html><meta charset=utf-8><title>Oceanway Config</title><body style=\"font-family:system-ui;padding:48px\"><h2>登录没有完成 · Sign-in not completed</h2><p>回到 Oceanway Config 重新添加账号。<br>Return to Oceanway Config and add the account again.</p></body>";
+const PAGE_MISMATCH: &str = "<!doctype html><meta charset=utf-8><title>Oceanway Config</title><body style=\"font-family:system-ui;padding:48px\"><h2>这个登录链接已过期 · This sign-in link has expired</h2></body>";
 
 #[derive(Debug, Deserialize)]
 pub struct TokenResponse {

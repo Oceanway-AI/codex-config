@@ -24,6 +24,7 @@ import type {
   ToolUninstallPlan,
 } from "@/lib/api/settings";
 import type { DndContextProps, DragEndEvent } from "@dnd-kit/core";
+import { desktopDownloadUrl } from "@/components/apps/officialInstallLinks";
 import { APP_IDS } from "@/config/appConfig";
 import type { VisibleApps } from "@/types";
 
@@ -654,7 +655,7 @@ describe("AppsPage concurrent CLI upgrades", () => {
       }),
     ).toBeNull();
     expect(
-      card("Codex").getByRole("button", { name: "settings.toolInstall" }),
+      card("Codex").getByRole("button", { name: "appsPage.installCli" }),
     ).toBeEnabled();
   });
 
@@ -705,7 +706,7 @@ describe("AppsPage concurrent CLI upgrades", () => {
     );
     await waitFor(() =>
       expect(mocks.openExternal).toHaveBeenCalledWith(
-        "https://claude.com/download",
+        desktopDownloadUrl("claude-desktop"),
       ),
     );
     expect(mocks.runToolLifecycleAction).not.toHaveBeenCalled();
@@ -807,7 +808,7 @@ describe("AppsPage concurrent CLI upgrades", () => {
     );
     await renderApps();
     fireEvent.click(
-      card("Codex").getByRole("button", { name: "settings.toolInstall" }),
+      card("Codex").getByRole("button", { name: "appsPage.installCli" }),
     );
     await waitFor(() => expect(isReady("Codex")).toBe(true));
     expect(
@@ -850,7 +851,10 @@ describe("AppsPage concurrent CLI upgrades", () => {
     await renderApps();
     for (const [, name, url] of entries) {
       expect(
-        card(name).getByRole("button", { name: "settings.toolInstall" }),
+        card(name).getByRole("button", {
+          name:
+            name === "Codex" ? "appsPage.installCli" : "settings.toolInstall",
+        }),
       ).toBeEnabled();
       fireEvent.click(
         card(name).getByRole("button", { name: "appsPage.officialInstall" }),
@@ -875,7 +879,7 @@ describe("AppsPage concurrent CLI upgrades", () => {
     );
     expect(mocks.runToolLifecycleAction).not.toHaveBeenCalled();
     fireEvent.click(
-      card("Codex").getByRole("button", { name: "settings.toolInstall" }),
+      card("Codex").getByRole("button", { name: "appsPage.installCli" }),
     );
     await waitFor(() =>
       expect(mocks.runToolLifecycleAction).toHaveBeenCalledWith(
@@ -927,7 +931,7 @@ describe("AppsPage concurrent CLI upgrades", () => {
       );
       await waitFor(() =>
         expect(mocks.openExternal).toHaveBeenCalledWith(
-          "https://developers.openai.com/codex/app",
+          desktopDownloadUrl("codex"),
         ),
       );
       expect(mocks.runToolLifecycleAction).not.toHaveBeenCalled();
@@ -2149,7 +2153,7 @@ describe("AppsPage concurrent CLI upgrades", () => {
       expect(mocks.runToolLifecycleAction).toHaveBeenCalledTimes(1),
     );
     const install = card("Codex").getByRole("button", {
-      name: "settings.toolInstall",
+      name: "appsPage.installCli",
     });
     expect(install).toBeEnabled();
     fireEvent.click(install);

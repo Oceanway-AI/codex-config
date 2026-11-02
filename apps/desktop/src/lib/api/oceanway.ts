@@ -22,6 +22,7 @@ export interface DetectedApp {
   desktopInstalled?: boolean;
   configExists: boolean;
   configurable: boolean;
+  installAvailable?: boolean;
   reason?: string;
 }
 export interface ApplyRequest {

@@ -331,7 +331,7 @@ impl McpService {
                 );
             }
             AppType::ClaudeDesktop => {
-                log::debug!("Claude Desktop 3P profiles do not use CC Switch MCP sync, skipping");
+                crate::claude_desktop_config::sync_managed_mcp(&server.id,Some(&server.server))?;
             }
             AppType::Codex => {
                 // Codex uses TOML format, must use the correct function
@@ -405,7 +405,7 @@ impl McpService {
                 );
             }
             AppType::ClaudeDesktop => {
-                log::debug!("Claude Desktop 3P profiles do not use CC Switch MCP sync, skipping");
+                crate::claude_desktop_config::sync_managed_mcp(id,None)?;
             }
             AppType::Codex => mcp::remove_server_from_codex(id)?,
             AppType::Gemini => mcp::remove_server_from_gemini(id)?,
@@ -465,10 +465,10 @@ impl McpService {
         Self::project_servers_to_app(state, &servers, app)
     }
 
-    /// 由 CC Switch 管理 MCP 的应用（Claude Desktop、OpenClaw 不支持）
+    /// 支持配置文件同步的 MCP 应用。
     pub fn live_sync_apps() -> Vec<AppType> {
         AppType::all()
-            .filter(|app| !matches!(app, AppType::OpenClaw | AppType::ClaudeDesktop))
+            .filter(|app| !matches!(app, AppType::OpenClaw))
             .collect()
     }
 
@@ -520,7 +520,7 @@ impl McpService {
         servers: &IndexMap<String, McpServer>,
         app: &AppType,
     ) -> Result<(), AppError> {
-        if matches!(app, AppType::OpenClaw | AppType::ClaudeDesktop) {
+        if matches!(app, AppType::OpenClaw) {
             return Ok(());
         }
 

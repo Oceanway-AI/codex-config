@@ -7,8 +7,13 @@ import { oceanwayApi, type DetectedApp } from "@/lib/api/oceanway";
 import { settingsApi } from "@/lib/api/settings";
 import type { AppId } from "@/lib/api";
 const installAction = vi.hoisted(() => vi.fn());
-vi.mock("@/components/apps/useToolManagement", () => ({
-  useToolManagement: () => ({ handleRunToolAction: installAction }),
+vi.mock("@/components/oceanway/AgentInstallProgress", () => ({
+  useAgentInstaller: () => ({
+    start: installAction,
+    job: undefined,
+    busy: false,
+  }),
+  AgentInstallProgress: () => null,
 }));
 import liveCatalog from "@/test-fixtures/oceanway-model-catalog.json";
 import liveImageCatalog from "@/test-fixtures/oceanway-image-catalog.json";
@@ -127,7 +132,7 @@ describe("Oceanway guided configuration", () => {
     mount("kimi", openApps);
     expect(
       await screen.findByRole("heading", {
-        name: "Kimi Code 尚未开放 Oceanway 接入",
+        name: "Kimi Code Desktop 尚未开放 Oceanway 接入",
       }),
     ).toBeVisible();
     expect(screen.queryByLabelText("Oceanway API Key")).toBeNull();
@@ -415,7 +420,7 @@ describe("Oceanway guided configuration", () => {
     );
   });
 
-  it("installs apps directly on an empty computer and refreshes detection", async () => {
+  it("downloads the offline Codex desktop package without claiming it is installed", async () => {
     vi.mocked(oceanwayApi.detectApps).mockResolvedValue(
       detectedApps().map((app) => ({
         ...app,
@@ -426,21 +431,23 @@ describe("Oceanway guided configuration", () => {
     const user = userEvent.setup();
     mount();
     const codexInstall = await screen.findByRole("button", {
-      name: "安装 Codex",
+      name: "下载安装 Codex",
     });
     expect(screen.getByRole("checkbox", { name: "配置 Codex" })).toBeDisabled();
     expect(
       screen.getByRole("checkbox", { name: "配置 Claude Code" }),
     ).toBeDisabled();
     await user.click(codexInstall);
-    expect(installAction).toHaveBeenCalledWith(["codex"], "install");
-    await waitFor(() => expect(codexInstall).toBeEnabled());
-    await user.click(screen.getByRole("button", { name: "安装 Claude Code" }));
-    expect(installAction).toHaveBeenCalledWith(["claude"], "install");
+    expect(installAction).toHaveBeenCalledWith("codex");
     expect(settingsApi.openExternal).not.toHaveBeenCalled();
-    await waitFor(() =>
-      expect(oceanwayApi.detectApps).toHaveBeenCalledTimes(3),
+    expect(oceanwayApi.detectApps).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("checkbox", { name: "配置 Codex" })).toBeDisabled();
+    await waitFor(() => expect(codexInstall).toBeEnabled());
+    await user.click(
+      screen.getByRole("button", { name: "下载安装 Claude Code" }),
     );
+    expect(installAction).toHaveBeenCalledWith("claude");
+    expect(oceanwayApi.detectApps).toHaveBeenCalledTimes(1);
     expect(oceanwayApi.apply).not.toHaveBeenCalled();
   });
 
@@ -460,7 +467,7 @@ describe("Oceanway guided configuration", () => {
     expect(screen.getByRole("checkbox", { name: "配置 Codex" })).toBeChecked();
   });
 
-  it("keeps the Key and prevents duplicate clicks while installing, then selects the new app", async () => {
+  it("keeps the Key during the download and selects Codex only after detecting the installation", async () => {
     vi.mocked(oceanwayApi.detectApps)
       .mockResolvedValueOnce(
         detectedApps().map((app) => ({
@@ -485,17 +492,22 @@ describe("Oceanway guided configuration", () => {
     );
     const user = userEvent.setup();
     mount();
-    const install = await screen.findByRole("button", { name: "安装 Codex" });
+    const install = await screen.findByRole("button", {
+      name: "下载安装 Codex",
+    });
     await user.type(
       screen.getByLabelText("Oceanway API Key", { selector: "input" }),
       "kept-fixture-key",
     );
     await user.click(install);
     expect(
-      screen.getByRole("button", { name: "正在安装 Codex" }),
+      screen.getByRole("button", { name: "正在准备 Codex" }),
     ).toBeDisabled();
     expect(installAction).toHaveBeenCalledTimes(1);
     finish();
+    await waitFor(() => expect(install).toBeEnabled());
+    expect(screen.getByRole("checkbox", { name: "配置 Codex" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "重新检测" }));
     await waitFor(() =>
       expect(
         screen.getByRole("checkbox", { name: "配置 Codex" }),
@@ -504,10 +516,10 @@ describe("Oceanway guided configuration", () => {
     expect(
       screen.getByLabelText("Oceanway API Key", { selector: "input" }),
     ).toHaveValue("kept-fixture-key");
-    expect(screen.queryByRole("button", { name: "安装 Codex" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "下载安装 Codex" })).toBeNull();
   });
 
-  it("keeps the install action available after a failed installation", async () => {
+  it("keeps the download action available when opening the installer link fails", async () => {
     vi.mocked(oceanwayApi.detectApps).mockResolvedValue(
       detectedApps().map((app) => ({
         ...app,
@@ -518,9 +530,13 @@ describe("Oceanway guided configuration", () => {
     installAction.mockRejectedValueOnce(new Error("下载失败，请重试"));
     const user = userEvent.setup();
     mount();
-    await user.click(await screen.findByRole("button", { name: "安装 Codex" }));
+    await user.click(
+      await screen.findByRole("button", { name: "下载安装 Codex" }),
+    );
     expect(await screen.findByText("下载失败，请重试")).toBeVisible();
-    expect(screen.getByRole("button", { name: "安装 Codex" })).toBeEnabled();
+    expect(
+      screen.getByRole("button", { name: "下载安装 Codex" }),
+    ).toBeEnabled();
     expect(screen.getByRole("checkbox", { name: "配置 Codex" })).toBeDisabled();
   });
 
@@ -534,7 +550,7 @@ describe("Oceanway guided configuration", () => {
     );
     const user = userEvent.setup();
     mount();
-    await screen.findByRole("button", { name: "安装 Codex" });
+    await screen.findByRole("button", { name: "下载安装 Codex" });
     await user.click(screen.getByRole("button", { name: "重新检测" }));
     await waitFor(() =>
       expect(
@@ -544,7 +560,7 @@ describe("Oceanway guided configuration", () => {
     expect(
       screen.getByRole("checkbox", { name: "配置 Claude Code" }),
     ).toBeChecked();
-    expect(screen.queryByRole("button", { name: "安装 Codex" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "下载安装 Codex" })).toBeNull();
   });
 
   it("offers detection on a single-app page and enables the newly installed app", async () => {
@@ -557,7 +573,7 @@ describe("Oceanway guided configuration", () => {
     );
     const user = userEvent.setup();
     mount("codex");
-    await screen.findByRole("button", { name: "安装 Codex" });
+    await screen.findByRole("button", { name: "下载安装 Codex" });
     expect(screen.getByRole("checkbox", { name: "配置 Codex" })).toBeDisabled();
     expect(
       screen.queryByRole("checkbox", { name: "配置 Claude Code" }),
@@ -571,7 +587,7 @@ describe("Oceanway guided configuration", () => {
       ).toBeEnabled(),
     );
     expect(screen.getByRole("checkbox", { name: "配置 Codex" })).toBeChecked();
-    expect(screen.queryByRole("button", { name: "安装 Codex" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "下载安装 Codex" })).toBeNull();
   });
 
   it("allows installation and model changes together when only an old config is detected", async () => {
@@ -589,13 +605,13 @@ describe("Oceanway guided configuration", () => {
     await connect(user);
     expect(screen.getByRole("checkbox", { name: "配置 Codex" })).toBeEnabled();
     expect(screen.getByRole("checkbox", { name: "配置 Codex" })).toBeChecked();
-    const install = screen.getByRole("button", { name: "安装 Codex" });
+    const install = screen.getByRole("button", { name: "下载安装 Codex" });
     expect(install).toBeEnabled();
     const codex = await expandModel(user, "Codex");
     expect(codex).toHaveValue("gpt-5");
     await user.selectOptions(codex, "gpt-5-mini");
     await user.click(install);
-    expect(installAction).toHaveBeenCalledWith(["codex"], "install");
+    expect(installAction).toHaveBeenCalledWith("codex");
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "一键配置" })).toBeEnabled(),
     );

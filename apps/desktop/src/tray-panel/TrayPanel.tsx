@@ -23,6 +23,7 @@ import {
   Settings,
 } from "lucide-react";
 import { AppGlyph } from "@/components/shell/AppGlyph";
+import oceanwaySymbol from "@/assets/oceanway/oceanway-ai-symbol-blue.svg";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { cn } from "@/lib/utils";
 import type { AppMode } from "@/types/proxy";
@@ -990,7 +991,8 @@ export function TrayPanel() {
           data-other-item
           className="flex shrink-0 items-center px-4 pb-2 pt-3"
         >
-          <span className="text-[15px] font-semibold">CC Switch</span>
+          <img src={oceanwaySymbol} alt="" className="me-2 h-7 w-6" />
+          <span className="text-[15px] font-semibold">Oceanway Config</span>
           <button
             type="button"
             title={texts.settings}

@@ -1,3 +1,5 @@
+// Preserve upstream usage-filter coverage; Oceanway scope is covered by OceanwayApp.
+vi.mock("@/config/edition", () => ({ OCEANWAY_EDITION: false }));
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";

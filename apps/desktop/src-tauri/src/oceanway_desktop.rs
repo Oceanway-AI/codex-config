@@ -2,31 +2,38 @@
 //! every process sharing an executable name. Only called after an explicit click.
 #[cfg(target_os = "windows")]
 pub fn launch_codex(restart: bool) -> Result<Option<String>, String> {
-    use std::os::windows::process::CommandExt;
     // All script text is fixed; no API key, model or user path is interpolated.
     const SCRIPT: &str = r#"
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+function Test-CodexHost($path) {
+  if(-not $path -or -not (Test-Path -LiteralPath $path -PathType Leaf)){return $false}
+  $resources=Join-Path (Split-Path -Parent $path) 'resources'
+  return (Test-Path -LiteralPath (Join-Path $resources 'app.asar')) -and ((Split-Path -Leaf $path) -eq 'Codex.exe' -or (Test-Path -LiteralPath (Join-Path $resources 'codex.exe')) -or (Test-Path -LiteralPath (Join-Path $resources 'codex-cli\bin\codex.exe')))
+}
 try {
-  $roots = @(Get-Process -Name Codex -ErrorAction SilentlyContinue | Where-Object {
+  $roots = @(Get-Process -Name Codex,ChatGPT -ErrorAction SilentlyContinue | Where-Object {
     $_.MainWindowHandle -ne 0 -and $_.Path -and
-    (Test-Path -LiteralPath (Join-Path (Split-Path -Parent $_.Path) 'resources\app.asar'))
+    (Test-CodexHost $_.Path)
   })
   if ($roots.Count -gt 1) { throw '检测到多个 Codex 主窗口，请手动选择并关闭后重试。' }
   $executable = if ($roots.Count -eq 1) { $roots[0].Path } else { $null }
   if (-not $executable) {
     $candidates = @(
       (Join-Path $env:LOCALAPPDATA 'Programs\Codex\Codex.exe'),
-      (Join-Path $env:LOCALAPPDATA 'Codex\Codex.exe')
+      (Join-Path $env:LOCALAPPDATA 'Codex\Codex.exe'),
+      (Join-Path $env:LOCALAPPDATA 'Programs\ChatGPT\ChatGPT.exe'),
+      (Join-Path $env:LOCALAPPDATA 'ChatGPT\ChatGPT.exe')
     )
-    $packages = @(Get-AppxPackage -Name '*Codex*' -ErrorAction SilentlyContinue)
+    $packages = @(Get-AppxPackage -Name '*Codex*' -ErrorAction SilentlyContinue; Get-AppxPackage -Name '*ChatGPT*' -ErrorAction SilentlyContinue)
     foreach ($package in $packages) {
       $candidates += Join-Path $package.InstallLocation 'app\Codex.exe'
       $candidates += Join-Path $package.InstallLocation 'Codex.exe'
+      $candidates += Join-Path $package.InstallLocation 'app\ChatGPT.exe'
+      $candidates += Join-Path $package.InstallLocation 'ChatGPT.exe'
     }
     foreach ($candidate in $candidates) {
-      if ((Test-Path -LiteralPath $candidate -PathType Leaf) -and
-          (Test-Path -LiteralPath (Join-Path (Split-Path -Parent $candidate) 'resources\app.asar'))) {
+      if (Test-CodexHost $candidate) {
         $executable = $candidate; break
       }
     }
@@ -42,12 +49,10 @@ try {
   @{found=$true;ok=$false;error=$_.Exception.Message} | ConvertTo-Json -Compress
 }
 "#;
-    let output = std::process::Command::new("powershell.exe")
+    let output = crate::agent_desktops::bounded_output(std::process::Command::new("powershell.exe")
         .args(["-NoProfile", "-NonInteractive", "-Command", SCRIPT])
-        .env("OCEANWAY_RESTART_REQUEST", if restart { "1" } else { "0" })
-        .creation_flags(0x08000000)
-        .output()
-        .map_err(|e| format!("无法检测 Codex 桌面应用：{e}"))?;
+        .env("OCEANWAY_RESTART_REQUEST", if restart { "1" } else { "0" }),25)
+        .map_err(|e| format!("无法打开 Codex 桌面应用：{e}"))?;
     let value: serde_json::Value = serde_json::from_slice(&output.stdout)
         .map_err(|_| "Codex 桌面检测失败，请手动打开应用".to_owned())?;
     if value["ok"] != true {

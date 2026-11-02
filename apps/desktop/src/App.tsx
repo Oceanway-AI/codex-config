@@ -92,7 +92,7 @@ import { discardUnsavedChanges, hasUnsavedChanges } from "@/lib/unsavedChanges";
 import { SettingsPage } from "@/components/settings/SettingsPage";
 import { AuthCenterPanel } from "@/components/settings/AuthCenterPanel";
 import { RefreshAllQuotaButton } from "@/components/settings/auth/RefreshAllQuotaButton";
-import { AppsPage } from "@/components/apps/AppsPage";
+import { OceanwayAppsPage } from "@/components/oceanway/OceanwayAppsPage";
 import {
   checkToolUpdatesInBackground,
   useToolUpdatesAvailable,
@@ -137,15 +137,17 @@ import HermesMemoryPanel, {
   HermesMemorySaveButton,
 } from "@/components/hermes/HermesMemoryPanel";
 import {
-  APP_IDS,
-  DEFAULT_VISIBLE_APPS,
+  APP_IDS as UPSTREAM_APP_IDS,
+  OCEANWAY_APP_IDS,
+  oceanwayVisibleApps,
   isModeAppId,
   isPiFamilyApp,
-  orderAppIds,
+  orderOceanwayAppIds as orderAppIds,
 } from "@/config/appConfig";
 import type { PiFamilyAppId } from "@/lib/api/pi";
 
 import { OCEANWAY_EDITION } from "@/config/edition";
+const APP_IDS = OCEANWAY_EDITION ? OCEANWAY_APP_IDS : UPSTREAM_APP_IDS;
 
 interface SyncStatusUpdatedPayload {
   source?: string;
@@ -219,10 +221,7 @@ function App() {
   const useAppWindowControls =
     isWindows() || (isLinux() && (settingsData?.useAppWindowControls ?? false));
   const visibleApps = useMemo<VisibleApps>(
-    () => ({
-      ...DEFAULT_VISIBLE_APPS,
-      ...settingsData?.visibleApps,
-    }),
+    () => oceanwayVisibleApps(settingsData?.visibleApps),
     [settingsData?.visibleApps],
   );
 
@@ -1765,7 +1764,7 @@ function App() {
           />
         );
       case "apps":
-        return <AppsPage />;
+        return <OceanwayAppsPage />;
       default:
         return null;
     }

@@ -7,11 +7,20 @@ export function isImageModel(id: string): boolean {
     id,
   );
 }
+export function isVideoModel(id: string): boolean {
+  return /(?:seedance|sora|veo|kling|(?:^|[-_/])video(?:[-_/]|$))/i.test(id);
+}
+export function videoModels(models: OceanwayModel[]): string[] {
+  return [...new Set(models.map((m) => m.id).filter(isVideoModel))].sort(
+    (a, b) => b.localeCompare(a, "en", { numeric: true }),
+  );
+}
 export function conversationModels(models: OceanwayModel[]): string[] {
   return [...new Set(models.map((m) => m.id))]
     .filter(
       (id) =>
         !isImageModel(id) &&
+        !isVideoModel(id) &&
         !/embedding|rerank|whisper|tts|transcri|moderation|sora|video|audio|realtime/i.test(
           id,
         ),

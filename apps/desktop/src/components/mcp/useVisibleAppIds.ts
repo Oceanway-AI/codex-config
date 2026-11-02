@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import type { AppId } from "@/lib/api/types";
-import { DEFAULT_VISIBLE_APPS } from "@/config/appConfig";
+import { oceanwayVisibleApps } from "@/config/appConfig";
 import { useSettingsQuery } from "@/lib/query";
 
 /**
@@ -11,7 +11,7 @@ export function useVisibleAppIds<T extends AppId>(appIds: readonly T[]): T[] {
   const { data: settings } = useSettingsQuery();
   const visibleApps = settings?.visibleApps;
   return useMemo(() => {
-    const visible = { ...DEFAULT_VISIBLE_APPS, ...visibleApps };
+    const visible = oceanwayVisibleApps(visibleApps);
     return appIds.filter((app) => visible[app]);
   }, [appIds, visibleApps]);
 }

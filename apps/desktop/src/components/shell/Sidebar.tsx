@@ -25,7 +25,7 @@ import {
 } from "lucide-react";
 import type { AppId } from "@/lib/api";
 import type { VisibleApps } from "@/types";
-import { orderAppIds } from "@/config/appConfig";
+import { orderOceanwayAppIds as orderAppIds } from "@/config/appConfig";
 import type { GlobalPage, SettingsSection, View } from "@/lib/navigation";
 import { isAppPage } from "@/lib/navigation";
 import { SkillsIcon } from "@/components/BrandIcons";

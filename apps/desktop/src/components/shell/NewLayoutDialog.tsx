@@ -18,7 +18,8 @@ import { useSettingsQuery } from "@/lib/query";
 import { markSeen } from "@/lib/whatsNew";
 import type { Settings } from "@/types";
 
-const RELEASES_URL = "https://github.com/farion1231/cc-switch/releases";
+const RELEASES_URL =
+  "https://github.com/Oceanway-AI/codex-config/releases/tag/oceanway-preview";
 
 /** 任一应用的数据库里已经有供应商（找到一家就停） */
 async function hasAnyProvider(): Promise<boolean> {
@@ -95,10 +96,7 @@ export function NewLayoutDialog() {
 
   const handleViewReleaseNotes = async () => {
     try {
-      const version = await getVersion();
-      await settingsApi.openExternal(
-        version ? `${RELEASES_URL}/tag/v${version}` : RELEASES_URL,
-      );
+      await settingsApi.openExternal(RELEASES_URL);
     } catch (error) {
       console.error("Failed to open release notes:", error);
     }

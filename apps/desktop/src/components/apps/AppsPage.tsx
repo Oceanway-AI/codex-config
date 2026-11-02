@@ -84,8 +84,7 @@ import { ToolErrorMessage } from "@/components/settings/ToolErrorMessage";
 import { ToolUninstallConfirmDialog } from "./ToolUninstallConfirmDialog";
 import { ManualUninstallDialog } from "./ManualUninstallDialog";
 import {
-  CLAUDE_DESKTOP_DOWNLOAD_URL,
-  CODEX_DESKTOP_DOWNLOAD_URL,
+  desktopDownloadUrl,
   OFFICIAL_TOOL_INSTALL_URLS,
 } from "./officialInstallLinks";
 import {
@@ -386,7 +385,10 @@ export function AppsPage() {
         }
         action={
           desktopStatus?.supported && !desktopStatus.installed ? (
-            <OfficialInstallButton url={CLAUDE_DESKTOP_DOWNLOAD_URL} download />
+            <OfficialInstallButton
+              url={desktopDownloadUrl("claude-desktop")}
+              download
+            />
           ) : undefined
         }
         visibility={visibilitySwitch("claude-desktop")}
@@ -748,6 +750,7 @@ function OfficialInstallButton({
     setOpening(true);
     try {
       await settingsApi.openExternal(url);
+      if (download) toast.info(t("appsPage.offlineDownloadOpened"));
     } catch {
       toast.error(t("notifications.openLinkFailed"));
     } finally {
@@ -876,7 +879,7 @@ function ToolRow({
         <ArrowUpCircle className="h-3.5 w-3.5" />
       )}
       {action === "install"
-        ? t(desktopInstalled ? "appsPage.installCli" : "settings.toolInstall")
+        ? t(tool === "codex" ? "appsPage.installCli" : "settings.toolInstall")
         : t("settings.toolUpdate")}
     </Button>
   ) : null;
@@ -1017,8 +1020,9 @@ function ToolRow({
           {actionButton}
           {tool === "codex" && !desktopInstalled && !isVersionLoading && (
             <OfficialInstallButton
-              url={CODEX_DESKTOP_DOWNLOAD_URL}
+              url={desktopDownloadUrl("codex")}
               labelKey="appsPage.desktopDownload"
+              download
               disabled={isBusy}
             />
           )}

@@ -49,7 +49,7 @@ import {
   useSessionUsageLastSync,
 } from "@/lib/query/usage";
 import { useSettingsQuery } from "@/lib/query";
-import { DEFAULT_VISIBLE_APPS } from "@/config/appConfig";
+import { oceanwayVisibleApps } from "@/config/appConfig";
 import { useUsageEventBridge } from "@/hooks/useUsageEventBridge";
 import { useUsageAutoRefresh } from "@/hooks/useUsageAutoRefresh";
 import { usageApi } from "@/lib/api/usage";
@@ -561,7 +561,7 @@ export function UsageDashboard({
   // 当前选中的即使被隐藏也留着，免得筛选状态无处可见
   const { data: settings } = useSettingsQuery();
   const filterApps = useMemo(() => {
-    const visible = { ...DEFAULT_VISIBLE_APPS, ...settings?.visibleApps };
+    const visible = oceanwayVisibleApps(settings?.visibleApps);
     return KNOWN_APP_TYPES.filter(
       (app) =>
         visible[app] ||

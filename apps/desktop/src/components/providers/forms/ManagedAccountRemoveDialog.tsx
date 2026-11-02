@@ -121,11 +121,11 @@ export function ManagedAccountRemoveDialog({
               {one
                 ? t("managedAuth.remove.leadOne", {
                     defaultValue:
-                      "会删除这个账号保存在 CC Switch 里的登录凭据，无法撤销。",
+                      "会删除这个账号保存在 Oceanway Config 里的登录凭据，无法撤销。",
                   })
                 : t("managedAuth.remove.leadAll", {
                     defaultValue:
-                      "会删除这 {{count}} 个账号保存在 CC Switch 里的登录凭据，无法撤销。",
+                      "会删除这 {{count}} 个账号保存在 Oceanway Config 里的登录凭据，无法撤销。",
                     count,
                   })}
               {note && <> {note}</>}

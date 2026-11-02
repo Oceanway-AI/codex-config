@@ -31,6 +31,8 @@ jobs:
             rust_target: x86_64-pc-windows-msvc
             smoke_exe: src-tauri/target/release/oceanway-config.exe
             bundle_args: --bundles nsis
+            download_platform: windows
+            download_arch: x86_64
             artifact_path: |
               apps/desktop/src-tauri/target/release/bundle/nsis/*.exe
           - platform: macos-arm64
@@ -38,6 +40,8 @@ jobs:
             rust_target: aarch64-apple-darwin
             smoke_exe: src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Oceanway Config.app/Contents/MacOS/oceanway-config
             bundle_args: --target aarch64-apple-darwin --bundles app
+            download_platform: darwin
+            download_arch: aarch64
             artifact_path: |
               apps/desktop/dist/Oceanway-Config-macos-arm64.zip
           - platform: macos-intel
@@ -45,6 +49,8 @@ jobs:
             rust_target: x86_64-apple-darwin
             smoke_exe: src-tauri/target/x86_64-apple-darwin/release/bundle/macos/Oceanway Config.app/Contents/MacOS/oceanway-config
             bundle_args: --target x86_64-apple-darwin --bundles app
+            download_platform: darwin
+            download_arch: x86_64
             artifact_path: |
               apps/desktop/dist/Oceanway-Config-macos-intel.zip
     steps:
@@ -82,6 +88,11 @@ jobs:
       - name: Test native prompt templates
         working-directory: apps/desktop/src-tauri
         run: cargo test --locked --lib services::prompt::tests -- --test-threads=1
+      - name: Test branded tray and desktop profile
+        working-directory: apps/desktop/src-tauri
+        run: |
+          cargo test --locked --lib tray::tests -- --test-threads=1
+          cargo test --locked --lib claude_desktop_config::tests -- --test-threads=1
       - name: Test native Codex configuration projection
         working-directory: apps/desktop/src-tauri
         run: cargo test --locked --lib live::project::codex::tests -- --test-threads=1
@@ -92,6 +103,9 @@ jobs:
         working-directory: apps/desktop/src-tauri
         run: cargo test --locked --lib tool_install_runtime -- --test-threads=1
       - name: Build desktop installer
+        env:
+          TAURI_ENV_PLATFORM: ${{ matrix.download_platform }}
+          TAURI_ENV_ARCH: ${{ matrix.download_arch }}
         run: pnpm tauri build ${{ matrix.bundle_args }}
       - name: Verify packaged MCP in an isolated home
         run: python src-tauri/src/oceanway_images/scripts/mcp_bundle_smoke.py --executable "${{ matrix.smoke_exe }}"
@@ -162,12 +176,16 @@ jobs:
           - macOS：下载对应芯片的 ZIP，解压后将应用放入“应用程序”。
           - 三个平台的前端测试、原生定向测试、安装包构建及包内 MCP 检查均通过后更新此测试版。
 
-          点击应用中的“安装”会下载对应 Agent，并自动补齐所需运行环境。此版本属于开发测试版。
+          应用安装页提供 Codex、Claude Desktop、Claude Code、DeepSeek Harness、Hermes 和 Kimi Code Desktop。点击“下载安装”后从 Oceanway 下载完整包，按默认方式安装并自动检测结果。Hermes 当前有 Windows x64 和 Apple 芯片 Mac 完整包。此版本属于开发测试版。
           """, encoding='utf-8')
           PY
           tag=oceanway-preview
-          if gh release view "$tag" >/dev/null 2>&1; then
+          if gh api "repos/$GH_REPO/git/ref/tags/$tag" >/dev/null 2>&1; then
             gh api --method PATCH "repos/$GH_REPO/git/refs/tags/$tag" -f sha="$BUILD_SHA" -F force=true
+          else
+            gh api --method POST "repos/$GH_REPO/git/refs" -f ref="refs/tags/$tag" -f sha="$BUILD_SHA"
+          fi
+          if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" release/* --clobber
             gh release edit "$tag" --title 'Oceanway Config 最新测试版' --notes-file notes.md --prerelease --latest=false
           else

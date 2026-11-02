@@ -14,11 +14,8 @@ pub const ORIGIN: &str = "https://console.oceanway.tech";
 pub const API_BASE: &str = "https://console.oceanway.tech/v1";
 const PROVIDER_ID: &str = "oceanway";
 const APPS: &[(&str, &str)] = &[
-    ("codex", "Codex"),
-    ("claude", "Claude Code"),
-    ("gemini", "Gemini CLI"),
-    ("opencode", "OpenCode"),
-    ("openclaw", "OpenClaw"),
+    ("codex", "Codex"), ("claude-desktop", "Claude Desktop"), ("claude", "Claude Code"),
+    ("dsh", "DeepSeek Harness"), ("hermes", "Hermes"), ("kimi", "Kimi Code Desktop"),
 ];
 static APPLY_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
@@ -51,6 +48,7 @@ pub struct DetectedApp {
     desktop_installed: bool,
     config_exists: bool,
     configurable: bool,
+    install_available: bool,
     reason: Option<String>,
 }
 #[derive(Clone, Deserialize)]
@@ -277,58 +275,37 @@ pub async fn oceanway_check_key(api_key: String) -> Result<ModelCatalog, String>
 
 #[tauri::command]
 pub async fn oceanway_detect_apps() -> Result<Vec<DetectedApp>, String> {
-    let raw = crate::commands::get_tool_versions(
-        Some(APPS.iter().map(|(id, _)| (*id).to_owned()).collect()),
-        None,
-    )
-    .await?;
+    let raw = crate::commands::get_tool_versions(Some(vec!["claude".into()]), None).await?;
     let versions = serde_json::to_value(raw).map_err(|_| "无法读取应用状态")?;
-    Ok(APPS
-        .iter()
-        .map(|(id, name)| {
-            let item = versions
-                .as_array()
-                .and_then(|rows| rows.iter().find(|row| row["name"] == *id));
-            let (installed, desktop_installed) = app_installation_state(id, item);
-            let broken = item.is_some_and(|v| v["installed_but_broken"] == true);
-            DetectedApp {
-                app_id: (*id).into(),
-                name: (*name).into(),
-                installed,
-                desktop_installed,
-                configurable: true,
-                config_exists: config_paths(id)
-                    .map(|paths| paths.iter().any(|p| p.exists()))
-                    .unwrap_or(false),
-                reason: Some(
-                    if broken {
-                        "检测到应用，但运行环境需要修复"
-                    } else if installed {
-                        "可以配置"
-                    } else {
-                        "尚未检测到；可以先保存配置后安装"
-                    }
-                    .into(),
-                ),
-            }
+    let probes = APPS.iter().map(|(id,name)| {
+        let id=(*id).to_owned(); let name=(*name).to_owned(); let versions=versions.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            let probe = if id=="claude" {
+                Ok(versions.as_array().is_some_and(|rows|rows.iter().any(|row|row["name"]=="claude" && row["version"].is_string())))
+            } else if id=="codex" { Ok(crate::codex_desktop_detection::is_installed()) }
+            else {crate::agent_desktops::find(&id).map(|path|path.is_some())};
+            let installed=probe.as_ref().copied().unwrap_or(false);
+            let install_available=!(id=="hermes" && cfg!(all(target_os="macos",target_arch="x86_64")));
+            DetectedApp {install_available,app_id:id.clone(),name,installed,desktop_installed:installed && id!="claude",
+                configurable:true,config_exists:config_paths(&id).map(|paths|paths.iter().any(|p|p.is_file())).unwrap_or(false),
+                reason:Some(if !install_available {"Hermes 暂未提供 Intel Mac 完整离线包".into()}else{match probe {Ok(true)=>"可以配置".into(),Ok(false)=>"尚未安装，请点击下载安装".into(),Err(e)=>e}})}
         })
-        .collect())
+    });
+    futures::future::join_all(probes).await.into_iter().map(|result|result.map_err(|e|e.to_string())).collect()
 }
 
+#[cfg(test)]
 fn app_installation_state(id: &str, item: Option<&Value>) -> (bool, bool) {
-    let desktop = id == "codex" && item.is_some_and(|v| v["desktop_installed"] == true);
-    let cli = item.is_some_and(|v| v["version"].is_string() || v["installed_but_broken"] == true);
+    let desktop = id != "claude" && item.is_some_and(|v| v["desktop_installed"] == true);
+    let cli = id == "claude" && item.is_some_and(|v| v["version"].is_string());
     (desktop || cli, desktop)
 }
-
 fn app_type(id: &str) -> Result<AppType, String> {
     match id {
-        "codex" => Ok(AppType::Codex),
-        "claude" => Ok(AppType::Claude),
-        "gemini" => Ok(AppType::Gemini),
-        "opencode" => Ok(AppType::OpenCode),
-        "openclaw" => Ok(AppType::OpenClaw),
-        _ => Err("此应用尚未完成 Oceanway 接入验证".into()),
+        "codex"=>Ok(AppType::Codex), "claude"=>Ok(AppType::Claude),
+        "claude-desktop"=>Ok(AppType::ClaudeDesktop), "dsh"=>Ok(AppType::Dsh),
+        "hermes"=>Ok(AppType::Hermes), "kimi"=>Ok(AppType::Kimi),
+        _=>Err("未支持的应用".into()),
     }
 }
 
@@ -347,25 +324,23 @@ fn provider_for(selection: &AppSelection, key: &str) -> Result<Provider, String>
             doc["model_providers"]["custom"]["experimental_bearer_token"] = toml_edit::value(key);
             json!({"auth":{"OPENAI_API_KEY":key}, "config":doc.to_string()})
         }
-        "claude" => json!({"env":{"ANTHROPIC_BASE_URL":ORIGIN,"ANTHROPIC_AUTH_TOKEN":key,
+        "claude" | "claude-desktop" => json!({"env":{"ANTHROPIC_BASE_URL":ORIGIN,"ANTHROPIC_AUTH_TOKEN":key,
             "ANTHROPIC_MODEL":model,"ANTHROPIC_DEFAULT_OPUS_MODEL":model,"ANTHROPIC_DEFAULT_SONNET_MODEL":model,"ANTHROPIC_DEFAULT_HAIKU_MODEL":model}}),
-        "gemini" => {
-            json!({"env":{"GEMINI_API_KEY":key,"GOOGLE_GEMINI_BASE_URL":ORIGIN,"GEMINI_MODEL":model}})
-        }
-        "opencode" => {
-            json!({"npm":"@ai-sdk/openai-compatible","options":{"baseURL":API_BASE,"apiKey":key},"models":{model:{"name":model}}})
-        }
-        "openclaw" => {
-            json!({"baseUrl":API_BASE,"apiKey":key,"api":"openai-responses","models":[{"id":model,"name":model}]})
-        }
+        "dsh" => json!({"name":"Oceanway","api":"openai-completions","options":{"baseURL":API_BASE,"apiKey":key},"models":{model:{"name":model}}}),
+        "hermes" => json!({"base_url":API_BASE,"api_key":key,"models":[{"id":model,"name":model}]}),
+        "kimi" => json!({"provider":{"type":"openai","base_url":API_BASE,"api_key":key},"models":{"oceanway":{"provider":PROVIDER_ID,"model":model,"max_context_size":128000}}}),
         _ => return Err("未支持的应用".into()),
     };
-    let provider = Provider::with_id(
+    let mut provider = Provider::with_id(
         PROVIDER_ID.into(),
         "Oceanway".into(),
         settings,
         Some(ORIGIN.into()),
     );
+    if selection.app_id=="claude-desktop" {
+        if !crate::claude_desktop_config::is_claude_safe_model_id(model) {return Err("Claude Desktop 请选择 Claude 系列模型".into());}
+        provider.meta=Some(serde_json::from_value(json!({"claudeDesktopModelRoutes":{model:{"model":model}}})).map_err(|e|e.to_string())?);
+    }
     validate_provider(&provider)?;
     Ok(provider)
 }
@@ -380,23 +355,19 @@ fn config_paths(id: &str) -> Result<Vec<PathBuf>, String> {
             crate::config::get_claude_settings_path(),
             crate::config::get_claude_mcp_path(),
         ],
-        "gemini" => vec![
-            crate::gemini_config::get_gemini_env_path(),
-            crate::gemini_config::get_gemini_dir().join("settings.json"),
-        ],
-        "opencode" => {
-            vec![crate::opencode_config::get_opencode_config_path().map_err(|e| e.to_string())?]
-        }
-        "openclaw" => vec![crate::openclaw_config::get_openclaw_config_path()],
+        "claude-desktop" => crate::claude_desktop_config::oceanway_backup_paths().map_err(|e|e.to_string())?,
+        "dsh" => {let mut paths=crate::dsh_config::target_paths();paths.push(crate::dsh_config::credentials_path());paths},
+        "hermes" => vec![crate::hermes_config::get_hermes_config_path()],
+        "kimi" => vec![crate::kimi_config::config_path(),crate::kimi_config::data_dir().join("mcp.json")],
         _ => return Err("未支持的应用".into()),
     };
-    paths.push(crate::prompt_files::prompt_file_path(&app_type(id)?).map_err(|e| e.to_string())?);
+    if id != "claude-desktop" {paths.push(crate::prompt_files::prompt_file_path(&app_type(id)?).map_err(|e| e.to_string())?);}
     Ok(paths)
 }
 
 const IMAGE_RULE_START: &str = "<!-- OCEANWAY:IMAGES:BEGIN -->";
 const IMAGE_RULE_END: &str = "<!-- OCEANWAY:IMAGES:END -->";
-fn merge_image_rule(original: &str) -> Result<String, String> {
+pub(crate) fn merge_image_rule(original: &str) -> Result<String, String> {
     let rule = format!("{IMAGE_RULE_START}\nWhen the user requests image generation or image editing, use the oceanway_images MCP tools: generate_images, then get_image_job until completion. Omit the model to use the configured Oceanway image model. For multiple images, submit one generate_images call with count equal to the total requested and prompts for distinct images; the service handles concurrency. Return completed image files as they become available while polling the same job until completion. Do not use built-in imagegen or an image CLI as a fallback. Do not automatically retry failed paid requests.\n{IMAGE_RULE_END}");
     match (
         original.find(IMAGE_RULE_START),
@@ -420,6 +391,7 @@ fn merge_image_rule(original: &str) -> Result<String, String> {
     }
 }
 fn install_image_rule(state: &AppState, app: &AppType) -> Result<(), String> {
+    if *app==AppType::ClaudeDesktop {return crate::claude_desktop_config::install_oceanway_media_rule();}
     let path = crate::prompt_files::prompt_file_path(app).map_err(|e| e.to_string())?;
     let old = if path.exists() {
         std::fs::read_to_string(&path).map_err(|e| e.to_string())?
@@ -442,7 +414,7 @@ pub(crate) fn prompt_with_image_rule(
 ) -> Result<String, crate::error::AppError> {
     if !matches!(
         app,
-        AppType::Codex | AppType::Claude | AppType::Gemini | AppType::OpenCode
+        AppType::Codex | AppType::Claude | AppType::Hermes | AppType::Dsh | AppType::Kimi
     ) {
         return Ok(content.into());
     }
@@ -476,32 +448,45 @@ fn read_live_image_server(app: &AppType) -> Result<Option<Value>, String> {
             .map_err(|e| e.to_string())?
             .remove("oceanway_images")
             .unwrap_or(Value::Null),
-        AppType::Gemini => crate::gemini_mcp::read_mcp_servers_map()
-            .map_err(|e| e.to_string())?
-            .remove("oceanway_images")
-            .unwrap_or(Value::Null),
-        AppType::OpenCode => crate::opencode_config::get_mcp_servers()
-            .map_err(|e| e.to_string())?
-            .remove("oceanway_images")
-            .unwrap_or(Value::Null),
+        AppType::ClaudeDesktop => crate::claude_desktop_config::read_managed_mcp("oceanway_images").map_err(|e|e.to_string())?.unwrap_or(Value::Null),
+        AppType::Gemini => crate::gemini_mcp::read_mcp_servers_map().map_err(|e|e.to_string())?.remove("oceanway_images").unwrap_or(Value::Null),
+        AppType::OpenCode => crate::opencode_config::get_mcp_servers().map_err(|e|e.to_string())?.remove("oceanway_images").unwrap_or(Value::Null),
+        AppType::Hermes => crate::hermes_config::yaml_to_json(&serde_yaml::Value::Mapping(crate::hermes_config::get_mcp_servers_yaml().map_err(|e|e.to_string())?)).map_err(|e|e.to_string())?.get("oceanway_images").cloned().unwrap_or(Value::Null),
+        AppType::Kimi => {
+            let path=crate::kimi_config::data_dir().join("mcp.json");
+            if path.exists(){crate::config::read_json_file::<Value>(&path).map_err(|e|e.to_string())?.pointer("/mcpServers/oceanway_images").cloned().unwrap_or(Value::Null)}else{Value::Null}
+        },
+        AppType::Dsh => {
+            crate::dsh_config::mcp_entries().map_err(|e|e.to_string())?.into_iter()
+                .find(|entry|entry["config"]["serverName"].as_str()==Some("oceanway_images"))
+                .map(|entry|serde_json::to_value(&entry["config"])).transpose().map_err(|e|e.to_string())?.unwrap_or(Value::Null)
+        },
         _ => return Err("此应用的图片 MCP 尚未适配".into()),
     };
     Ok((!value.is_null()).then_some(value))
 }
 
 fn expected_live_image_server(app: &AppType, spec: &Value) -> Value {
+    if *app==AppType::ClaudeDesktop {return crate::claude_desktop_config::managed_mcp_spec("oceanway_images",spec).unwrap_or(Value::Null);}
     if *app == AppType::OpenCode {
         let mut command = vec![spec["command"].clone()];
         command.extend(spec["args"].as_array().cloned().unwrap_or_default());
         return json!({"type":"local", "command":command,
             "environment":spec["env"], "enabled":true});
     }
+    if *app==AppType::Hermes {
+        return json!({"command":spec["command"],"args":spec["args"],"env":spec["env"],"enabled":true});
+    }
+    if *app==AppType::Dsh {
+        let mut native=spec.clone(); native.as_object_mut().unwrap().remove("type"); native["serverName"]=json!("oceanway_images"); native["transport"]=json!("stdio");return native;
+    }
     let mut expected = spec.clone();
-    if *app == AppType::Codex {
+    if matches!(app, AppType::Codex | AppType::Kimi) {
         if let Some(object) = expected.as_object_mut() {
             object.remove("type");
         }
     }
+    if *app == AppType::Kimi {expected["enabled"]=json!(true);}
     if *app == AppType::Gemini {
         if let Some(object) = expected.as_object_mut() {
             let timeout_ms = |object: &mut serde_json::Map<String, Value>,
@@ -936,14 +921,11 @@ pub async fn oceanway_open_image(
 pub async fn oceanway_launch_app(app_id: String, restart: bool) -> Result<LaunchResult, String> {
     app_type(&app_id)?;
     tauri::async_runtime::spawn_blocking(move || {
-        if app_id == "codex" {
-            if let Some(message) = crate::oceanway_desktop::launch_codex(restart)? {
-                return Ok(LaunchResult {
-                    launched: true,
-                    restart_required: false,
-                    message,
-                });
-            }
+        if app_id != "claude" {
+            let message=if app_id=="codex" {
+                crate::oceanway_desktop::launch_codex(restart)?.ok_or("尚未找到 Codex 桌面版，请下载安装后重新检测")?
+            }else{crate::agent_desktops::launch(&app_id,restart)?};
+            return Ok(LaunchResult {launched:true,restart_required:false,message});
         }
         crate::commands::misc::launch_oceanway_terminal(&app_id)?;
         Ok(LaunchResult {
@@ -969,7 +951,7 @@ mod tests {
         let cli_only = json!({"name":"codex", "version":"1.0.0", "desktop_installed":false});
         assert_eq!(
             app_installation_state("codex", Some(&cli_only)),
-            (true, false)
+            (false, false)
         );
         assert_eq!(
             app_installation_state("claude", Some(&desktop_only)),
@@ -995,7 +977,7 @@ mod tests {
         for (id, _) in APPS {
             let selection = AppSelection {
                 app_id: (*id).into(),
-                model: "fixture-model".into(),
+                model: if *id=="claude-desktop" {"claude-sonnet-fixture"}else{"fixture-model"}.into(),
             };
             let mut provider = provider_for(&selection, "fixture-key").unwrap();
             assert!(validate_provider(&provider).is_ok());

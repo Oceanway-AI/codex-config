@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Oceanway · 离线安装包</title>
+<style>
+  :root { font: 16px/1.65 system-ui,sans-serif; color: #183143; background: #f5f7f8; }
+  body { max-width: 840px; margin: 6vh auto; padding: 0 24px; }
+  .brand { color: #1675e8; font-weight: 700; letter-spacing: .12em; }
+  h1 { font-size: 30px; line-height: 1.3; margin-bottom: 14px; } p { color: #526670; }
+  article { background: #fff; border: 1px solid #dce4e7; padding: 24px; border-radius: 14px; margin: 20px 0; }
+  h2 { font-size: 21px; margin: 0 0 8px; } a { color: #1268cb; }
+  .download { display: inline-block; background: #1675e8; color: #fff; text-decoration: none; padding: 10px 20px; border-radius: 8px; }
+  .meta { font-size: 13px; } .package { border-top: 1px solid #e5ebee; padding-top: 14px; margin-top: 14px; }
+  label { font-weight: 600; } select { font: inherit; margin-left: 8px; padding: 5px 10px; border: 1px solid #b9c8cf; border-radius: 6px; background: #fff; }
+  a:focus-visible,select:focus-visible { outline: 3px solid #73b9fc; outline-offset: 3px; }
+  .help { padding: 14px 18px; border-radius: 10px; background: #eaf3ff; }
+</style>
+<body>
+<div class="brand">OCEANWAY</div>
+<h1>下载安装，回到 Oceanway 继续配置</h1>
+<p>完整离线安装包，由 Oceanway 服务器提供。先选你的系统，再下载要使用的应用。</p>
+<label for="platform">你的电脑</label>
+<select id="platform">
+  <option value="windows">Windows x64</option>
+  <option value="macos">Mac</option>
+  <option value="all">查看全部</option>
+</select>
+<p id="instructions" class="help"></p>
+<div id="packages" aria-live="polite">正在读取安装包…</div>
+<p class="meta">Codex 官方新版安装后显示为 ChatGPT，包含 Codex。安装完成后回到 Oceanway Config 点击“重新检测”。</p>
+<p class="meta">最低系统要求见对应安装包。Hermes 的 Mac Intel 包尚未提供，Apple 芯片包不能用于 Intel Mac。离线包包含安装文件，AI 对话仍需连接服务。</p>
+<p><a href="SHA256SUMS.txt">文件校验值</a> · <a href="manifest.json">版本与官方来源</a></p>
+<script>
+const selector = document.getElementById('platform');
+const requestedApp = new URLSearchParams(location.search).get('app');
+selector.value = /Mac/i.test(navigator.platform) ? 'macos' : /Win/i.test(navigator.platform) ? 'windows' : 'all';
+let packages = [];
+function render() {
+  document.getElementById('instructions').textContent = selector.value === 'windows'
+    ? 'Windows：可在 Oceanway Config 中点击安装，或在此下载 EXE / MSIX 后双击安装。'
+    : selector.value === 'macos'
+      ? 'Mac：可在 Oceanway Config 中点击安装，或下载 DMG 后拖到 Applications；PKG 双击安装。不清楚芯片时，打开左上角苹果菜单 → 关于本机查看。'
+      : '推荐在 Oceanway Config 中点击安装；也可在此下载对应系统的完整包。';
+  const host = document.getElementById('packages'); host.replaceChildren();
+  const names = {'codex':'Codex 桌面版','claude-desktop':'Claude Desktop','claude':'Claude Code（终端）','dsh':'DeepSeek Harness','hermes':'Hermes','kimi':'Kimi Code Desktop'};
+  const apps = [...new Set([requestedApp,...Object.keys(names)])].filter(app => names[app]);
+  for (const app of apps) {
+    const matches = packages.filter(item => item.app === app && (selector.value === 'all' || item.platform === selector.value));
+    if (!matches.length) continue;
+    const article = document.createElement('article'); article.id = app;
+    const title = document.createElement('h2'); title.textContent = names[app]; article.append(title);
+    for (const item of matches) {
+      const row = document.createElement('div'); row.className = 'package';
+      const meta = document.createElement('p'); meta.className = 'meta';
+      const label = item.platform === 'windows' ? 'Windows x64' : item.architecture === 'universal' ? 'Mac · Apple 芯片 / Intel 通用' : item.architecture === 'arm64' ? 'Mac · Apple 芯片（M 系列）' : 'Mac · Intel 芯片';
+      meta.textContent = `${label} · ${item.version} · ${(item.size / 1024 / 1024).toFixed(0)} MB${item.minimumOS ? ' · ' + item.minimumOS : ''}`;
+      const link = document.createElement('a'); link.className = 'download'; link.href = item.filename; link.textContent = `下载 ${label}`; link.download = item.filename;
+      if (item.install === 'native-binary') {
+        const help=document.createElement('p'); help.textContent='请在 Oceanway Config 中点击“下载安装”，应用会自动安装这个官方原生程序。';row.append(meta,help);
+      } else {row.append(meta,link);}
+      article.append(row);
+    }
+    host.append(article);
+  }
+}
+selector.addEventListener('change', render);
+fetch('manifest.json').then(r => { if (!r.ok) throw new Error(); return r.json(); }).then(data => { packages = data.packages; render(); }).catch(() => { document.getElementById('packages').textContent = '暂时无法读取下载信息，请刷新页面重试。'; });
+</script>
+</body>
+</html>

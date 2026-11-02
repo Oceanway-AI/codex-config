@@ -24,7 +24,7 @@ import {
 } from "@/lib/query";
 import { piApi, sessionsApi, type AppId } from "@/lib/api";
 import type { SessionMeta } from "@/types";
-import { DEFAULT_VISIBLE_APPS } from "@/config/appConfig";
+import { oceanwayVisibleApps } from "@/config/appConfig";
 import { Button } from "@/components/ui/button";
 import { HelpTip } from "@/components/ui/help-tip";
 import { Notice } from "@/components/ui/notice";
@@ -195,7 +195,7 @@ export function SessionManagerPage({
 
   // 隐藏侧栏入口不隐藏已有历史；有记录的应用始终可在会话页查找。
   const availableApps = useMemo(() => {
-    const visible = { ...DEFAULT_VISIBLE_APPS, ...settings?.visibleApps };
+    const visible = oceanwayVisibleApps(settings?.visibleApps);
     const appsWithHistory = new Set(
       sessions.map((session) => session.providerId),
     );
@@ -930,7 +930,7 @@ export function SessionManagerPage({
           appFilter === "all"
             ? undefined
             : t("sessionManager.emptyAppHint", {
-                defaultValue: "CC Switch 读取 {{path}} 下的会话数据",
+                defaultValue: "Oceanway Config 读取 {{path}} 下的会话数据",
                 path: SESSION_SOURCE_PATHS[appFilter][0],
               })
         }
@@ -961,7 +961,7 @@ export function SessionManagerPage({
             >
               {t("sessionManager.helpBody", {
                 defaultValue:
-                  "CC Switch 读取各个应用保存在本机的会话记录，位置见右上角 ⋯ 里的「会话记录在哪里」。Claude Desktop 没有单独的会话记录。",
+                  "Oceanway Config 读取各个应用保存在本机的会话记录，位置见右上角 ⋯ 里的「会话记录在哪里」。Claude Desktop 没有单独的会话记录。",
               })}
             </HelpTip>
           }

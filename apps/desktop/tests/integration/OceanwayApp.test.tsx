@@ -85,30 +85,6 @@ async function openApp(name: string) {
   fireEvent.click(await nav.findByRole("button", { name, hidden: true }));
 }
 
-async function openClawConfiguration(tab: "env" | "agents") {
-  await mountApp();
-  await screen.findByLabelText("Oceanway API Key");
-  await openApp("OpenClaw");
-  const appTabs = within(
-    await screen.findByRole("tablist", { name: "OpenClaw", hidden: true }),
-  );
-  fireEvent.click(
-    appTabs.getByRole("tab", { name: "appPage.openclawConfig", hidden: true }),
-  );
-  const configTabs = within(
-    await screen.findByRole("tablist", {
-      name: "appPage.openclawConfig",
-      hidden: true,
-    }),
-  );
-  fireEvent.click(
-    configTabs.getByRole("tab", {
-      name: `openclaw.${tab}.title`,
-      hidden: true,
-    }),
-  );
-}
-
 describe("Oceanway application with real edition and MSW", () => {
   beforeEach(() => {
     resetProviderState();
@@ -127,42 +103,12 @@ describe("Oceanway application with real edition and MSW", () => {
       ),
       http.post(`${endpoint}/oceanway_detect_apps`, () =>
         HttpResponse.json([
-          {
-            appId: "codex",
-            name: "Codex",
-            installed: true,
-            configExists: true,
-            configurable: true,
-          },
-          {
-            appId: "claude",
-            name: "Claude Code",
-            installed: true,
-            configExists: true,
-            configurable: true,
-          },
-          {
-            appId: "gemini",
-            name: "Gemini CLI",
-            installed: true,
-            configExists: true,
-            configurable: true,
-          },
-          {
-            appId: "opencode",
-            name: "OpenCode",
-            installed: true,
-            configExists: true,
-            configurable: true,
-          },
-          {
-            appId: "openclaw",
-            name: "OpenClaw",
-            installed: true,
-            configExists: true,
-            configurable: true,
-          },
-        ]),
+          ["codex", "Codex"], ["claude-desktop", "Claude Desktop"],
+          ["claude", "Claude Code"], ["dsh", "DeepSeek Harness"],
+          ["hermes", "Hermes"], ["kimi", "Kimi Code Desktop"],
+        ].map(([appId, name]) => ({ appId, name, installed: false,
+          desktopInstalled: false, configExists: true, configurable: true,
+          installAvailable: true }))),
       ),
       http.post(`${endpoint}/get_openclaw_env`, () =>
         HttpResponse.json({ vars: { EXISTING_FLAG: "on" } }),
@@ -216,13 +162,7 @@ describe("Oceanway application with real edition and MSW", () => {
     await mountApp();
     await screen.findByLabelText("Oceanway API Key");
     await openApp("Hermes");
-    expect(
-      await screen.findByRole("heading", {
-        name: "Hermes 尚未开放 Oceanway 接入",
-        hidden: true,
-      }),
-    ).toBeInTheDocument();
-    expect(screen.queryByLabelText("Oceanway API Key")).toBeNull();
+    expect(await screen.findByLabelText("Oceanway API Key")).toBeInTheDocument();
     const tabs = within(
       await screen.findByRole("tablist", { name: "Hermes", hidden: true }),
     );
@@ -259,106 +199,18 @@ describe("Oceanway application with real edition and MSW", () => {
     );
   });
 
-  it("opens the real installation manager from an app without Oceanway onboarding support", async () => {
-    const versionReads: unknown[] = [];
-    server.use(
-      http.post(`${endpoint}/get_tool_versions`, async ({ request }) => {
-        const { tools } = (await request.json()) as { tools: string[] };
-        versionReads.push(tools);
-        return HttpResponse.json(
-          tools.map((name) => ({
-            name,
-            version: null,
-            latest_version: "1.0.0",
-            error: null,
-            installed_but_broken: false,
-            env_type: "windows",
-            wsl_distro: null,
-          })),
-        );
-      }),
-      http.post(`${endpoint}/list_tool_installations`, () =>
-        HttpResponse.json([]),
-      ),
-    );
+  it("shows the six real installation entries and hides removed products", async () => {
     await mountApp();
     await screen.findByLabelText("Oceanway API Key");
-    await openApp("Kimi Code");
-    expect(
-      await screen.findByRole("heading", {
-        name: "Kimi Code 尚未开放 Oceanway 接入",
-        hidden: true,
-      }),
-    ).toBeInTheDocument();
-    expect(screen.queryByLabelText("Oceanway API Key")).toBeNull();
-    fireEvent.click(
-      screen.getByRole("button", { name: "管理应用安装", hidden: true }),
-    );
-    await waitFor(() =>
-      expect(localStorage.getItem("oceanway-last-view")).toBe("apps"),
-    );
-    await waitFor(() => expect(versionReads).toContainEqual(["kimi"]));
-    expect(
-      (
-        await screen.findAllByRole("button", {
-          name: "settings.toolInstall",
-          hidden: true,
-        })
-      ).length,
-    ).toBeGreaterThan(0);
-  });
-
-  it("saves OpenClaw environment edits from its existing configuration tab", async () => {
-    const writes: unknown[] = [];
-    server.use(
-      http.post(`${endpoint}/set_openclaw_env`, async ({ request }) => {
-        writes.push(await request.json());
-        return HttpResponse.json({ changed: true });
-      }),
-    );
-    await openClawConfiguration("env");
-    const editor = await screen.findByLabelText("JSON configuration");
-    await waitFor(() =>
-      expect(editor).toHaveValue(
-        JSON.stringify({ vars: { EXISTING_FLAG: "on" } }, null, 2),
-      ),
-    );
-    const env = { vars: { EXISTING_FLAG: "on", OCEANWAY_MODE: "enabled" } };
-    fireEvent.change(editor, { target: { value: JSON.stringify(env) } });
-    fireEvent.click(
-      screen.getByRole("button", { name: "common.save", hidden: true }),
-    );
-    await waitFor(() => expect(writes).toEqual([{ env }]));
-  });
-
-  it("saves OpenClaw Agent defaults while preserving other existing fields", async () => {
-    const writes: unknown[] = [];
-    server.use(
-      http.post(
-        `${endpoint}/set_openclaw_agents_defaults`,
-        async ({ request }) => {
-          writes.push(await request.json());
-          return HttpResponse.json({ changed: true });
-        },
-      ),
-    );
-    await openClawConfiguration("agents");
-    const workspace = await screen.findByPlaceholderText("~/projects");
-    await waitFor(() => expect(workspace).toHaveValue("~/existing"));
-    fireEvent.change(workspace, { target: { value: "~/oceanway-work" } });
-    fireEvent.click(
-      screen.getByRole("button", { name: "common.save", hidden: true }),
-    );
-    await waitFor(() =>
-      expect(writes).toEqual([
-        {
-          defaults: {
-            workspace: "~/oceanway-work",
-            maxConcurrent: 2,
-            customOption: "preserved",
-          },
-        },
-      ]),
-    );
+    const nav = within(document.querySelector("nav")!);
+    fireEvent.click(nav.getByRole("button", { name: "nav.apps", hidden: true }));
+    await screen.findByRole("heading", { name: "应用安装", hidden: true });
+    for (const name of ["Codex", "Claude Desktop", "Claude Code", "DeepSeek Harness", "Hermes", "Kimi Code Desktop"]) {
+      const region=within(screen.getByRole("region", { name, hidden: true }));
+      expect(region.getByRole("button", { name: "下载安装", hidden: true })).toBeEnabled();
+    }
+    expect(screen.queryByRole("region", { name: "OpenClaw", hidden: true })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Gemini CLI", hidden: true })).toBeNull();
+    expect(localStorage.getItem("oceanway-last-view")).toBe("apps");
   });
 });
