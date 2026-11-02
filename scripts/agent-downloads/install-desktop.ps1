@@ -1,5 +1,8 @@
 param([switch]$VerifyOnly, [switch]$Elevated)
 $ErrorActionPreference = 'Stop'
+# PowerShell 7 hosts can pass an incompatible PSModulePath to Windows PowerShell.
+# Resolve the system modules from this process's own runtime first.
+$env:PSModulePath = (Join-Path $PSHOME 'Modules') + ';' + [Environment]::GetEnvironmentVariable('PSModulePath', 'Machine')
 $ProgressPreference = 'SilentlyContinue'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 $transcribing = $false
