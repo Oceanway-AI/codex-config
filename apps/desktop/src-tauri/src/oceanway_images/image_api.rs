@@ -186,6 +186,8 @@ pub struct ImageJob {
     pub message: String,
     pub output_directory: String,
     pub reference_paths: Vec<String>,
+    #[serde(default)]
+    pub reference_urls: Vec<String>,
     pub reference_hashes: Vec<String>,
     pub warnings: Vec<String>,
     pub count_mismatch: bool,
@@ -411,6 +413,7 @@ impl StoredJob {
             items,
             output_directory: self.input.directory.to_string_lossy().into_owned(),
             reference_paths: self.input.request.reference_paths.clone(),
+            reference_urls: self.input.request.reference_urls.clone(),
             reference_hashes: self.reference_hashes.clone(),
             warnings: self.items.values().filter_map(|item| item.warning.clone()).take(8).collect(),
             count_mismatch: self.items.values().any(|item| item.count_mismatch),
@@ -2169,6 +2172,7 @@ fn execute(input: &Input, index: usize, started: Instant) -> Result<SavedResult,
     })
 }
 
+#[cfg(test)]
 fn execute_with_guard(
     input: &Input,
     index: usize,

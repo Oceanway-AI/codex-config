@@ -838,6 +838,7 @@ mod tests {
                 count_mismatch: false,
                 retry_blocked: false,
                 post_started: true,
+                remote_task: None,
             }],
             message: String::new(),
             output_directory: "output/images/test-job".into(),

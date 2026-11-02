@@ -301,6 +301,7 @@ fn recover_owned_job(home: &Path, id: String, entry: Value) -> Result<Option<Sto
         || manifest.job.total != manifest.count
         || manifest.job.model != manifest.model
         || manifest.job.reference_paths != manifest.reference_paths
+        || manifest.job.reference_urls != manifest.reference_urls
         || manifest.job.reference_hashes.len() != manifest.reference_paths.len()
     {
         return Err(
