@@ -1174,7 +1174,7 @@ fn strict_download_policy_blocks_private_and_special_targets_without_network() {
     assert!(public_ip("8.8.8.8".parse().unwrap()));
     assert!(public_ip("2606:4700:4700::1111".parse().unwrap()));
     assert!(!public_ip("2001:db8::1".parse().unwrap()));
-    assert!(remaining(Instant::now() - TIMEOUT - Duration::from_secs(1)).is_err());
+    assert!(remaining_after(TIMEOUT + Duration::from_secs(1)).is_err());
 }
 
 #[test]
@@ -2153,7 +2153,7 @@ fn symlink_originals_owned_indexes_manifests_and_workspace_roots_are_rejected() 
 #[test]
 fn configured_timeout_and_public_timeout_errors_agree_on_240_seconds() {
     assert_eq!(TIMEOUT, Duration::from_secs(240));
-    let error = remaining(Instant::now() - TIMEOUT - Duration::from_millis(1))
+    let error = remaining_after(TIMEOUT + Duration::from_millis(1))
         .err()
         .unwrap();
     assert!(error.message.contains("240s"));

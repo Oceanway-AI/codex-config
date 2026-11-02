@@ -2460,8 +2460,12 @@ fn download_url(raw: &str) -> Result<Url, Failure> {
 }
 
 fn remaining(started: Instant) -> Result<Duration, Failure> {
+    remaining_after(started.elapsed())
+}
+
+fn remaining_after(elapsed: Duration) -> Result<Duration, Failure> {
     TIMEOUT
-        .checked_sub(started.elapsed())
+        .checked_sub(elapsed)
         .filter(|duration| !duration.is_zero())
         .ok_or_else(|| Failure::new("Image attempt exceeded 240s; billing may have occurred."))
 }
