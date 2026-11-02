@@ -21,7 +21,7 @@ import { copyText } from "@/lib/clipboard";
 import { isLinux, isMac, isWindows } from "@/lib/platform";
 import { toast } from "@/lib/toast";
 import {
-  TOOL_NAMES,
+  OCEANWAY_TOOL_NAMES,
   toolDisplayName,
   type ToolName,
   type ToolVersion,
@@ -77,7 +77,7 @@ export function ManualUninstallDialog({
       : t("common.unknown");
   };
   const environmentLabels = [
-    ...new Set(TOOL_NAMES.map(environmentLabelForTool)),
+    ...new Set(OCEANWAY_TOOL_NAMES.map(environmentLabelForTool)),
   ];
   const methods = (Object.keys(UNINSTALL_METHODS) as UninstallMethod[]).filter(
     (value) => uninstallCommandsFor(value, environmentForTool).length > 0,

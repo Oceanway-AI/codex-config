@@ -40,9 +40,10 @@ describe("parseTrayNavigation", () => {
       intent: "add",
       providerId: undefined,
     });
-    expect(parseTrayNavigation({ section: "routing" })).toEqual({
-      section: "routing",
+    expect(parseTrayNavigation({ section: "general" })).toEqual({
+      section: "general",
     });
+    expect(parseTrayNavigation({ section: "routing" })).toBeNull();
   });
 
   it("drops unknown targets and incomplete needs-route requests", () => {

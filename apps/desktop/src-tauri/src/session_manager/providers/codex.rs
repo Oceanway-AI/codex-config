@@ -2226,7 +2226,14 @@ mod tests {
             "Archived session",
         );
 
-        let sessions = scan_sessions_in_roots(&[active, archived]);
+        let original = [active.join("active.jsonl"), archived.join("archived.jsonl")]
+            .into_iter()
+            .map(|path| {
+                let bytes = std::fs::read(&path).expect("read original");
+                (path, bytes)
+            })
+            .collect::<Vec<_>>();
+        let sessions = scan_sessions_in_roots_with_titles(&[active, archived], &HashMap::new());
         let ids = sessions
             .into_iter()
             .map(|session| session.session_id)
@@ -2234,6 +2241,10 @@ mod tests {
 
         assert!(ids.contains(&"active-id".to_string()));
         assert!(ids.contains(&"archived-id".to_string()));
+        for (path, bytes) in original {
+            assert!(!load_messages(&path).expect("read conversation").is_empty());
+            assert_eq!(std::fs::read(&path).expect("read after viewing"), bytes);
+        }
     }
 
     #[test]
@@ -2287,7 +2298,7 @@ mod tests {
         let mtime = std::time::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
         set_mtime(&compressed, mtime);
 
-        let sessions = scan_sessions_in_roots(&[root]);
+        let sessions = scan_sessions_in_roots_with_titles(&[root], &HashMap::new());
         assert_eq!(sessions.len(), 1);
         let meta = &sessions[0];
         assert_eq!(meta.session_id, "zst-id");
@@ -2312,7 +2323,7 @@ mod tests {
         let compressed = compress_like_codex(&plain);
         std::fs::write(&plain, bytes).expect("restore plain");
 
-        let sessions = scan_sessions_in_roots(&[root]);
+        let sessions = scan_sessions_in_roots_with_titles(&[root], &HashMap::new());
         assert_eq!(sessions.len(), 1);
         assert_eq!(
             sessions[0].source_path.as_deref(),
@@ -2325,7 +2336,12 @@ mod tests {
     fn load_messages_reads_compressed_rollout_identically() {
         let (_tmp, plain, expected) = load_fixture(&rollout_fixture());
         let compressed = compress_like_codex(&plain);
+        let bytes = std::fs::read(&compressed).expect("read compressed bytes");
         assert_eq!(load_messages(&compressed).expect("load zst"), expected);
+        assert_eq!(
+            std::fs::read(&compressed).expect("read after viewing"),
+            bytes
+        );
     }
 
     #[test]

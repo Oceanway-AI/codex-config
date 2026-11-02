@@ -88,7 +88,7 @@ impl PromptService {
         state: &AppState,
         app: AppType,
         id: &str,
-        prompt: Prompt,
+        mut prompt: Prompt,
     ) -> Result<(), AppError> {
         if matches!(app, AppType::Pi) {
             return upsert_pi_prompt(state, id, prompt);
@@ -98,6 +98,9 @@ impl PromptService {
             return upsert_mcode_prompt(state, id, prompt, &prompt_file_path(&app)?);
         }
 
+        if prompt.enabled {
+            prompt.content = crate::oceanway::prompt_with_image_rule(state, &app, &prompt.content)?;
+        }
         validate_prompt_content(&app, &prompt.content)?;
         let prompts = state.db.get_prompts(app.as_str())?;
         // 只有停用最后一条启用中的提示词时才清空文件；新建、导入或重存
@@ -115,7 +118,8 @@ impl PromptService {
         } else if clear_live {
             let target_path = prompt_file_path(&app)?;
             if target_path.exists() {
-                write_text_file(&target_path, "")?;
+                let content = crate::oceanway::prompt_with_image_rule(state, &app, "")?;
+                write_text_file(&target_path, &content)?;
             }
         }
 
@@ -212,6 +216,7 @@ impl PromptService {
         }
 
         if let Some(prompt) = prompts.get_mut(id) {
+            prompt.content = crate::oceanway::prompt_with_image_rule(state, &app, &prompt.content)?;
             validate_prompt_content(&app, &prompt.content)?;
             prompt.enabled = true;
             write_text_file(&target_path, &prompt.content)?; // 原子写入
@@ -294,9 +299,10 @@ impl PromptService {
         } else {
             None
         };
-        let prompts = state.db.get_prompts(app.as_str())?;
+        let mut prompts = state.db.get_prompts(app.as_str())?;
         let target_path = prompt_file_path(&app)?;
-        if let Some(prompt) = prompts.values().find(|prompt| prompt.enabled) {
+        if let Some(prompt) = prompts.values_mut().find(|prompt| prompt.enabled) {
+            prompt.content = crate::oceanway::prompt_with_image_rule(state, &app, &prompt.content)?;
             validate_prompt_content(&app, &prompt.content)?;
         }
         if let Some(warning) = project_prompt_set_to_path(&prompts, &target_path)? {

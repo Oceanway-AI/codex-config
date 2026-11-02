@@ -21,6 +21,9 @@ import {
 import { emitTauriEvent } from "../msw/tauriMocks";
 import { server } from "../msw/server";
 
+// Exercise the retained upstream workflows separately from Oceanway onboarding.
+vi.mock("@/config/edition", () => ({ OCEANWAY_EDITION: false }));
+
 const toastSuccessMock = vi.fn();
 const toastErrorMock = vi.fn();
 const skillsPanelMocks = vi.hoisted(() => ({
@@ -245,8 +248,8 @@ describe("App integration with MSW", () => {
     };
     windowMocks.onResized.mockImplementation(listen);
     windowMocks.onScaleChanged.mockImplementation(listen);
-    localStorage.removeItem("cc-switch-last-view");
-    localStorage.removeItem("cc-switch-last-app");
+    localStorage.setItem("oceanway-last-view", "providers");
+    localStorage.removeItem("oceanway-last-app");
   });
 
   it("covers basic provider flows via real hooks", async () => {
@@ -588,7 +591,7 @@ describe("App integration with MSW", () => {
   ])(
     "blocks incomplete OpenCode copies before saving or sorting: %j",
     async (settingsConfig) => {
-      localStorage.setItem("cc-switch-last-app", "opencode");
+      localStorage.setItem("oceanway-last-app", "opencode");
       setProviders("opencode", {
         "opencode-go": {
           id: "opencode-go",
@@ -629,7 +632,7 @@ describe("App integration with MSW", () => {
   );
 
   it("duplicates complete OpenCode providers using an unused ID", async () => {
-    localStorage.setItem("cc-switch-last-app", "opencode");
+    localStorage.setItem("oceanway-last-app", "opencode");
     setProviders("opencode", {
       custom: {
         id: "custom",
@@ -668,7 +671,7 @@ describe("App integration with MSW", () => {
   ])(
     "blocks incomplete native OpenCode copies with a V2 message: %j",
     async ({ settingsConfig, meta }) => {
-      localStorage.setItem("cc-switch-last-app", "opencode");
+      localStorage.setItem("oceanway-last-app", "opencode");
       setProviders("opencode", {
         native: {
           id: "native",
@@ -703,7 +706,7 @@ describe("App integration with MSW", () => {
   );
 
   it("duplicates complete native OpenCode providers using an unused ID", async () => {
-    localStorage.setItem("cc-switch-last-app", "opencode");
+    localStorage.setItem("oceanway-last-app", "opencode");
     setProviders("opencode", {
       native: {
         id: "native",
@@ -735,7 +738,7 @@ describe("App integration with MSW", () => {
   });
 
   it("duplicates MiniMax Code providers under a generated unused key", async () => {
-    localStorage.setItem("cc-switch-last-app", "mcode");
+    localStorage.setItem("oceanway-last-app", "mcode");
     const provider = (id: string, name: string) => ({
       id,
       name,
@@ -771,7 +774,7 @@ describe("App integration with MSW", () => {
   });
 
   it("refreshes MiniMax Code provider membership after removing it from live config", async () => {
-    localStorage.setItem("cc-switch-last-app", "mcode");
+    localStorage.setItem("oceanway-last-app", "mcode");
     let liveConfigManaged = true;
     let providerRequests = 0;
     server.use(
@@ -826,7 +829,7 @@ describe("App integration with MSW", () => {
   });
 
   it("rereads Kimi's default after a removal is refused for a stale default", async () => {
-    localStorage.setItem("cc-switch-last-app", "kimi");
+    localStorage.setItem("oceanway-last-app", "kimi");
     let kimiCurrent = "kimi-sub";
     let currentRequests = 0;
     server.use(
@@ -882,7 +885,9 @@ describe("App integration with MSW", () => {
     await waitFor(() =>
       expect(toastErrorMock).toHaveBeenCalledWith(
         "notifications.removeFromConfigFailed",
-        expect.objectContaining({ description: "kimi.error.defaultModelInUse" }),
+        expect.objectContaining({
+          description: "kimi.error.defaultModelInUse",
+        }),
       ),
     );
     await waitFor(() =>
@@ -892,7 +897,7 @@ describe("App integration with MSW", () => {
   });
 
   it("warns without blocking when removing Pi's global default provider", async () => {
-    localStorage.setItem("cc-switch-last-app", "pi");
+    localStorage.setItem("oceanway-last-app", "pi");
     setProviders("pi", {
       custom: {
         id: "custom",
@@ -985,7 +990,7 @@ describe("App integration with MSW", () => {
   });
 
   it("renders the Skills page with its own header", async () => {
-    localStorage.setItem("cc-switch-last-view", "skills");
+    localStorage.setItem("oceanway-last-view", "skills");
     const { default: App } = await import("@/App");
     renderApp(App);
 
@@ -1073,7 +1078,7 @@ describe("App integration with MSW", () => {
   });
 
   it("opens the old skillsDiscovery view as the Discover segment", async () => {
-    localStorage.setItem("cc-switch-last-view", "skillsDiscovery");
+    localStorage.setItem("oceanway-last-view", "skillsDiscovery");
     const { default: App } = await import("@/App");
     renderApp(App);
 

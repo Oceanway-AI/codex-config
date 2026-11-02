@@ -25,6 +25,7 @@ import type {
 } from "@/lib/api/settings";
 import type { DndContextProps, DragEndEvent } from "@dnd-kit/core";
 import { APP_IDS } from "@/config/appConfig";
+import type { VisibleApps } from "@/types";
 
 type ToolVersions = Awaited<ReturnType<typeof settingsApi.getToolVersions>>;
 
@@ -40,17 +41,18 @@ const mocks = vi.hoisted(() => ({
   success: vi.fn(),
   warning: vi.fn(),
   error: vi.fn(),
-  settings: {} as { visibleApps?: undefined; appOrder?: string[] },
+  settings: {} as { visibleApps?: Partial<VisibleApps>; appOrder?: string[] },
   updateSettings: vi.fn(),
   autoSaveSettings: vi.fn(async () => null),
   dragEndHandlers: [] as ((event: DragEndEvent) => void)[],
   desktopStatus: { supported: true, installed: true, configured: true },
+  getClaudeDesktopStatus: vi.fn(),
 }));
 
 vi.mock("@/lib/api", () => ({ settingsApi: mocks }));
 vi.mock("@/lib/api/providers", () => ({
   providersApi: {
-    getClaudeDesktopStatus: async () => mocks.desktopStatus,
+    getClaudeDesktopStatus: mocks.getClaudeDesktopStatus,
   },
 }));
 vi.mock("@/hooks/useSettings", () => ({
@@ -241,6 +243,9 @@ describe("AppsPage concurrent CLI upgrades", () => {
       installed: true,
       configured: true,
     };
+    mocks.getClaudeDesktopStatus
+      .mockReset()
+      .mockImplementation(async () => mocks.desktopStatus);
     mocks.updateSettings.mockReset();
     mocks.autoSaveSettings.mockReset().mockResolvedValue(null);
     mocks.copyText.mockReset().mockResolvedValue(undefined);
@@ -706,6 +711,110 @@ describe("AppsPage concurrent CLI upgrades", () => {
     expect(mocks.runToolLifecycleAction).not.toHaveBeenCalled();
   });
 
+  it("refreshes Claude Desktop after the user installs it externally", async () => {
+    mocks.desktopStatus = {
+      supported: true,
+      installed: false,
+      configured: false,
+    };
+    await renderApps();
+    expect(rowApps("appsPage.sectionNotInstalled")).toContain("claude-desktop");
+    const nextStatus = deferred<typeof mocks.desktopStatus>();
+    mocks.getClaudeDesktopStatus.mockReturnValueOnce(nextStatus.promise);
+    fireEvent.click(
+      screen.getByRole("button", { name: "appsPage.checkUpdates" }),
+    );
+    await waitFor(() =>
+      expect(mocks.getClaudeDesktopStatus).toHaveBeenCalledTimes(2),
+    );
+    expect(
+      screen.getByRole("button", { name: "appsPage.checking" }),
+    ).toBeDisabled();
+    await act(async () => {
+      nextStatus.resolve({
+        supported: true,
+        installed: true,
+        configured: false,
+      });
+    });
+    await waitFor(() =>
+      expect(rowApps("appsPage.sectionInstalled")).toContain("claude-desktop"),
+    );
+    expect(
+      card("Claude Desktop").queryByRole("button", {
+        name: "appsPage.officialDownload",
+      }),
+    ).toBeNull();
+  });
+
+  it("shows a desktop detection error and allows a successful retry", async () => {
+    mocks.getClaudeDesktopStatus.mockRejectedValueOnce(
+      new Error("Probe failed"),
+    );
+    await renderApps();
+    expect(
+      card("Claude Desktop").getByText("检测失败，请重新检查"),
+    ).toBeInTheDocument();
+    expect(
+      card("Claude Desktop").queryByText("appsPage.desktopNotConnected"),
+    ).toBeNull();
+    fireEvent.click(
+      screen.getByRole("button", { name: "appsPage.checkUpdates" }),
+    );
+    await waitFor(() =>
+      expect(
+        card("Claude Desktop").getByText("appsPage.desktopConnected"),
+      ).toBeInTheDocument(),
+    );
+  });
+
+  it("keeps the last app visible when only excluded Antigravity is also enabled", async () => {
+    mocks.settings.visibleApps = Object.fromEntries(
+      APP_IDS.map((app) => [app, app === "codex" || app === "agy"]),
+    );
+    await renderApps();
+    expect(card("Codex").getByRole("switch")).toBeDisabled();
+    expect(card("Claude Code").getByRole("switch")).toBeEnabled();
+    expect(screen.queryByText("Antigravity CLI")).toBeNull();
+    expect(mocks.getToolVersions).not.toHaveBeenCalledWith(
+      ["agy"],
+      expect.anything(),
+    );
+  });
+
+  it("refreshes install locations immediately after a successful first installation", async () => {
+    missing.add("codex");
+    mocks.probeToolInstallations.mockImplementation(async (tools: string[]) =>
+      tools.map((tool) =>
+        report(
+          tool,
+          tool === "codex"
+            ? {
+                installs: [
+                  {
+                    path: "C:/tools/codex.cmd",
+                    source: "nvm",
+                    version: "2.0.0",
+                    runnable: true,
+                    error: null,
+                    is_path_default: true,
+                  },
+                ],
+              }
+            : {},
+        ),
+      ),
+    );
+    await renderApps();
+    fireEvent.click(
+      card("Codex").getByRole("button", { name: "settings.toolInstall" }),
+    );
+    await waitFor(() => expect(isReady("Codex")).toBe(true));
+    expect(
+      await card("Codex").findByText("C:/tools/codex.cmd"),
+    ).toBeInTheDocument();
+  });
+
   it("opens the publisher's installation entry for every missing CLI without installing it", async () => {
     const entries = [
       ["claude", "Claude Code", "https://code.claude.com/docs/en/setup"],
@@ -735,7 +844,6 @@ describe("AppsPage concurrent CLI upgrades", () => {
         "DeepSeek Harness",
         "https://github.com/deepseek-ai/deepseek-harness#readme",
       ],
-      ["agy", "Antigravity CLI", "https://antigravity.google/cli"],
       ["omp", "Oh My Pi", "https://omp.sh/"],
     ];
     entries.forEach(([tool]) => missing.add(tool));
@@ -882,7 +990,7 @@ describe("AppsPage concurrent CLI upgrades", () => {
       within(
         screen.getByRole("region", { name: "appsPage.sectionInstalled" }),
       ).getAllByRole("button", { name: "appsPage.dragHandle" }),
-    ).toHaveLength(APP_IDS.length - 2);
+    ).toHaveLength(APP_IDS.filter((app) => app !== "agy").length - 2);
     expect(
       within(
         screen.getByRole("region", { name: "appsPage.sectionNotInstalled" }),
@@ -1591,10 +1699,14 @@ describe("AppsPage concurrent CLI upgrades", () => {
       return getVersions(tools);
     });
     const { AppsPage } = await import("@/components/apps/AppsPage");
-    const { TOOL_NAMES } = await import("@/components/apps/useToolManagement");
+    const { OCEANWAY_TOOL_NAMES } = await import(
+      "@/components/apps/useToolManagement"
+    );
     const view = mountApps(AppsPage);
     await waitFor(() =>
-      expect(mocks.getToolVersions).toHaveBeenCalledTimes(TOOL_NAMES.length),
+      expect(mocks.getToolVersions).toHaveBeenCalledTimes(
+        OCEANWAY_TOOL_NAMES.length,
+      ),
     );
     view.unmount();
     const remounted = await renderApps();

@@ -163,7 +163,14 @@ export const loadTranscript = async (
   ]);
   clearTimeout(timer);
   if (failure) throw failure;
-  return { ...state, done: true };
+  if (
+    !state.done ||
+    !state.header ||
+    state.messages.length !== state.header.total
+  ) {
+    throw new Error("会话内容未完整读取，请重试");
+  }
+  return state;
 };
 
 export interface SessionTranscriptResult {

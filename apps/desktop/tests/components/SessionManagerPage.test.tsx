@@ -307,7 +307,7 @@ describe("SessionManagerPage", () => {
     ).toBeInTheDocument();
   });
 
-  it("only offers apps that are shown in the sidebar", async () => {
+  it("keeps existing history accessible when its app is hidden in the sidebar", async () => {
     setSettings({
       visibleApps: {
         claude: true,
@@ -331,14 +331,55 @@ describe("SessionManagerPage", () => {
     await waitFor(async () => {
       await openAppMenu();
       const menu = await screen.findByRole("menu");
-      expect(within(menu).getAllByRole("menuitemradio")).toHaveLength(3);
+      expect(within(menu).getAllByRole("menuitemradio")).toHaveLength(4);
     });
     const menu = screen.getByRole("menu");
-    expect(within(menu).queryByText("Hermes")).not.toBeInTheDocument();
-    // 隐藏应用的会话也不计入「全部应用」
+    expect(within(menu).getByText("Hermes")).toBeInTheDocument();
+    expect(within(menu).queryByText("Gemini CLI")).not.toBeInTheDocument();
     expect(within(menu).getAllByRole("menuitemradio")[0]).toHaveTextContent(
-      "全部应用4",
+      "全部应用5",
     );
+    await userEvent.click(within(menu).getAllByRole("menuitemradio")[0]);
+    expect(await screen.findByText("Hermes Session")).toBeInTheDocument();
+  });
+
+  it("shows a list read error and retries instead of claiming history is empty", async () => {
+    const list = vi.spyOn(sessionsApi, "list");
+    list.mockRejectedValue(new Error("session store unavailable"));
+    renderPage("codex");
+
+    expect(await screen.findByText("无法读取会话列表")).toBeInTheDocument();
+    expect(screen.getByText("session store unavailable")).toBeInTheDocument();
+    expect(
+      screen.queryByText("还没有 Codex 的会话记录"),
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "重试" }));
+    await waitFor(() => expect(toastErrorMock).toHaveBeenCalled());
+    expect(toastSuccessMock).not.toHaveBeenCalled();
+
+    list.mockRestore();
+    fireEvent.click(screen.getByRole("button", { name: "重试" }));
+    expect(await screen.findByText("Alpha Session")).toBeInTheDocument();
+    expect(screen.queryByText("无法读取会话列表")).not.toBeInTheDocument();
+  });
+
+  it("keeps the last loaded history visible if refreshing the list fails", async () => {
+    renderPage("codex");
+    await screen.findByText("Alpha Session");
+    const list = vi.spyOn(sessionsApi, "list");
+    list.mockRejectedValue(new Error("session store temporarily unavailable"));
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "会话的更多操作" }),
+    );
+    await userEvent.click(
+      await screen.findByRole("menuitem", { name: "刷新列表" }),
+    );
+
+    expect(await screen.findByText("无法读取会话列表")).toBeInTheDocument();
+    expect(screen.getByText("Alpha Session")).toBeInTheDocument();
+    expect(toastSuccessMock).not.toHaveBeenCalled();
+    list.mockRestore();
   });
 
   it("shows the Claude Desktop note when coming from Claude Desktop", async () => {

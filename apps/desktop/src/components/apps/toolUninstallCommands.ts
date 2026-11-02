@@ -98,6 +98,7 @@ export function uninstallCommandsFor(
   environmentForTool: (tool: ToolName) => UninstallEnvironment | undefined,
 ) {
   return COMMANDS[method].filter(({ tool, environments }) => {
+    if (tool === "agy") return false;
     const environment = environmentForTool(tool);
     return (
       !environments ||

@@ -1376,7 +1376,12 @@ function App() {
         icon={<AppGlyph app={activeApp} size={20} badgeClassName="bg-app" />}
         title={APP_DISPLAY_NAME[activeApp]}
         subtitle="Oceanway 配置"
-        actions={appMenu}
+        actions={
+          <>
+            {currentView === "hermesMemory" && <HermesMemorySaveButton />}
+            {appMenu}
+          </>
+        }
       />
     ) : (
       <AppPageHeader
@@ -1515,7 +1520,13 @@ function App() {
 
   const renderProviderList = () => {
     if (OCEANWAY_EDITION)
-      return <OceanwayConfigPanel key={activeApp} appId={activeApp} />;
+      return (
+        <OceanwayConfigPanel
+          key={activeApp}
+          appId={activeApp}
+          onOpenApps={() => openPageFromNav("apps")}
+        />
+      );
     if (modeAppId) {
       const startupFailure = startupFailures.find(
         (failure) => failure.appType === modeAppId,
@@ -1675,7 +1686,9 @@ function App() {
         return (
           <UsagePage
             initialAppType={usageAppFilter}
-            onOpenRoutingSettings={() => openSettings("routing")}
+            onOpenRoutingSettings={
+              OCEANWAY_EDITION ? undefined : () => openSettings("routing")
+            }
           />
         );
       case "auth":

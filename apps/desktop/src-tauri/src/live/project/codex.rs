@@ -160,7 +160,7 @@ impl CodexProjection {
         if let Some(pointer) = foreign_catalog(&doc) {
             top.push((MODEL_CATALOG_JSON.to_string(), undecorated(pointer.clone())));
         }
-        let nested = floor::CODEX_FLOOR_NESTED
+        let mut nested: Vec<(Vec<String>, TomlValue)> = floor::CODEX_FLOOR_NESTED
             .iter()
             .filter_map(|segments| {
                 let value = value_at(doc.as_table(), segments)?.clone();
@@ -170,6 +170,16 @@ impl CodexProjection {
                 ))
             })
             .collect();
+        // Image routing is explicit in the Oceanway provider. Project this
+        // supported Codex flag atomically without replacing other feature flags.
+        if let Some(value) = value_at(doc.as_table(), &["features", "image_generation"])
+            .filter(|value| value.as_bool().is_some())
+        {
+            nested.push((
+                vec!["features".into(), "image_generation".into()],
+                undecorated(value.clone()),
+            ));
+        }
         let exclusive = floor::CODEX_EXCLUSIVE_TOP
             .iter()
             .filter_map(|key| {

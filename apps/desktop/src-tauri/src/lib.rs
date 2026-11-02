@@ -1526,6 +1526,7 @@ pub fn run() {
             commands::read_live_provider_settings,
             commands::get_settings,
             commands::save_settings,
+            update_tray_menu,
             commands::has_codex_unify_history_backup,
             commands::codex_forces_multi_agent_v2,
             commands::get_codex_session_compression,
@@ -1778,7 +1779,9 @@ pub fn run() {
             commands::get_openclaw_default_model,
             commands::get_openclaw_model_catalog,
             commands::get_openclaw_agents_defaults,
+            commands::set_openclaw_agents_defaults,
             commands::get_openclaw_env,
+            commands::set_openclaw_env,
             commands::get_openclaw_tools,
             commands::set_openclaw_tools,
             // Hermes specific

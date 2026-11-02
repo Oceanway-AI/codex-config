@@ -140,7 +140,7 @@ export function SessionManagerPage({
 }: SessionManagerPageProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
-  const { data, isLoading, refetch } = useSessionsQuery();
+  const { data, isLoading, isError, error, refetch } = useSessionsQuery();
   const sessions = useMemo(() => data ?? [], [data]);
   const { data: settings } = useSettingsQuery();
 
@@ -193,17 +193,20 @@ export function SessionManagerPage({
     staleTime: 30 * 1000,
   });
 
-  // 下拉里只列「应用」页设为显示的应用；Claude Code 的会话在 Claude Desktop 显示时也算，
-  // DeepSeek Harness（Web 与 Desktop 共用会话目录，合并成一项）在 Desktop 显示时也算
+  // 隐藏侧栏入口不隐藏已有历史；有记录的应用始终可在会话页查找。
   const availableApps = useMemo(() => {
     const visible = { ...DEFAULT_VISIBLE_APPS, ...settings?.visibleApps };
+    const appsWithHistory = new Set(
+      sessions.map((session) => session.providerId),
+    );
     return SESSION_APP_IDS.filter(
       (app) =>
         visible[app] ||
+        appsWithHistory.has(app) ||
         (app === "claude" && visible["claude-desktop"]) ||
         app === appFilter,
     );
-  }, [settings?.visibleApps, appFilter]);
+  }, [settings?.visibleApps, appFilter, sessions]);
 
   const scopedSessions = useMemo(
     () =>
@@ -587,7 +590,16 @@ export function SessionManagerPage({
   };
 
   const refreshList = async () => {
-    await refetch();
+    const result = await refetch();
+    if (result.error) {
+      toast.error(
+        t("sessionManager.listReadFailed", {
+          defaultValue: "无法读取会话列表",
+        }),
+        { description: extractErrorMessage(result.error) },
+      );
+      return;
+    }
     toast.success(
       t("sessionManager.listRefreshed", { defaultValue: "已刷新会话列表" }),
     );
@@ -1301,6 +1313,26 @@ export function SessionManagerPage({
             </div>
           )}
 
+          {isError && (
+            <Notice
+              tone="danger"
+              className="mx-6 mt-3"
+              title={t("sessionManager.listReadFailed", {
+                defaultValue: "无法读取会话列表",
+              })}
+              actions={
+                <Button
+                  variant="neutral"
+                  size="compact"
+                  onClick={() => void refreshList()}
+                >
+                  {t("common.retry", { defaultValue: "重试" })}
+                </Button>
+              }
+            >
+              {extractErrorMessage(error)}
+            </Notice>
+          )}
           {isLoading ? (
             <div className="flex flex-1 items-center justify-center text-body text-fg-2">
               {t("sessionManager.loadingSessions", {
@@ -1308,7 +1340,9 @@ export function SessionManagerPage({
               })}
             </div>
           ) : matches.length === 0 ? (
-            renderEmpty()
+            isError ? null : (
+              renderEmpty()
+            )
           ) : (
             <>
               <div

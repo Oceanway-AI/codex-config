@@ -1762,6 +1762,38 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
+    fn scanning_and_reading_preserve_session_and_attachments() {
+        let temp = tempdir().expect("tempdir");
+        let path = temp.path().join("existing-session.jsonl");
+        let attachments = temp.path().join("existing-session").join("tool-results");
+        std::fs::create_dir_all(&attachments).expect("create attachments");
+        let attachment = attachments.join("result.txt");
+        std::fs::write(&attachment, b"original attachment").expect("write attachment");
+        let original = concat!(
+            "{\"sessionId\":\"existing-session\",\"cwd\":\"/tmp/project\",\"timestamp\":\"2026-03-06T10:00:00Z\"}\n",
+            "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"Keep my conversation\"},\"sessionId\":\"existing-session\",\"timestamp\":\"2026-03-06T10:01:00Z\"}\n",
+        );
+        std::fs::write(&path, original).expect("write session");
+
+        let cache = FileParseCache::new();
+        let sessions = cache.scan(vec![path.clone()], scan_session_file);
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].session_id, "existing-session");
+        let messages = load_messages(&path).expect("read conversation");
+        assert!(messages
+            .iter()
+            .any(|message| message.content.contains("Keep my conversation")));
+        assert_eq!(
+            std::fs::read(&path).expect("read after viewing"),
+            original.as_bytes()
+        );
+        assert_eq!(
+            std::fs::read(&attachment).expect("read attachment"),
+            b"original attachment"
+        );
+    }
+
+    #[test]
     fn delete_session_removes_main_file_and_sidecar_directory() {
         let temp = tempdir().expect("tempdir");
         let path = temp.path().join("abc123-session.jsonl");

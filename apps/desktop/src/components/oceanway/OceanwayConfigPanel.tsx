@@ -17,7 +17,7 @@ import {
 } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { AppPageHeader } from "@/components/shell/AppPageHeader";
-import { AppGlyph } from "@/components/shell/AppGlyph";
+import { APP_DISPLAY_NAME, AppGlyph } from "@/components/shell/AppGlyph";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -68,7 +68,13 @@ const available = (app: DetectedApp) =>
   app.configurable && (app.installed || app.configExists);
 
 /** Guided setup using CC Switch's components, configuration and launch services. */
-export function OceanwayConfigPanel({ appId }: { appId?: AppId }) {
+export function OceanwayConfigPanel({
+  appId,
+  onOpenApps,
+}: {
+  appId?: AppId;
+  onOpenApps?: () => void;
+}) {
   const queryClient = useQueryClient();
   const [connection, setConnection] = useState<ConnectionSummary>();
   const [apps, setApps] = useState<DetectedApp[]>([]);
@@ -260,6 +266,37 @@ export function OceanwayConfigPanel({ appId }: { appId?: AppId }) {
     } catch (e) {
       setError(errorText(e));
     }
+  }
+
+  if (
+    appId &&
+    initialized.current &&
+    !apps.some((app) => app.appId === appId)
+  ) {
+    const name = APP_DISPLAY_NAME[appId];
+    return (
+      <div
+        id="main-content"
+        className="min-h-0 flex-1 overflow-y-auto scroll-stable px-4 pb-8 pt-6 sm:px-6"
+      >
+        <section className="mx-auto max-w-[760px] rounded-panel border border-border bg-surface p-6">
+          <AppGlyph app={appId} size={32} />
+          <h2 className="mt-4 text-title font-semibold text-fg-1">
+            {name} 尚未开放 Oceanway 接入
+          </h2>
+          <p className="mt-2 text-body leading-relaxed text-fg-2">
+            你可以在“应用安装”中安装和更新 {name}。
+            {appId === "hermes" && "上方“记忆”页可以查看和保存现有记忆。"}
+          </p>
+          {onOpenApps && (
+            <Button className="mt-5" onClick={onOpenApps}>
+              <Download className="h-4 w-4" />
+              管理应用安装
+            </Button>
+          )}
+        </section>
+      </div>
+    );
   }
 
   return (

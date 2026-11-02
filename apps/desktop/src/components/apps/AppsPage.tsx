@@ -184,11 +184,20 @@ export function AppsPage() {
   const tools = useToolManagement();
   const { settings, updateSettings, autoSaveSettings } = useSettings();
   const tableRef = useRef<HTMLDivElement>(null);
-  const { data: desktopStatus, isPending: isDesktopStatusPending } = useQuery({
+  const {
+    data: desktopStatus,
+    isPending: isDesktopStatusPending,
+    isFetching: isDesktopStatusFetching,
+    error: desktopStatusError,
+    refetch: refetchDesktopStatus,
+  } = useQuery({
     queryKey: ["claude-desktop-status"],
     queryFn: () => providersApi.getClaudeDesktopStatus(),
     staleTime: 30_000,
   });
+  const isCheckingForUpdates = tools.isLoadingTools || isDesktopStatusFetching;
+  const checkForUpdates = () =>
+    Promise.all([tools.checkForUpdates(), refetchDesktopStatus()]);
 
   // 按「已安装 / 未安装」分两组。Claude Desktop 没有命令可探，用后端按数据目录 / 应用包推断的结果。
   // 首次探测还没出结果时不分组，免得各行探完一个跳一个；之后重新检查时沿用上次结果，位置不动。
@@ -205,7 +214,9 @@ export function AppsPage() {
   };
   // 两组共用一份顺序（拖动后写进设置，侧栏也按它排），每组只是按装没装过滤
   const appOrder = orderAppIds(settings?.appOrder);
-  const orderedRows = appOrder.map((app) => ROW_BY_APP[app]);
+  const orderedRows = appOrder
+    .filter((app) => app !== "agy")
+    .map((app) => ROW_BY_APP[app]);
   const rowStates = orderedRows.map((row) => ({
     row,
     installed: rowInstalled(row),
@@ -284,7 +295,9 @@ export function AppsPage() {
     ...DEFAULT_VISIBLE_APPS,
     ...settings?.visibleApps,
   };
-  const visibleCount = Object.values(visibleApps).filter(Boolean).length;
+  const visibleCount = appOrder.filter(
+    (app) => app !== "agy" && visibleApps[app],
+  ).length;
 
   const setVisible = (app: AppId, visible: boolean) => {
     if (!settings) return;
@@ -355,15 +368,17 @@ export function AppsPage() {
         }
         version={
           <span className="inline-flex items-center gap-1 text-caption text-fg-2">
-            {desktopStatus?.supported === false
-              ? t("appsPage.desktopUnsupported")
-              : isDesktopStatusPending
-                ? t("common.loading")
-                : desktopStatus && !desktopStatus.installed
-                  ? t("common.notInstalled")
-                  : desktopStatus?.configured
-                    ? t("appsPage.desktopConnected")
-                    : t("appsPage.desktopNotConnected")}
+            {desktopStatusError
+              ? t("appsPage.desktopStatusFailed", "检测失败，请重新检查")
+              : desktopStatus?.supported === false
+                ? t("appsPage.desktopUnsupported")
+                : isDesktopStatusPending
+                  ? t("common.loading")
+                  : desktopStatus && !desktopStatus.installed
+                    ? t("common.notInstalled")
+                    : desktopStatus?.configured
+                      ? t("appsPage.desktopConnected")
+                      : t("appsPage.desktopNotConnected")}
             <HelpTip title={APP_DISPLAY_NAME["claude-desktop"]} align="end">
               {t("appsPage.desktopHelp")}
             </HelpTip>
@@ -433,26 +448,26 @@ export function AppsPage() {
             <Button
               variant="neutral"
               size="regular"
-              disabled={tools.isLoadingTools || tools.isAnyBusy}
-              onClick={() => void tools.checkForUpdates()}
+              disabled={isCheckingForUpdates || tools.isAnyBusy}
+              onClick={() => void checkForUpdates()}
             >
               <RefreshCw
                 className={cn(
                   "h-3.5 w-3.5",
-                  tools.isLoadingTools && "animate-spin",
+                  isCheckingForUpdates && "animate-spin",
                 )}
               />
               {/* 两种文案叠在同一格，按钮按较宽的那个定宽，切换时不改变宽度 */}
               <span className="grid justify-items-center [&>*]:col-start-1 [&>*]:row-start-1">
                 <span
-                  aria-hidden={tools.isLoadingTools}
-                  className={cn(tools.isLoadingTools && "invisible")}
+                  aria-hidden={isCheckingForUpdates}
+                  className={cn(isCheckingForUpdates && "invisible")}
                 >
                   {t("appsPage.checkUpdates")}
                 </span>
                 <span
-                  aria-hidden={!tools.isLoadingTools}
-                  className={cn(!tools.isLoadingTools && "invisible")}
+                  aria-hidden={!isCheckingForUpdates}
+                  className={cn(!isCheckingForUpdates && "invisible")}
                 >
                   {t("appsPage.checking")}
                 </span>

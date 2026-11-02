@@ -56,6 +56,7 @@ export const TOOL_NAMES = [
   "omp",
 ] as const;
 export type ToolName = (typeof TOOL_NAMES)[number];
+export const OCEANWAY_TOOL_NAMES = TOOL_NAMES.filter((tool) => tool !== "agy");
 export type ToolLifecycleAction = "install" | "update" | "uninstall";
 
 export function hermesUninstallMayLeaveFiles(plan: ToolUninstallPlan) {
@@ -131,10 +132,6 @@ const KIMI_WINDOWS_INSTALL_COMMAND = `powershell -NoProfile -NonInteractive -Exe
   "irm https://code.kimi.com/kimi-code/install.ps1 | iex",
 )}`;
 
-const AGY_WINDOWS_INSTALL_COMMAND = `powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${powershellEncodedCommand(
-  "irm https://antigravity.google/cli/install.ps1 | iex",
-)}`;
-
 // 与后端 npm_install_command_for("claude") 保持一致：原生依赖和 postinstall 缺一不可，
 // 否则 bin/claude.exe 会保留文本占位文件，在 Windows 上报兼容性错误。
 const CLAUDE_NPM_INSTALL_COMMAND =
@@ -177,8 +174,6 @@ ${posixScriptInstallCommand("https://filecdn.minimax.chat/public/install.sh")} |
 npm i -g @deepseek-ai/dsh@latest --engine-strict
 # Kimi Code
 ${posixScriptInstallCommand("https://code.kimi.com/kimi-code/install.sh")}
-# Antigravity CLI
-${posixScriptInstallCommand("https://antigravity.google/cli/install.sh")}
 # Oh My Pi
 bun install -g @oh-my-pi/pi-coding-agent@latest`;
 
@@ -204,8 +199,6 @@ ${MCODE_WINDOWS_INSTALL_COMMAND}
 npm i -g @deepseek-ai/dsh@latest --engine-strict
 # Kimi Code
 ${KIMI_WINDOWS_INSTALL_COMMAND}
-# Antigravity CLI
-${AGY_WINDOWS_INSTALL_COMMAND}
 # Oh My Pi
 bun install -g @oh-my-pi/pi-coding-agent@latest`;
 
@@ -316,9 +309,11 @@ export async function checkToolUpdatesInBackground(): Promise<void> {
   const cache = toolManagementState.toolVersionsCache;
   if (cache && Date.now() - cache.at < TOOL_VERSIONS_CACHE_TTL_MS) return;
   const requestId = ++toolVersionRequestSequence;
-  TOOL_NAMES.forEach((name) => latestToolVersionRequests.set(name, requestId));
+  OCEANWAY_TOOL_NAMES.forEach((name) =>
+    latestToolVersionRequests.set(name, requestId),
+  );
   try {
-    const results = await settingsApi.getToolVersions([...TOOL_NAMES]);
+    const results = await settingsApi.getToolVersions([...OCEANWAY_TOOL_NAMES]);
     const current = results.filter(
       (tool) => latestToolVersionRequests.get(tool.name) === requestId,
     );
@@ -342,8 +337,10 @@ export function useToolUpdatesAvailable(): boolean {
     getToolManagementState,
   );
   return (
-    toolVersionsCache?.data.some((tool) =>
-      isUpdateAvailable(tool.version, tool.latest_version),
+    toolVersionsCache?.data.some(
+      (tool) =>
+        tool.name !== "agy" &&
+        isUpdateAvailable(tool.version, tool.latest_version),
     ) ?? false
   );
 }
@@ -390,7 +387,7 @@ export function useToolManagement() {
 
   const updatableToolNames = useMemo(
     () =>
-      TOOL_NAMES.filter((toolName) => {
+      OCEANWAY_TOOL_NAMES.filter((toolName) => {
         const tool = toolVersionByName.get(toolName);
         return (
           !busyTools.has(toolName) &&
@@ -487,7 +484,7 @@ export function useToolManagement() {
         // 不拖累其余），故 Promise.all 永不 reject。Respect current shell/flag overrides.
         // 切页后即使缓存已过期，也跳过忙碌工具，由原任务在执行结束后刷新版本。
         await Promise.all(
-          TOOL_NAMES.filter(
+          OCEANWAY_TOOL_NAMES.filter(
             (toolName) => !toolManagementState.busyTools.has(toolName),
           ).map((toolName) => refreshToolVersions([toolName], wslShellByTool)),
         );
@@ -534,7 +531,7 @@ export function useToolManagement() {
       if (!options?.force && toolManagementState.installReports) return;
       try {
         const reports = await settingsApi.listToolInstallations([
-          ...TOOL_NAMES,
+          ...OCEANWAY_TOOL_NAMES,
         ]);
         const next: Partial<Record<ToolName, ToolInstallationReport>> = {};
         for (const report of reports) {
@@ -621,7 +618,9 @@ export function useToolManagement() {
   const handleDiagnoseAll = useCallback(async () => {
     setIsDiagnosingAll(true);
     try {
-      const reports = await settingsApi.probeToolInstallations([...TOOL_NAMES]);
+      const reports = await settingsApi.probeToolInstallations([
+        ...OCEANWAY_TOOL_NAMES,
+      ]);
       const next: Partial<Record<ToolName, ToolInstallation[]>> = {};
       const installReports: Partial<Record<ToolName, ToolInstallationReport>> =
         {};
@@ -768,11 +767,8 @@ export function useToolManagement() {
                 void diagnoseToolSilently(toolName);
               } else {
                 succeeded += 1;
-                // 升级成功后无条件补诊：版本没变多半被另一处遮蔽，版本变了另一处也可能仍在，
-                // 两种都要刷新冲突展示（diagnoseToolSilently 无冲突时会自动清旧）。
-                if (action === "update") {
-                  void diagnoseToolSilently(toolName);
-                }
+                // 安装或升级成功后同步安装位置，首次安装也立即显示来源与路径。
+                void diagnoseToolSilently(toolName);
               }
             } else {
               // 命令退出码为 0、但刷新后仍探不到版本：多半是"装上了却跑不起来"

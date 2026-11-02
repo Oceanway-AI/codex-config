@@ -67,24 +67,23 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Typecheck
         run: pnpm typecheck
-      - name: Test Oceanway setup, settings and sessions
-        run: >-
-          pnpm exec vitest run
-          tests/components/OceanwayConfigPanel.test.tsx
-          tests/components/AppsPage.test.tsx
-          tests/types/sessionFixtures.test.ts
-          tests/components/SessionManagerPage.test.tsx
-          tests/components/sessionUtils.test.ts
-          tests/components/ImportExportSection.test.tsx
-          tests/components/CodexAuthSettings.test.tsx
-          tests/components/SettingsDialog.test.tsx
-          tests/integration/SettingsDialog.test.tsx
-          tests/hooks/useSettings.test.tsx
-          tests/components/GlobalProxySettings.test.tsx
-          tests/components/shell/SidebarToday.test.tsx
+      - name: Test all desktop frontend features
+        run: pnpm exec vitest run --maxWorkers=4 --minWorkers=1
       - name: Test native Oceanway services
         working-directory: apps/desktop/src-tauri
         run: cargo test --locked --lib oceanway -- --test-threads=1
+      - name: Test native Codex history
+        working-directory: apps/desktop/src-tauri
+        run: cargo test --locked --lib session_manager::providers::codex -- --test-threads=1
+      - name: Test native Claude history
+        working-directory: apps/desktop/src-tauri
+        run: cargo test --locked --lib session_manager::providers::claude -- --test-threads=1
+      - name: Test native prompt templates
+        working-directory: apps/desktop/src-tauri
+        run: cargo test --locked --lib services::prompt::tests -- --test-threads=1
+      - name: Test native Codex configuration projection
+        working-directory: apps/desktop/src-tauri
+        run: cargo test --locked --lib live::project::codex::tests -- --test-threads=1
       - name: Build desktop installer
         run: pnpm tauri build ${{ matrix.bundle_args }}
       - name: Verify packaged MCP in an isolated home

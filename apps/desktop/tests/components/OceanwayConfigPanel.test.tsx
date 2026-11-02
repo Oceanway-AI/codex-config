@@ -31,7 +31,10 @@ vi.mock("@/lib/api/oceanway", () => ({
 vi.mock("@/lib/api/settings", () => ({
   settingsApi: { openExternal: vi.fn() },
 }));
-vi.mock("@/components/shell/AppGlyph", () => ({ AppGlyph: () => <span /> }));
+vi.mock("@/components/shell/AppGlyph", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/components/shell/AppGlyph")>()),
+  AppGlyph: () => <span />,
+}));
 
 const models = [
   "claude-sonnet-4-5",
@@ -49,14 +52,14 @@ const detectedApps = (): DetectedApp[] =>
     configExists: true,
     configurable: true,
   }));
-function mount(appId?: AppId) {
+function mount(appId?: AppId, onOpenApps?: () => void) {
   return render(
     <QueryClientProvider
       client={
         new QueryClient({ defaultOptions: { queries: { retry: false } } })
       }
     >
-      <OceanwayConfigPanel appId={appId} />
+      <OceanwayConfigPanel appId={appId} onOpenApps={onOpenApps} />
     </QueryClientProvider>,
   );
 }
@@ -117,6 +120,24 @@ beforeEach(() => {
 });
 
 describe("Oceanway guided configuration", () => {
+  it("offers installation management instead of an unusable Key form for an unadapted app", async () => {
+    const openApps = vi.fn();
+    const user = userEvent.setup();
+    mount("kimi", openApps);
+    expect(
+      await screen.findByRole("heading", {
+        name: "Kimi Code 尚未开放 Oceanway 接入",
+      }),
+    ).toBeVisible();
+    expect(screen.queryByLabelText("Oceanway API Key")).toBeNull();
+    expect(screen.queryByRole("button", { name: "重新检测" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "连接并继续" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "管理应用安装" }));
+    expect(openApps).toHaveBeenCalledTimes(1);
+    expect(oceanwayApi.checkKey).not.toHaveBeenCalled();
+    expect(oceanwayApi.apply).not.toHaveBeenCalled();
+  });
+
   it("configures a detected Codex desktop without a CLI and asks before restarting it", async () => {
     vi.mocked(oceanwayApi.detectApps).mockResolvedValueOnce([
       {

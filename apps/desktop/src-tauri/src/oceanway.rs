@@ -339,6 +339,7 @@ fn provider_for(selection: &AppSelection, key: &str) -> Result<Provider, String>
             let mut doc = toml_edit::DocumentMut::new();
             doc["model"] = toml_edit::value(model.as_str());
             doc["model_provider"] = toml_edit::value("custom");
+            doc["features"]["image_generation"] = toml_edit::value(false);
             doc["model_providers"]["custom"]["name"] = toml_edit::value("Oceanway");
             doc["model_providers"]["custom"]["base_url"] = toml_edit::value(API_BASE);
             doc["model_providers"]["custom"]["wire_api"] = toml_edit::value("responses");
@@ -433,6 +434,32 @@ fn install_image_rule(state: &AppState, app: &AppType) -> Result<(), String> {
     Ok(())
 }
 
+/// Managed image routing remains active when a customer changes prompt templates.
+pub(crate) fn prompt_with_image_rule(
+    state: &AppState,
+    app: &AppType,
+    content: &str,
+) -> Result<String, crate::error::AppError> {
+    if !matches!(
+        app,
+        AppType::Codex | AppType::Claude | AppType::Gemini | AppType::OpenCode
+    ) {
+        return Ok(content.into());
+    }
+    let servers = state.db.get_all_mcp_servers()?;
+    let managed = servers.get("oceanway_images").is_some_and(|server| {
+        server.apps.is_enabled_for(app)
+            && server.homepage.as_deref() == Some(ORIGIN)
+            && server.tags.iter().any(|tag| tag == "oceanway-managed")
+            && server.server["args"] == json!(["--image-mcp-stdio"])
+    });
+    if managed {
+        merge_image_rule(content).map_err(crate::error::AppError::Message)
+    } else {
+        Ok(content.into())
+    }
+}
+
 fn read_live_image_server(app: &AppType) -> Result<Option<Value>, String> {
     let value = match app {
         AppType::Codex => {
@@ -473,6 +500,24 @@ fn expected_live_image_server(app: &AppType, spec: &Value) -> Value {
     if *app == AppType::Codex {
         if let Some(object) = expected.as_object_mut() {
             object.remove("type");
+        }
+    }
+    if *app == AppType::Gemini {
+        if let Some(object) = expected.as_object_mut() {
+            let timeout_ms = |object: &mut serde_json::Map<String, Value>,
+                              seconds: &str,
+                              millis: &str,
+                              default: u64| {
+                object
+                    .remove(seconds)
+                    .and_then(|value| value.as_f64().map(|n| (n * 1000.0) as u64))
+                    .or_else(|| object.remove(millis).and_then(|value| value.as_u64()))
+                    .unwrap_or(default)
+            };
+            let startup = timeout_ms(object, "startup_timeout_sec", "startup_timeout_ms", 10_000);
+            let tool = timeout_ms(object, "tool_timeout_sec", "tool_timeout_ms", 60_000);
+            object.insert("type".into(), json!("stdio"));
+            object.insert("timeout".into(), json!(startup.max(tool)));
         }
     }
     expected
@@ -1097,10 +1142,22 @@ mod tests {
             json!({"command":"keep-me"}),
         )]))
         .unwrap();
+        crate::gemini_mcp::set_mcp_servers_map(&std::collections::HashMap::from([(
+            "customer_tool".into(),
+            json!({"command":"keep-me"}),
+        )]))
+        .unwrap();
+        crate::opencode_config::set_mcp_server(
+            "customer_tool",
+            json!({"type":"local", "command":["keep-me"], "enabled":true}),
+        )
+        .unwrap();
         let state = AppState::new(std::sync::Arc::new(crate::Database::memory().unwrap()));
         let apps = crate::McpApps {
             codex: true,
             claude: true,
+            gemini: true,
+            opencode: true,
             ..Default::default()
         };
         let spec = json!({"command":"fixture-oceanway", "args":["--image-mcp-stdio"],
@@ -1118,8 +1175,27 @@ mod tests {
             tags: vec!["oceanway-managed".into()],
         };
         crate::McpService::upsert_server(&state, server.clone()).unwrap();
-        for app in [AppType::Codex, AppType::Claude] {
-            verify_live_image_server(&app, &spec).unwrap();
+        for app in [
+            AppType::Codex,
+            AppType::Claude,
+            AppType::Gemini,
+            AppType::OpenCode,
+        ] {
+            verify_live_image_server(&app, &spec)
+                .unwrap_or_else(|error| panic!("{}: {error}", app.as_str()));
+            let prompt_path = crate::prompt_files::prompt_file_path(&app).unwrap();
+            let original = format!(
+                "# Original {} rules\nKeep customer instructions.\n",
+                app.as_str()
+            );
+            crate::config::write_text_file(&prompt_path, &original).unwrap();
+            install_image_rule(&state, &app).unwrap();
+            let once = std::fs::read_to_string(&prompt_path).unwrap();
+            assert!(once.starts_with(&original));
+            assert!(once.contains("oceanway_images MCP tools: generate_images"));
+            assert!(once.contains("count equal to the total requested"));
+            install_image_rule(&state, &app).unwrap();
+            assert_eq!(std::fs::read_to_string(prompt_path).unwrap(), once);
         }
         ensure_image_server_ownership(Some(&server), &apps, &spec).unwrap();
         assert!(std::fs::read_to_string(codex.join("config.toml"))
@@ -1127,6 +1203,14 @@ mod tests {
             .contains("customer_tool"));
         let mut claude_servers = crate::claude_mcp::read_mcp_servers_map().unwrap();
         assert_eq!(claude_servers["customer_tool"]["command"], "keep-me");
+        assert_eq!(
+            crate::gemini_mcp::read_mcp_servers_map().unwrap()["customer_tool"]["command"],
+            "keep-me"
+        );
+        assert_eq!(
+            crate::opencode_config::get_mcp_servers().unwrap()["customer_tool"]["command"],
+            json!(["keep-me"])
+        );
         claude_servers.insert(
             "oceanway_images".into(),
             json!({"command":"customer-owned"}),
@@ -1144,6 +1228,92 @@ mod tests {
             ensure_image_server_ownership(Some(&unrelated), &crate::McpApps::default(), &spec)
                 .is_err()
         );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn managed_image_rule_survives_prompt_changes_and_mcp_resync_fixture() {
+        let _fixture = FixtureHome::new();
+        let state = AppState::new(std::sync::Arc::new(crate::Database::memory().unwrap()));
+        let spec = json!({"command":"fixture-oceanway", "args":["--image-mcp-stdio"],
+            "env":{"OCEANWAY_CONFIG_HOME":crate::config::get_app_config_dir()},
+            "startup_timeout_sec":30, "tool_timeout_sec":60});
+        let server = crate::McpServer {
+            id: "oceanway_images".into(),
+            name: "Oceanway 图片".into(),
+            server: spec,
+            apps: crate::McpApps {
+                codex: true,
+                claude: true,
+                gemini: true,
+                opencode: true,
+                ..Default::default()
+            },
+            description: None,
+            homepage: Some(ORIGIN.into()),
+            docs: None,
+            tags: vec!["oceanway-managed".into()],
+        };
+        state.db.save_mcp_server(&server).unwrap();
+        for app in [
+            AppType::Codex,
+            AppType::Claude,
+            AppType::Gemini,
+            AppType::OpenCode,
+        ] {
+            let path = crate::prompt_files::prompt_file_path(&app).unwrap();
+            let mut prompt = crate::prompt::Prompt {
+                id: "customer-template".into(),
+                name: "Customer template".into(),
+                content: "# Customer template\nUse concise replies.\n".into(),
+                description: None,
+                enabled: false,
+                created_at: None,
+                updated_at: None,
+            };
+            crate::PromptService::upsert_prompt(&state, app.clone(), &prompt.id, prompt.clone())
+                .unwrap();
+            crate::PromptService::enable_prompt(&state, app.clone(), &prompt.id).unwrap();
+            let content = std::fs::read_to_string(&path).unwrap();
+            assert!(content.starts_with(&prompt.content));
+            assert_eq!(content.matches(IMAGE_RULE_START).count(), 1);
+            assert!(crate::PromptService::delete_prompt(&state, app.clone(), &prompt.id).is_err());
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), content);
+
+            prompt.enabled = true;
+            prompt.content = "# Edited customer template\n".into();
+            crate::PromptService::upsert_prompt(&state, app.clone(), &prompt.id, prompt.clone())
+                .unwrap();
+            let content = std::fs::read_to_string(&path).unwrap();
+            assert!(content.starts_with(&prompt.content));
+            assert_eq!(content.matches(IMAGE_RULE_START).count(), 1);
+
+            state.db.save_prompt(app.as_str(), &prompt).unwrap();
+            crate::PromptService::sync_to_live(&state, app.clone()).unwrap();
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), content);
+            crate::McpService::upsert_server(&state, server.clone()).unwrap();
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), content);
+
+            prompt.enabled = false;
+            crate::PromptService::upsert_prompt(&state, app.clone(), &prompt.id, prompt.clone())
+                .unwrap();
+            let rule_only = std::fs::read_to_string(&path).unwrap();
+            assert!(rule_only.contains(IMAGE_RULE_START));
+            assert!(!rule_only.contains("Edited customer template"));
+            crate::PromptService::sync_to_live(&state, app.clone()).unwrap();
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), rule_only);
+            crate::PromptService::delete_prompt(&state, app.clone(), &prompt.id).unwrap();
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), rule_only);
+
+            state
+                .db
+                .update_mcp_server_app_enabled("oceanway_images", &app, false)
+                .unwrap();
+            prompt.enabled = true;
+            crate::PromptService::upsert_prompt(&state, app.clone(), &prompt.id, prompt.clone())
+                .unwrap();
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), prompt.content);
+        }
     }
 
     #[test]
@@ -1168,7 +1338,7 @@ mod tests {
         std::fs::write(&claude_history, history).unwrap();
         std::fs::write(
             codex.join("config.toml"),
-            "# Customer setting\n[projects.fixture]\ntrust_level = \"trusted\"\n",
+            "# Customer setting\n[projects.fixture]\ntrust_level = \"trusted\"\n[features]\nimage_generation = true\nshell_tool = true\n",
         )
         .unwrap();
         let original_auth = json!({"auth_mode":"chatgpt","OPENAI_API_KEY":null,"tokens":{
@@ -1215,6 +1385,12 @@ mod tests {
         let config = std::fs::read_to_string(codex.join("config.toml")).unwrap();
         assert!(config.contains("trust_level"));
         assert!(config.contains(API_BASE));
+        let parsed: toml::Value = toml::from_str(&config).unwrap();
+        assert_eq!(
+            parsed["features"]["image_generation"].as_bool(),
+            Some(false)
+        );
+        assert_eq!(parsed["features"]["shell_tool"].as_bool(), Some(true));
         let settings: Value = crate::config::read_json_file(&claude.join("settings.json")).unwrap();
         assert_eq!(settings["env"]["CUSTOM_KEEP"], "yes");
         assert_eq!(settings["permissions"]["allow"], json!(["Read"]));

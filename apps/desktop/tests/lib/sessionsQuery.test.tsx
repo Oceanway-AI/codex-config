@@ -125,7 +125,7 @@ describe("loadTranscript", () => {
   it("逐块回调进度，Done 后返回", async () => {
     api.streamMessages.mockImplementation(
       streamOf([
-        header,
+        { ...header, total: 1 },
         { type: "messages", start: 0, messages: [message("a")] },
         { type: "done", payloadBytes: 1 },
       ]),
@@ -137,16 +137,31 @@ describe("loadTranscript", () => {
     expect(state.messages).toHaveLength(1);
   });
 
-  it("命令返回后迟迟没有 Done：宽限期后按已收到的内容结束", async () => {
+  it("缺少 Done 时显示读取失败，不把不完整历史当成空会话", async () => {
     vi.useFakeTimers();
     try {
       api.streamMessages.mockImplementation(streamOf([header]));
       const pending = loadTranscript("claude", "/a");
+      const rejected = expect(pending).rejects.toThrow("会话内容未完整读取");
       await vi.advanceTimersByTimeAsync(TRANSCRIPT_DONE_GRACE_MS);
-      await expect(pending).resolves.toMatchObject({ header, done: true });
+      await rejected;
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("收到 Done 但消息数量不足时仍报错，保留重读入口", async () => {
+    api.streamMessages.mockImplementation(
+      streamOf([
+        header,
+        { type: "messages", start: 0, messages: [message("a")] },
+        { type: "done", payloadBytes: 1 },
+      ]),
+    );
+    await expect(loadTranscript("claude", "/a")).rejects.toThrow(
+      "会话内容未完整读取",
+    );
+    expect(api.getMessages).not.toHaveBeenCalled();
   });
 
   it("后端先推 Error 再 reject：抛出该错误，不回退", async () => {
@@ -212,6 +227,7 @@ describe("useSessionTranscript", () => {
     });
 
     act(() => {
+      push({ type: "messages", start: 1, messages: [message("b")] });
       push({ type: "done", payloadBytes: 1 });
       finish();
     });

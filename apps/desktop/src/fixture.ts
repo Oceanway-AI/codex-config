@@ -48,23 +48,21 @@ mockIPC(async (command, args: any) => {
       defaultImageModel: savedImageModel,
     };
   if (command === "oceanway_detect_apps")
-    return apps.map(([appId, name]) => ({
-      appId,
-      name,
-      installed:
-        installedCli.has(appId) || (appId === "codex" && codexDesktopInstalled),
-      desktopInstalled: appId === "codex" && codexDesktopInstalled,
-      configExists:
-        !empty && !desktopOnly && ["codex", "claude"].includes(appId),
-      configurable: [
-        "codex",
-        "claude",
-        "gemini",
-        "opencode",
-        "openclaw",
-      ].includes(appId),
-      reason: "正在适配",
-    }));
+    return apps
+      .filter(([appId]) =>
+        ["codex", "claude", "gemini", "opencode", "openclaw"].includes(appId),
+      )
+      .map(([appId, name]) => ({
+        appId,
+        name,
+        installed:
+          installedCli.has(appId) ||
+          (appId === "codex" && codexDesktopInstalled),
+        desktopInstalled: appId === "codex" && codexDesktopInstalled,
+        configExists:
+          !empty && !desktopOnly && ["codex", "claude"].includes(appId),
+        configurable: true,
+      }));
   if (command === "get_tool_versions")
     return (args.tools ?? []).map((name: string) => ({
       name,

@@ -1,1 +1,39 @@
-<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" /><title>Oceanway Config · 界面测试</title></head><body><div id="root"></div><script type="module" src="./fixture.ts"></script></body></html>
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Oceanway Config · 界面预览</title>
+    <style>
+      #preview-notice {
+        box-sizing: border-box;
+        height: 34px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        padding: 0 12px;
+        background: #eff6ff;
+        color: #1e40af;
+        border-bottom: 1px solid #bfdbfe;
+        font:
+          13px/1.4 system-ui,
+          sans-serif;
+      }
+      #root > .h-screen {
+        height: calc(100vh - 34px);
+      }
+    </style>
+  </head>
+  <body>
+    <aside id="preview-notice" aria-label="界面预览说明">
+      <strong>界面预览</strong
+      ><span
+        >示例数据 ·
+        不读取本机记录、不执行安装和配置；真实使用请打开桌面应用。</span
+      >
+    </aside>
+    <div id="root"></div>
+    <script type="module" src="./fixture.ts"></script>
+  </body>
+</html>
