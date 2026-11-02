@@ -65,6 +65,33 @@ fn patch_managed_mcp(profile:&mut Value,id:&str,spec:Option<&Value>)->Result<(),
     Ok(())
 }
 
+#[cfg(test)]
+mod oceanway_mcp_tests {
+    use super::*;
+    #[test]
+    fn oceanway_desktop_mcp_preserves_profile_and_other_servers() {
+        let existing=json!({"name":"customer","transport":"stdio","command":"customer-tool"});
+        let mut profile=json!({"inferenceProvider":"gateway","organizationInstructions":"User instruction","managedMcpServers":[existing.clone()]});
+        let spec=json!({"command":"/Applications/Oceanway Config.app/Contents/MacOS/oceanway-config","args":["--image-mcp-stdio"],"env":{"OCEANWAY_CONFIG_HOME":"/profile"},"startup_timeout_sec":30,"tool_timeout_sec":60});
+        patch_managed_mcp(&mut profile,"oceanway_images",Some(&spec)).unwrap();
+        let once=profile.clone();
+        patch_managed_mcp(&mut profile,"oceanway_images",Some(&spec)).unwrap();assert_eq!(profile,once);
+        assert_eq!(profile["managedMcpServers"][0],existing);
+        assert_eq!(profile["managedMcpServers"][1]["transport"],"stdio");
+        assert_eq!(profile["managedMcpServers"][1]["toolTimeoutSec"],60);
+        assert_eq!(profile["organizationInstructions"],"User instruction");
+        patch_managed_mcp(&mut profile,"oceanway_images",None).unwrap();
+        assert_eq!(profile["managedMcpServers"],json!([existing]));
+    }
+    #[test]
+    fn oceanway_desktop_mcp_rejects_invalid_entries_without_mutating_profile() {
+        let mut profile=json!({"managedMcpServers":[{"name":"existing"}]});let original=profile.clone();
+        assert!(patch_managed_mcp(&mut profile,"remote",Some(&json!({"url":"https://example.test"}))).is_err());
+        assert_eq!(profile,original);
+        assert!(managed_mcp_spec("bad",&json!({"command":"tool","args":[42]})).is_err());
+    }
+}
+
 pub(crate) fn sync_managed_mcp(id:&str,spec:Option<&Value>)->Result<(),AppError> {
     let path=current_platform_paths()?.profile_path;
     if !path.exists() && spec.is_none(){return Ok(());}

@@ -6,6 +6,7 @@
 
 pub mod image_api;
 pub mod mcp_stdio;
+pub mod video_api;
 mod provider;
 
 pub use image_api::{

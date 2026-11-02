@@ -2,6 +2,7 @@
 
 use super::image_api::{ImageJob, ImageJobs, ImageTestRequest};
 use super::McpCheck;
+use super::video_api::{self, GenerateVideoRequest};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use image::{ImageFormat, ImageReader, Limits};
 use rmcp::model::{
@@ -27,11 +28,14 @@ use std::time::Duration;
 use tokio::io::{AsyncRead, ReadBuf};
 use tokio::time::{sleep, timeout, Instant};
 
-const TOOL_NAMES: [&str; 4] = [
+const TOOL_NAMES: [&str; 7] = [
     "generate_images",
     "get_image_job",
     "cancel_image_job",
     "retry_image_job",
+    "get_video_models",
+    "generate_video",
+    "get_video_job",
 ];
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
@@ -118,6 +122,10 @@ struct JobArgs {
     job_id: String,
 }
 
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct EmptyArgs {}
+
 fn default_model() -> String {
     String::new()
 }
@@ -191,6 +199,21 @@ fn tools() -> Vec<Tool> {
         )
         .with_input_schema::<JobArgs>()
         .with_annotations(annotations(false, false, true)),
+        Tool::new(
+            "get_video_models",
+            "List the video models actually permitted by the configured Oceanway Key and their current duration, resolution, audio and reference capabilities. No generation or charges. References currently require HTTPS URLs; local attachment upload and explicit first/last-frame controls are not yet available.",
+            JsonObject::new(),
+        ).with_input_schema::<EmptyArgs>().with_annotations(annotations(true, true, true)),
+        Tool::new(
+            "generate_video",
+            "Generate one real video through Oceanway when the user asks for a video. Supports text and ordered HTTPS image, video, and audio references; preserve the actual reference URLs and their roles as @image1, @video1, @audio1. Get model capabilities first when choosing parameters. Local attachments cannot yet be uploaded: explain this if only local files are available, never invent URLs or silently replace references with descriptions. Returns a durable job ID promptly. Poll get_video_job until completed, then display the output_path. Requests may be charged. Never automatically repeat a failed or uncertain submission. No cancellation API is available.",
+            JsonObject::new(),
+        ).with_input_schema::<GenerateVideoRequest>().with_annotations(annotations(false, false, true)),
+        Tool::new(
+            "get_video_job",
+            "Query a saved Oceanway video job and download its completed video to output/videos. Works after Agent restart with the same Oceanway settings. Does not submit or retry generation. Waits up to 20 seconds by default (maximum 30); poll while preparing, submitting, queued, in_progress or downloading. If outcome_unknown or interrupted, check the account task history and ask before starting a new paid request. A download/query error can be retried by polling the same job.",
+            JsonObject::new(),
+        ).with_input_schema::<GetArgs>().with_annotations(annotations(true, true, true)),
     ]
 }
 
@@ -281,6 +304,59 @@ impl ImageMcp {
         Self {
             jobs,
             session: Arc::default(),
+        }
+    }
+
+    async fn video_dispatch(&self, name: &str, arguments: JsonObject, context: RequestContext<RoleServer>) -> Result<CallToolResult,String> {
+        let jobs = self.jobs.clone();
+        let home = blocking(move || jobs.home()).await?;
+        match name {
+            "get_video_models" => {
+                let _: EmptyArgs = parse(arguments)?;
+                let guard = Operation::new(self.session.clone());
+                let value = blocking(move || { let result=video_api::models(&home); drop(guard); result }).await?;
+                Ok(CallToolResult::structured(value))
+            }
+            "generate_video" => {
+                let request: GenerateVideoRequest = parse(arguments)?;
+                if context.ct.is_cancelled() || self.session.closing.load(Ordering::SeqCst) { return Err("Video request was cancelled before submission.".into()); }
+                let directory = home.clone();
+                let (job,submission) = blocking(move || video_api::prepare(&directory,request)).await?;
+                let ct=context.ct.clone();
+                let (active,cancelled)=pending_cancellation(move ||ct.is_cancelled());
+                let guard=Operation::new(self.session.clone());
+                let session=self.session.clone();
+                std::thread::spawn(move || {
+                    submission.run(&home,||session.closing.load(Ordering::SeqCst)||cancelled());
+                    drop(guard);
+                });
+                let result=CallToolResult::structured(serde_json::to_value(job).map_err(|_|"Could not render video job.")?);
+                active.store(false,Ordering::SeqCst);
+                Ok(result)
+            }
+            "get_video_job" => {
+                let args: GetArgs=parse(arguments)?;
+                if args.wait_seconds>30 {return Err("wait_seconds must be between 0 and 30.".into());}
+                let directory=home.clone(); let id=args.job_id.clone();
+                let baseline=blocking(move ||video_api::status(&directory,&id)).await?;
+                let directory=home.clone(); let id=args.job_id.clone();
+                let guard=Operation::new(self.session.clone());
+                std::thread::spawn(move || {let _=video_api::refresh(&directory,&id);drop(guard);});
+                let started=Instant::now();
+                let baseline=serde_json::to_value(baseline).map_err(|_|"Could not render video job.")?;
+                loop {
+                    let directory=home.clone(); let id=args.job_id.clone();
+                    let job=blocking(move ||video_api::status(&directory,&id)).await?;
+                    let done=matches!(job.status.as_str(),"completed"|"failed"|"interrupted"|"outcome_unknown"|"cancelled");
+                    let value=serde_json::to_value(job).map_err(|_|"Could not render video job.")?;
+                    if done || value!=baseline || started.elapsed()>=Duration::from_secs(args.wait_seconds) {return Ok(CallToolResult::structured(value));}
+                    tokio::select! {
+                        _=context.ct.cancelled()=>return Ok(CallToolResult::structured(value)),
+                        _=sleep(Duration::from_millis(250))=>{}
+                    }
+                }
+            }
+            _=>Err("Unknown video tool.".into())
         }
     }
 
@@ -397,6 +473,10 @@ impl ImageMcp {
                 "Image calls are disabled during the non-billing MCP discovery check.".into(),
             );
         }
+        if matches!(request.name.as_ref(),"get_video_models"|"generate_video"|"get_video_job") {
+            return self.video_dispatch(request.name.as_ref(),request.arguments.unwrap_or_default(),context)
+                .await.unwrap_or_else(tool_error);
+        }
         let ct = context.ct.clone();
         let (active, cancelled) = pending_cancellation(move || ct.is_cancelled());
         let arguments = request.arguments.unwrap_or_default();
@@ -478,7 +558,7 @@ impl ServerHandler for ImageMcp {
 fn parse<T: DeserializeOwned>(arguments: JsonObject) -> Result<T, String> {
     // Serde errors can quote caller-supplied values. Never return them verbatim.
     serde_json::from_value(serde_json::Value::Object(arguments))
-        .map_err(|_| "Invalid image tool arguments. Use the advertised input schema.".into())
+        .map_err(|_| "Invalid media tool arguments. Use the advertised input schema.".into())
 }
 
 fn tool_error(message: String) -> CallToolResult {
@@ -708,7 +788,7 @@ pub async fn check(executable: &Path, home: &Path) -> Result<McpCheck, String> {
         message: String::new(),
     };
     status.message = if status.tools_available {
-        "Image MCP initialized and all four tools are available. No image request was sent."
+        "Image MCP initialized and all seven media tools are available. No generation request was sent."
     } else {
         "Image MCP initialized, but one or more required image tools are missing."
     }
@@ -773,9 +853,9 @@ mod tests {
     #[test]
     fn metadata_has_exact_tools_and_no_credentials() {
         let tools = tools();
-        assert_eq!(tools.len(), 4);
+        assert_eq!(tools.len(), TOOL_NAMES.len());
         assert!(all_tools_available(&tools));
-        for count in 0..4 {
+        for count in 0..TOOL_NAMES.len() {
             assert!(!all_tools_available(&tools[..count]));
         }
         let metadata = serde_json::to_string(&tools).unwrap().to_lowercase();

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { conversationModels, familyModels, imageModels, videoModels } from "@/components/oceanway/models";
+import { conversationModels, familyModels, imageModels, videoModels, recommendedModel } from "@/components/oceanway/models";
 
 describe("Oceanway model modalities", () => {
   it("keeps the media models returned by Oceanway out of conversation choices", () => {
@@ -16,5 +16,13 @@ describe("Oceanway model modalities", () => {
     expect(conversationModels(models)).toHaveLength(3);
     expect(familyModels("codex", conversationModels(models))).toEqual(["gpt-6.1-sol"]);
     expect(familyModels("claude", conversationModels(models))).toEqual(["claude-opus-5-5"]);
+  });
+  it("defaults DeepSeek and Kimi to their own families", () => {
+    const models = ["gpt-6.1-sol", "deepseek-v4-pro", "kimi-k2.5", "claude-opus-5-5"];
+    expect(recommendedModel("dsh", models)).toBe("deepseek-v4-pro");
+    expect(recommendedModel("kimi", models)).toBe("kimi-k2.5");
+    expect(familyModels("dsh", models)).toEqual(["deepseek-v4-pro"]);
+    expect(familyModels("kimi", models)).toEqual(["kimi-k2.5"]);
+    expect(recommendedModel("dsh", ["gpt-6.1-sol"])).toBe("");
   });
 });

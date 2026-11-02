@@ -1171,7 +1171,7 @@ impl ImageJobs {
         Ok(())
     }
 
-    fn home(&self) -> Result<PathBuf, String> {
+    pub(super) fn home(&self) -> Result<PathBuf, String> {
         if let Some(home) = lock(&self.shared)?.home.clone() {
             return Ok(home);
         }

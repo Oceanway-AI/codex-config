@@ -52,7 +52,11 @@ export function recommendedModel(appId: string, models: string[]): string {
         ? /claude/i
         : appId === "gemini"
           ? /gemini/i
-          : null;
+          : appId === "dsh"
+            ? /deepseek/i
+            : appId === "kimi"
+              ? /kimi/i
+              : null;
   const preferred = models.filter(
     (id) => !/preview|experimental|latest|mini|nano|haiku/i.test(id),
   );
@@ -73,6 +77,10 @@ export function familyModels(appId: string, models: string[]): string[] {
         ? /claude/i
         : appId === "gemini"
           ? /gemini/i
-          : null;
+          : appId === "dsh"
+            ? /deepseek/i
+            : appId === "kimi"
+              ? /kimi/i
+              : null;
   return family ? models.filter((id) => family.test(id)) : models;
 }

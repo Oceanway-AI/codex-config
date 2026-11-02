@@ -37,11 +37,13 @@ export interface ApplyResult {
     ok: boolean;
     message: string;
     imageConfigured?: boolean;
+    videoConfigured?: boolean;
     imageMessage?: string | null;
   }[];
   restartRequired: boolean;
   backupPath: string;
   imagesConfigured: boolean;
+  videosConfigured?: boolean;
 }
 export interface LaunchResult {
   launched: boolean;
