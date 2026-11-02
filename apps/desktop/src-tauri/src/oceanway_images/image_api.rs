@@ -2022,9 +2022,7 @@ fn json_response(
             let mut failure = status_failure(response.status());
             if let Ok(bytes) = bounded_read(response, 16 * 1024) {
                 if let Ok(body) = serde_json::from_slice::<Value>(&bytes) {
-                    if let Some(code) = async_images::safe_error_code(&body, key) {
-                        failure.message.push_str(&format!(" Code: {code}."));
-                    }
+                    failure.message.push_str(&media_error_details(&body,key));
                 }
             }
             return Err(failure);
@@ -2043,6 +2041,26 @@ fn json_response(
             failure.request_id = request_id;
             failure
         })
+}
+
+/// Present recognized service errors and bounded codes, never raw upstream
+/// messages which may contain a credential, signed URL, or provider payload.
+pub(super) fn media_error_details(body: &Value,key: &str) -> String {
+    let mut details=String::new();
+    let mut current=body.clone();
+    for _ in 0..3 {
+        if let Some(code)=async_images::safe_error_code(&current,key) {
+            details.push_str(&format!(" Code: {code}."));
+        }
+        let message=current.pointer("/error/message").or_else(||current.get("message")).and_then(Value::as_str).unwrap_or("");
+        if message.to_ascii_lowercase().contains("account asset storage is full") {
+            details.push_str(" Oceanway account asset storage is full. Free account storage or ask the platform administrator to increase its quota.");
+            break;
+        }
+        if message.len()>16*1024 {break;}
+        match serde_json::from_str::<Value>(message) {Ok(value) if value.is_object()=>current=value,_=>break}
+    }
+    details
 }
 
 fn load_post_provider(provider: &SavedProvider) -> Result<SavedProvider, Failure> {

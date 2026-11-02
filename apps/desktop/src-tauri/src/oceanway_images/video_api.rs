@@ -87,10 +87,7 @@ fn json_response(response: Response, key: &str) -> Result<Value, String> {
         let mut bytes=Vec::new();
         let _=response.take(16*1024).read_to_end(&mut bytes);
         let body:Value=serde_json::from_slice(&bytes).unwrap_or(Value::Null);
-        let code=body.pointer("/error/code").or_else(||body.get("code")).and_then(Value::as_str)
-            .filter(|v|v.len()<=96 && (key.is_empty() || !v.contains(key))
-                && v.bytes().all(|c|c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c,b'_'|b'-')))
-            .map(|v|format!(" Code: {v}.")).unwrap_or_default();
+        let code=super::image_api::media_error_details(&body,key);
         return Err(format!("Oceanway video API returned HTTP {}.{code}{request_id} Check the model, parameters and account resources.", status.as_u16()));
     }
     let mut data = Vec::new();

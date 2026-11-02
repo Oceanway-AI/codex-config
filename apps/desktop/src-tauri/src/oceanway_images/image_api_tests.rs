@@ -240,6 +240,36 @@ fn request(count: usize) -> ImageTestRequest {
 }
 
 #[test]
+fn nested_platform_storage_failure_keeps_useful_reason_without_raw_provider_details() {
+    let body=json!({"code":"fail_to_fetch_task","message":json!({"error":{"message":format!("account asset storage is full {MOCK_KEY} https://private.example/?token=secret"),"code":"model_price_error"}}).to_string()});
+    let details=media_error_details(&body,MOCK_KEY);
+    assert!(details.contains("account asset storage is full"));
+    assert!(!details.contains(MOCK_KEY));
+    assert!(!details.contains("private.example"));
+    assert!(media_error_details(&json!({"error":{"code":MOCK_KEY,"message":"private raw body"}}),MOCK_KEY).is_empty());
+}
+
+#[test]
+fn asynchronous_image_polling_obeys_retry_after_without_resubmitting() {
+    let _serial=WORKER_TEST.lock().unwrap();
+    let home=TempHome::new();
+    let mock=Mock::new(|_,request| {
+        if request.method=="POST" {return Reply::json(json!({"task_id":"retry-after-task","status":"queued"}));}
+        Reply {status:429,headers:vec![("Retry-After".into(),"60".into())],body:serde_json::to_vec(&json!({"error":{"code":"rate_limited"}})).unwrap()}
+    });
+    save_local_fixture_provider(&home.0,&mock.base,LOCAL_FIXTURE_KEY);
+    let service=ImageJobs::new(&home.0).unwrap();
+    let job=service.start(request(1),None,false).unwrap();
+    wait_until(||lock(&service.shared).unwrap().jobs[&job.id].items.get(&1).is_some_and(|i|i.status=="remote_pending"));
+    service.status(&job.id).unwrap();
+    wait_until(||!lock(&service.shared).unwrap().jobs[&job.id].remote_polling);
+    assert!(lock(&service.shared).unwrap().jobs[&job.id].remote_poll_after.unwrap().saturating_duration_since(Instant::now())>Duration::from_secs(55));
+    for _ in 0..10 {service.status(&job.id).unwrap();}
+    assert_eq!(mock.count(),2);
+    assert!(service.retry(&job.id).is_err());
+}
+
+#[test]
 fn async_receipts_resume_after_restart_without_a_second_generation() {
     let _serial=WORKER_TEST.lock().unwrap();
     let home=TempHome::new();
