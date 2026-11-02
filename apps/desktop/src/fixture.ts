@@ -33,6 +33,8 @@ const apps = [
   ["omp", "Oh My Pi"],
 ];
 let configured = false;
+let configuredApps: string[] = [];
+let savedImageModel: string | null = null;
 localStorage.setItem("oceanway-last-view", "connection");
 localStorage.setItem("i18nextLng", "zh");
 mockWindows("main");
@@ -42,8 +44,8 @@ mockIPC(async (command, args: any) => {
       configured,
       keyPreview: configured ? "fixture…key" : null,
       baseUrl: "https://console.oceanway.tech/v1",
-      configuredApps: [],
-      defaultImageModel: null,
+      configuredApps,
+      defaultImageModel: savedImageModel,
     };
   if (command === "oceanway_detect_apps")
     return apps.map(([appId, name]) => ({
@@ -117,20 +119,39 @@ mockIPC(async (command, args: any) => {
     // has no image access. Only model IDs enter this renderer fixture.
     return {
       ...liveModelCatalog,
-      models: [...liveModelCatalog.models, ...liveImageCatalog.models],
+      models: [
+        ...liveModelCatalog.models,
+        ...(query.get("images") === "0" ? [] : liveImageCatalog.models),
+      ],
     };
   }
   if (command === "oceanway_apply_config") {
     configured = true;
+    configuredApps = args.request.apps.map((a: any) => a.appId);
+    savedImageModel = args.request.imageModel ?? savedImageModel;
     return {
       results: args.request.apps.map((a: any) => ({
         appId: a.appId,
         ok: true,
         message: "界面测试：配置结果示例",
+        imageConfigured:
+          !!args.request.imageModel &&
+          a.appId !== "openclaw" &&
+          query.get("error") !== "image",
+        imageMessage: args.request.imageModel
+          ? a.appId === "openclaw"
+            ? "OpenClaw 的图片工具尚需适配"
+            : query.get("error") === "image"
+              ? "图片工具启动失败，请重新配置。"
+              : "Oceanway 图片工具已配置，可在对话中直接生图。"
+          : null,
       })),
       restartRequired: true,
       backupPath: "fixture/backups",
-      imagesConfigured: !!args.request.imageModel,
+      imagesConfigured:
+        !!args.request.imageModel &&
+        query.get("error") !== "image" &&
+        !args.request.apps.some((a: any) => a.appId === "openclaw"),
     };
   }
   if (command === "oceanway_launch_app")
@@ -168,6 +189,7 @@ mockIPC(async (command, args: any) => {
   )
     return [];
   if (command === "plugin:app|version") return "0.1.0-fixture";
+  if (command === "get_migration_result") return false;
   if (command === "get_init_error" || command === "take_tray_navigation")
     return null;
   if (command.startsWith("plugin:event|")) return 1;

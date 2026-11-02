@@ -1,5 +1,5 @@
 import { OCEANWAY_EDITION } from "@/config/edition";
-import { useRef, type ComponentType } from "react";
+import { useId, useRef, useState, type ComponentType } from "react";
 import { useTranslation } from "react-i18next";
 import { useQuery } from "@tanstack/react-query";
 import { getVersion } from "@tauri-apps/api/app";
@@ -7,6 +7,7 @@ import {
   ArrowLeft,
   BookOpen,
   ChartColumn,
+  ChevronDown,
   ChevronsLeft,
   ChevronsRight,
   Database,
@@ -68,7 +69,8 @@ interface SidebarProps {
 type DirectoryProps = SidebarProps & { collapsed: boolean };
 
 /**
- * 主导航（v7）：顶条 44 → 应用列表（唯一滚动的区域）→ 全局 6 项（贴底）→ 底栏「应用 · 设置」。
+ * Oceanway 主导航：连接 → 常用应用 / 更多应用 → 会话 / 用量 → 高级功能。
+ * 主目录统一滚动，底栏保留「应用 · 设置」；上游目录保持原有分组。
  * 进入设置后整条侧栏换成设置目录。收起时是 72px 的图标轨；
  * 展开 / 收起时宽度一步到位，边缘的滑动由盖板的 transform 动画画出（见 useSidebarCollapsed），文字不换行、被裁掉而不是挤成两行。
  * 收起时各行只剩图标，名字由 HoverTip 从右侧报；展开时文字可见，不再挂提示。
@@ -234,6 +236,11 @@ function MainDirectory({
     (app) => visibleApps[app] && app !== "agy",
   );
   const onAppPage = isAppPage(view);
+  const [moreAppsOpen, setMoreAppsOpen] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const directoryId = useId();
+  const primaryApps = apps.filter((app) => app === "codex" || app === "claude");
+  const moreApps = apps.filter((app) => app !== "codex" && app !== "claude");
 
   // 选了的项里是 0 的不写（没配定价时金额总是 0）；命中率在今天还没有请求时不写；
   // 全都没有就整个不显示。两项都有时只写数、上下两行（「今日」放进悬停和读屏）：
@@ -305,6 +312,33 @@ function MainDirectory({
   const isGlobalSelected = (page: GlobalPage) =>
     view === page || (page === "skills" && view === "skillsDiscovery");
 
+  const renderApp = (app: AppId) => (
+    <AppNavItem
+      key={app}
+      app={app}
+      collapsed={collapsed}
+      selected={onAppPage && activeApp === app}
+      status={appStatus(app)}
+      onSelect={() => onSelectApp(app)}
+    />
+  );
+  const renderGlobal = (item: (typeof globals)[number]) => (
+    <NavItem
+      key={item.page}
+      collapsed={collapsed}
+      selected={isGlobalSelected(item.page)}
+      icon={item.icon}
+      label={item.label}
+      trailing={item.trailing}
+      trailingLabel={item.trailingLabel}
+      alert={item.alert}
+      onClick={() => onSelectPage(item.page)}
+    />
+  );
+  const advanced = globals.filter((item) =>
+    ["mcp", "skills", "prompts"].includes(item.page),
+  );
+
   return (
     <>
       <div
@@ -314,46 +348,97 @@ function MainDirectory({
           collapsed && "no-scrollbar",
         )}
       >
-        <div
-          role="group"
-          aria-label={t("nav.appsGroup")}
-          className="flex shrink-0 flex-col"
-        >
-          {apps.map((app) => (
-            <AppNavItem
-              key={app}
-              app={app}
-              collapsed={collapsed}
-              selected={onAppPage && activeApp === app}
-              status={appStatus(app)}
-              onSelect={() => onSelectApp(app)}
+        {OCEANWAY_EDITION ? (
+          <>
+            {globals
+              .filter((item) => item.page === "connection")
+              .map(renderGlobal)}
+            <div
+              role="group"
+              aria-label={t("nav.appsGroup")}
+              className="mt-4 flex shrink-0 flex-col"
+            >
+              {!collapsed && (
+                <span className="px-4 pb-1 text-caption text-fg-3">
+                  常用应用
+                </span>
+              )}
+              {primaryApps.map(renderApp)}
+              {moreApps.length > 0 && (
+                <>
+                  <NavDisclosure
+                    collapsed={collapsed}
+                    expanded={moreAppsOpen}
+                    controls={`${directoryId}-more-apps`}
+                    label="更多应用"
+                    icon={LayoutGrid}
+                    onClick={() => setMoreAppsOpen((open) => !open)}
+                  />
+                  <div
+                    id={`${directoryId}-more-apps`}
+                    className="flex flex-col"
+                  >
+                    {moreApps
+                      .filter(
+                        (app) =>
+                          moreAppsOpen || (onAppPage && activeApp === app),
+                      )
+                      .map(renderApp)}
+                  </div>
+                </>
+              )}
+            </div>
+            <div
+              className={cn(
+                "my-3 h-px shrink-0 bg-border",
+                collapsed ? "mx-[18px]" : "mx-4",
+              )}
             />
-          ))}
-        </div>
-      </div>
-
-      <div
-        className={cn(
-          "h-px shrink-0 bg-border",
-          collapsed ? "mx-[18px] my-1.5" : "mx-4 mb-1.5 mt-0.5",
+            {globals
+              .filter(
+                (item) => item.page === "sessions" || item.page === "usage",
+              )
+              .map(renderGlobal)}
+            <div className="mt-3 flex flex-col">
+              <NavDisclosure
+                collapsed={collapsed}
+                expanded={advancedOpen}
+                controls={`${directoryId}-advanced`}
+                label="高级功能"
+                icon={SlidersHorizontal}
+                onClick={() => setAdvancedOpen((open) => !open)}
+              />
+              <div id={`${directoryId}-advanced`} className="flex flex-col">
+                {advanced
+                  .filter((item) => advancedOpen || isGlobalSelected(item.page))
+                  .map(renderGlobal)}
+              </div>
+            </div>
+          </>
+        ) : (
+          <div
+            role="group"
+            aria-label={t("nav.appsGroup")}
+            className="flex shrink-0 flex-col"
+          >
+            {apps.map(renderApp)}
+          </div>
         )}
-      />
-
-      <div className="flex shrink-0 flex-col">
-        {globals.map((item) => (
-          <NavItem
-            key={item.page}
-            collapsed={collapsed}
-            selected={isGlobalSelected(item.page)}
-            icon={item.icon}
-            label={item.label}
-            trailing={item.trailing}
-            trailingLabel={item.trailingLabel}
-            alert={item.alert}
-            onClick={() => onSelectPage(item.page)}
-          />
-        ))}
       </div>
+
+      {!OCEANWAY_EDITION && (
+        <>
+          <div
+            className={cn(
+              "h-px shrink-0 bg-border",
+              collapsed ? "mx-[18px] my-1.5" : "mx-4 mb-1.5 mt-0.5",
+            )}
+          />
+          <div className="flex shrink-0 flex-col">
+            {globals.map(renderGlobal)}
+          </div>
+        </>
+      )}
 
       {/* 和上面那条分隔线同样缩进、上下各留 6px，选中的最后一项不会贴着线 */}
       <div
@@ -395,6 +480,58 @@ function MainDirectory({
         />
       </div>
     </>
+  );
+}
+
+function NavDisclosure({
+  collapsed,
+  expanded,
+  controls,
+  label,
+  icon: Icon,
+  onClick,
+}: {
+  collapsed: boolean;
+  expanded: boolean;
+  controls: string;
+  label: string;
+  icon: IconComponent;
+  onClick: () => void;
+}) {
+  return (
+    <HoverTip
+      content={collapsed ? label : undefined}
+      side="right"
+      disableHoverableContent
+    >
+      <button
+        type="button"
+        aria-label={label}
+        aria-expanded={expanded}
+        aria-controls={controls}
+        onClick={onClick}
+        className={cn(
+          "flex shrink-0 items-center rounded-control text-fg-2 transition-colors hover:bg-subtle hover:text-fg-1 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+          collapsed
+            ? "mx-auto h-8 w-12 justify-center"
+            : "mx-2 h-7 w-[184px] gap-2 px-2 text-start",
+        )}
+      >
+        <Icon
+          className={collapsed ? "h-5 w-5" : "h-[18px] w-[18px]"}
+          aria-hidden="true"
+        />
+        {!collapsed && <span className="min-w-0 flex-1 truncate">{label}</span>}
+        <ChevronDown
+          aria-hidden="true"
+          className={cn(
+            "shrink-0 transition-transform",
+            collapsed ? "ms-0.5 h-2.5 w-2.5" : "h-3.5 w-3.5",
+            expanded && "rotate-180",
+          )}
+        />
+      </button>
+    </HoverTip>
   );
 }
 

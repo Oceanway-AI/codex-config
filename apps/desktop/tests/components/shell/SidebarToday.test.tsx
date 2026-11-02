@@ -2,7 +2,7 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import { Sidebar } from "@/components/shell/Sidebar";
+import { Sidebar, type SidebarProps } from "@/components/shell/Sidebar";
 import type { Settings, VisibleApps } from "@/types";
 import { createTestQueryClient } from "../../utils/testQueryClient";
 
@@ -36,7 +36,10 @@ vi.mock("@/hooks/useSidebarStatus", () => ({
   }),
 }));
 
-const renderSidebar = (settings: Partial<Settings>) => {
+const renderSidebar = (
+  settings: Partial<Settings>,
+  props: Partial<SidebarProps> = {},
+) => {
   const client = createTestQueryClient();
   // 不让设置查询回头去 mock 后端重取，盖掉这里给的值
   client.setQueryDefaults(["settings"], { staleTime: Infinity });
@@ -52,6 +55,7 @@ const renderSidebar = (settings: Partial<Settings>) => {
         onSelectPage={vi.fn()}
         onSelectSettingsSection={vi.fn()}
         onExitSettings={vi.fn()}
+        {...props}
       />
     </QueryClientProvider>,
   );
@@ -117,5 +121,92 @@ describe("sidebar Today label", () => {
     status.todayTokens = 5_000;
     renderSidebar({});
     expect(screen.queryByText(/^nav\.today/)).not.toBeInTheDocument();
+  });
+});
+
+describe("Oceanway simple navigation", () => {
+  const visibleApps = {
+    codex: true,
+    claude: true,
+    gemini: true,
+    opencode: true,
+  } as VisibleApps;
+
+  it("starts with connection and keeps common apps, sessions and installation accessible", async () => {
+    const onSelectPage = vi.fn();
+    renderSidebar({}, { view: "connection", visibleApps, onSelectPage });
+    const navigation = screen.getAllByRole("button");
+    expect(
+      navigation.indexOf(screen.getByRole("button", { name: "连接 Oceanway" })),
+    ).toBeLessThan(
+      navigation.indexOf(screen.getByRole("button", { name: "Codex" })),
+    );
+    expect(screen.getByRole("button", { name: "Claude Code" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "nav.sessions" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Gemini CLI" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "MCP" })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "nav.apps" }));
+    expect(onSelectPage).toHaveBeenCalledWith("apps");
+  });
+
+  it("opens extra apps and advanced tools with keyboard-operable disclosures", async () => {
+    const user = userEvent.setup();
+    const onSelectApp = vi.fn();
+    const onSelectPage = vi.fn();
+    renderSidebar({}, { visibleApps, onSelectApp, onSelectPage });
+    const more = screen.getByRole("button", { name: "更多应用" });
+    expect(more).toHaveAttribute("aria-expanded", "false");
+    more.focus();
+    await user.keyboard("{Enter}");
+    expect(more).toHaveAttribute("aria-expanded", "true");
+    await user.click(screen.getByRole("button", { name: "Gemini CLI" }));
+    expect(onSelectApp).toHaveBeenCalledWith("gemini");
+
+    const advanced = screen.getByRole("button", { name: "高级功能" });
+    advanced.focus();
+    await user.keyboard(" ");
+    expect(advanced).toHaveAttribute("aria-expanded", "true");
+    await user.click(screen.getByRole("button", { name: "MCP" }));
+    expect(onSelectPage).toHaveBeenCalledWith("mcp");
+    await user.click(advanced);
+    expect(screen.queryByRole("button", { name: "MCP" })).toBeNull();
+  });
+
+  it("keeps an active extra app visible even when its group is folded", async () => {
+    const user = userEvent.setup();
+    renderSidebar({}, { visibleApps, view: "providers", activeApp: "gemini" });
+    expect(screen.getByRole("button", { name: "Gemini CLI" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+    expect(screen.queryByRole("button", { name: "OpenCode" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "更多应用" }));
+    expect(screen.getByRole("button", { name: "OpenCode" })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "更多应用" }));
+    expect(screen.getByRole("button", { name: "Gemini CLI" })).toBeVisible();
+  });
+
+  it("keeps Skills selected when the discovery screen is active", async () => {
+    renderSidebar({}, { visibleApps, view: "skillsDiscovery" });
+    expect(screen.getByRole("button", { name: "Skills" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+    expect(screen.queryByRole("button", { name: "MCP" })).toBeNull();
+  });
+
+  it("keeps extra apps and advanced tools reachable in the collapsed icon rail", async () => {
+    localStorage.setItem("cc-switch-sidebar-collapsed", "true");
+    const user = userEvent.setup();
+    const onSelectPage = vi.fn();
+    renderSidebar({}, { visibleApps, onSelectPage });
+    expect(
+      screen.getByRole("button", { name: "nav.expandSidebar" }),
+    ).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "更多应用" }));
+    expect(screen.getByRole("button", { name: "OpenCode" })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "高级功能" }));
+    await user.click(screen.getByRole("button", { name: "nav.prompts" }));
+    expect(onSelectPage).toHaveBeenCalledWith("prompts");
   });
 });
