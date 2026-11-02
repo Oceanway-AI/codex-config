@@ -89,7 +89,9 @@ pub(super) fn schedule_refresh(shared: &Arc<Shared>, id: &str) -> Result<(), Str
         if let Ok(mut registry) = lock(&shared_copy) {
             if let Some(job) = registry.jobs.get_mut(&thread_id) {
                 job.remote_polling = false;
-                job.remote_poll_after = Some(Instant::now()+Duration::from_secs(3));
+                let after=Instant::now()+Duration::from_secs(job.remote_poll_interval);
+                job.remote_poll_after=Some(job.remote_poll_after.map(|old|old.max(after)).unwrap_or(after));
+                job.remote_poll_interval=(job.remote_poll_interval*2).min(15);
                 if outcome.is_err() {
                     for item in job.items.values_mut().filter(|item|item.status=="remote_pending") {
                         item.error = Some("Image status check interrupted. Query this original job again.".into());
@@ -106,7 +108,7 @@ pub(super) fn schedule_refresh(shared: &Arc<Shared>, id: &str) -> Result<(), Str
     Ok(())
 }
 
-enum Refresh { Pending, Failed(String), Completed(SavedResult) }
+enum Refresh { Pending(Option<Duration>), Deferred(Duration,Failure), Failed(String), Completed(SavedResult) }
 
 fn apply_refresh(job: &mut StoredJob, index: usize, result: Result<Refresh,Failure>) {
     match result {
@@ -120,7 +122,11 @@ fn apply_refresh(job: &mut StoredJob, index: usize, result: Result<Refresh,Failu
             item.error = Some(message);
             job.failed += 1;
         }
-        Ok(Refresh::Pending) => {}
+        Ok(Refresh::Pending(delay)) => {if let Some(delay)=delay {job.remote_poll_after=Instant::now().checked_add(delay);}}
+        Ok(Refresh::Deferred(delay,failure)) => {
+            job.remote_poll_after=Instant::now().checked_add(delay);
+            apply_refresh(job,index,Err(failure));
+        }
         Err(failure) => {
             let item = job.items.get_mut(&index).expect("accepted slot");
             item.error = Some(format!("{} Query this original job again; no generation was resubmitted.",failure.message));
@@ -138,6 +144,12 @@ fn refresh(input: &Input, index: usize, task: &RemoteTask) -> Result<Refresh,Fai
     let client = provider_client(&provider)?;
     let response = client.get(format!("{}/images/{}",task.query_base,task.id)).bearer_auth(&provider.key)
         .timeout(Duration::from_secs(25)).send().map_err(|_|Failure::new("Could not query the accepted image task."))?;
+    let retry_after=response.headers().get("retry-after").and_then(|v|v.to_str().ok())
+        .and_then(|v|v.parse::<u64>().ok()).map(Duration::from_secs);
+    if !response.status().is_success() {
+        let failure=json_response(response,&provider.key,16*1024).err().unwrap_or_else(||Failure::new("Image task query failed."));
+        return match retry_after {Some(delay)=>Ok(Refresh::Deferred(delay,failure)),None=>Err(failure)};
+    }
     let (body,request_id) = json_response(response,&provider.key,JSON_BYTES)?;
     match body["status"].as_str().unwrap_or("unknown") {
         "completed" | "succeeded" | "success" => {
@@ -169,7 +181,7 @@ fn refresh(input: &Input, index: usize, task: &RemoteTask) -> Result<Refresh,Fai
             let code = safe_error_code(&body,&provider.key).map(|c|format!(" Code: {c}.")).unwrap_or_default();
             Ok(Refresh::Failed(format!("Oceanway image task failed.{code} Task: {}. No new generation was submitted.",task.id)))
         }
-        _ => Ok(Refresh::Pending),
+        _ => Ok(Refresh::Pending(retry_after)),
     }
 }
 

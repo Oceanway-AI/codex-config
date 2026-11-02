@@ -250,6 +250,7 @@ struct StoredJob {
     ownership: Mutex<Option<File>>,
     remote_polling: bool,
     remote_poll_after: Option<Instant>,
+    remote_poll_interval: u64,
 }
 
 impl StoredJob {
@@ -288,6 +289,7 @@ impl StoredJob {
             ownership: Mutex::new(None),
             remote_polling: false,
             remote_poll_after: None,
+            remote_poll_interval: 3,
         }
     }
 

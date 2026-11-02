@@ -165,7 +165,8 @@ fn tools() -> Vec<Tool> {
              subjects or styles supply one prompt per output slot. Submit the entire requested \
              batch in one call with count instead of serial count=1 calls; the engine runs up to \
              two requests concurrently and fills free slots automatically. For edits use actual original \
-             attachments or previous output files, never text substitutes or invented paths. \
+             HTTPS reference_urls, or original reference_paths when the selected model supports inline files; \
+             never text substitutes or invented paths. URL-only models require platform upload support for local files. \
              Do not call for analysis-only or prompt-writing requests, or without a generation \
              or edit prompt. Requests may be charged. Poll get_image_job while running and \
              display each completed image as it becomes available, without waiting for the whole \
@@ -180,7 +181,7 @@ fn tools() -> Vec<Tool> {
              Waits 20 seconds by default, up to 30, and returns counts, saved output paths, \
              previews, request IDs, errors, and warnings. Progress changes can return early. \
              Display completed images while other images are still running. Poll while running. Paused or \
-             interrupted jobs need an explicit retry; polling does not resume them. \
+             interrupted jobs with an accepted remote task resume GET/download only. Unsent queued slots need an explicit retry. \
              Cancelling a pending poll also cancels the job's queued work.",
             JsonObject::new(),
         )

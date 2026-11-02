@@ -62,10 +62,17 @@ struct Stored {
     job: VideoJob,
     request: GenerateVideoRequest,
     credential: String,
+    #[serde(default)]
+    next_poll_ms: u64,
+    #[serde(default)]
+    poll_interval_ms: u64,
 }
+
+fn now_ms() -> u64 { SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis().try_into().unwrap_or(u64::MAX) }
 
 fn client() -> Result<Client, String> {
     Client::builder().connect_timeout(Duration::from_secs(10))
+        .retry(reqwest::retry::never())
         .timeout(Duration::from_secs(25)).redirect(reqwest::redirect::Policy::none())
         .build().map_err(|_| "Could not initialize the Oceanway video connection.".into())
 }
@@ -269,7 +276,7 @@ pub fn prepare(home: &Path, mut request: GenerateVideoRequest) -> Result<(VideoJ
     lock.try_lock().map_err(|_| "Video job is busy.")?;
     let job = VideoJob { id, status:"preparing".into(), model:request.model.clone(), task_id:None, progress:None, output_path:None, error:None,
         reference_counts:[request.reference_images.len(),request.reference_videos.len(),request.reference_audios.len()] };
-    let stored = Stored {job:job.clone(), request, credential:format!("{:x}",Sha256::digest(key.as_bytes()))};
+    let stored = Stored {job:job.clone(), request, credential:format!("{:x}",Sha256::digest(key.as_bytes())), next_poll_ms:0,poll_interval_ms:3000};
     save(&path,&stored)?;
     Ok((job,Submission {path,stored,_lock:lock}))
 }
@@ -322,6 +329,7 @@ pub fn refresh(home: &Path, id: &str) -> Result<(), String> {
     let lock = private_file(&path.join("lock"),false)?;
     if lock.try_lock().is_err() { return Ok(()); }
     let mut stored = load(&path)?;
+    if now_ms()<stored.next_poll_ms {return Ok(());}
     if stored.job.output_path.is_some() || matches!(stored.job.status.as_str(),"failed"|"outcome_unknown"|"interrupted"|"cancelled") { return Ok(()); }
     let task = match &stored.job.task_id {
         Some(task) if valid_id(task) => task.clone(),
@@ -334,8 +342,15 @@ pub fn refresh(home: &Path, id: &str) -> Result<(), String> {
     let result = (|| {
         let provider = provider::read_record(home)?;
         if stored.credential != format!("{:x}",Sha256::digest(provider.api_key.as_bytes())) { return Err("Restore the original Oceanway Key to query this video job.".into()); }
-        let value = json_response(client()?.get(format!("{}/videos/{task}",provider.api_base)).bearer_auth(&provider.api_key)
-            .send().map_err(|_| "Could not query the video task. Call get_video_job again; no generation request will be repeated.")?,&provider.api_key)?;
+        stored.poll_interval_ms=stored.poll_interval_ms.max(3000).min(15000);
+        stored.next_poll_ms=now_ms().saturating_add(stored.poll_interval_ms);
+        stored.poll_interval_ms=(stored.poll_interval_ms*2).min(15000);
+        let response=client()?.get(format!("{}/videos/{task}",provider.api_base)).bearer_auth(&provider.api_key)
+            .send().map_err(|_| "Could not query the video task. Call get_video_job again; no generation request will be repeated.")?;
+        if let Some(seconds)=response.headers().get("retry-after").and_then(|v|v.to_str().ok()).and_then(|v|v.parse::<u64>().ok()) {
+            stored.next_poll_ms=stored.next_poll_ms.max(now_ms().saturating_add(seconds.saturating_mul(1000)));
+        }
+        let value = json_response(response,&provider.api_key)?;
         stored.job.status = remote_status(&value)?.into();
         stored.job.progress = value["progress"].as_f64();
         stored.job.error = None;
