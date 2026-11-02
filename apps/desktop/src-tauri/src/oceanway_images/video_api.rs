@@ -438,6 +438,7 @@ mod tests {
         fn new(post_status:&'static str,post_body:&'static str) -> Self {
             let home=std::env::temp_dir().join(format!("oceanway-video-test-{}-{}-{}",std::process::id(),SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos(),SEQUENCE.fetch_add(1,Ordering::Relaxed)));
             fs::create_dir(&home).unwrap();
+            let home=fs::canonicalize(home).unwrap();
             let listener=TcpListener::bind("127.0.0.1:0").unwrap();listener.set_nonblocking(true).unwrap();
             let base=format!("http://{}/v1",listener.local_addr().unwrap());
             provider::fixture(&home,&base,"fixture-video-key","fixture-image");

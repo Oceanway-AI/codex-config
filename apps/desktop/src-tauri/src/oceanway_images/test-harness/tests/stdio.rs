@@ -130,7 +130,7 @@ async fn discovery_check_preserves_existing_job_bytes_and_rejects_all_tool_calls
         .unwrap()
         .unwrap();
     let tools = client.list_all_tools().await.unwrap();
-    assert_eq!(tools.len(), 4);
+    assert_eq!(tools.len(), 7);
     for tool in tools {
         let result = timeout(
             Duration::from_secs(5),
