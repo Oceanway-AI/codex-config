@@ -21,7 +21,9 @@ pub(super) fn posix(tool: &str, command: String) -> String {
     };
     format!(
         "bash -c {} oceanway-install {}",
-        shell_single_quote(&format!("source <(echo {encoded} | base64 {decode})")),
+        shell_single_quote(&format!(
+            "ow_script=$(printf %s {encoded} | base64 {decode}) && eval \"$ow_script\""
+        )),
         shell_single_quote(&command)
     )
 }
@@ -70,7 +72,12 @@ mod tests {
             .env("PATH", format!("{}:/usr/bin:/bin", root.path().display()))
             .output()
             .unwrap();
-        assert_eq!(output.status.code(), Some(23));
+        assert_eq!(
+            output.status.code(),
+            Some(23),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         assert!(!root.path().join(".oceanway-config").exists());
     }
 
@@ -94,7 +101,11 @@ mod tests {
             .env("PATH", format!("{}:/usr/bin:/bin", fake.display()))
             .output()
             .unwrap();
-        assert!(!output.status.success());
+        assert!(
+            !output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         assert!(String::from_utf8_lossy(&output.stderr).contains("checksum mismatch"));
         assert!(!root.path().join("agent-executed").exists());
         assert!(!root.path().join(".oceanway-config").exists());

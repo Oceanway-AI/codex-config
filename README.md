@@ -2,6 +2,10 @@
 
 基于 CC Switch v4.0.24 的 Oceanway 桌面配置应用。
 
+**[下载最新 Windows 安装包](https://github.com/Oceanway-AI/codex-config/releases/download/oceanway-preview/Oceanway-Config-Windows-x64-setup.exe)** · **[macOS Apple Silicon](https://github.com/Oceanway-AI/codex-config/releases/download/oceanway-preview/Oceanway-Config-macos-arm64.zip)** · **[macOS Intel](https://github.com/Oceanway-AI/codex-config/releases/download/oceanway-preview/Oceanway-Config-macos-intel.zip)**
+
+以上是本开发分支最近一次完整构建成功的测试版，构建成功后自动更新。[查看版本、提交与安装说明](https://github.com/Oceanway-AI/codex-config/releases/tag/oceanway-preview) · [查看最新构建状态](https://github.com/Oceanway-AI/codex-config/actions/workflows/build.yml?query=branch%3Acodex%2Foceanway-config-rebuild)。Windows 下载后双击安装；macOS 解压后将应用放入“应用程序”。
+
 新版本源码位于 `apps/desktop/`。沿用 CC Switch 的应用框架、组件和会话管理，提供 Oceanway Key 接入、模型选择与配置流程。需求见 [项目需求入口](docs/PROJECT_REQUIREMENTS.md)。
 
 ## 开发

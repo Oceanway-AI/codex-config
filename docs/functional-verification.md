@@ -73,9 +73,31 @@ cargo test --locked --lib live::project::codex::tests -- --test-threads=1
 
 独立 Codex 对图片测试服务的自然语言生图回归已完成：64.78 秒，一次提交两张图片，最大并发为 2，结果分两条消息返回；未调用其他工具，当前 Codex 配置哈希保持不变。记录为 `.artifacts/gui-e2e/evidence/mcp-regression-20261102.json`、`mcp-regression-20261102-gateway.json`、`mcp-regression-20261102-isolation.json`，图片在同目录的 `mcp-regression-20261102/1.png` 与 `2.png`。该测试使用隔离 QA 端点，不代表主服务图片权限已开放。
 
+## 空环境安装与完整 Codex 流程（2026-11-02）
+
+本轮从没有 Node/npm 和 Agent 的临时 HOME 开始，在 WSL 的 bubblewrap 隔离空间运行真实 Tauri GUI，通过页面按钮执行安装、连接和配置。Windows 挂载与原 Linux 用户目录不可见。
+
+| 验证 | 结果 |
+| --- | --- |
+| Apps 页实际安装 | Codex 0.166.0、Claude Code 2.1.316、Gemini CLI 0.66.0、OpenCode 1.19.5、OpenClaw 2026.10.9、Grok Build 1.0.70、Pi 1.4.0、MiniMax Code 0.7.4、Kimi Code 2.4.1、DeepSeek Harness 0.2.1-rc.5、Oh My Pi 18.15.0、Hermes 0.22.5，均安装后识别版本 |
+| 首页直接安装 | 第二个空 HOME 点击“安装 Codex”，56.95 秒安装完成，显示安装中状态并自动识别；不依赖 Node，未使用 API Key |
+| 安装修复 | Codex 改用官方独立安装器；需要 Node 的 Agent 自动安装并校验官方运行环境；Hermes 使用官方非交互选项；失败时显示错误并允许重试 |
+| 连接与默认模型 | 无效 Key 返回 401；真实测试目录共 47 个模型；Codex 默认 gpt-6.1-sol、Claude Code 默认 claude-sonnet-5-5，生图默认 gpt-image-2 |
+| 文本对话 | GUI 保存的配置交给独立 Codex，三轮通过，用时 4.26、5.77、4.18 秒 |
+| 自然语言生图 | 两轮均自动调用 Oceanway MCP，每轮一次提交两张，最大并发 2，共 4 张 1024×1024 PNG；用时 42.59、57.87 秒，已完成图片陆续返回，其他工具调用为 0 |
+| MCP 自动注册 | 配置指向应用自身 `--image-mcp-stdio`，携带应用目录，写入默认图片指令并关闭 Codex 内置 image_generation；测试未人工修改 GUI 生成的配置 |
+| 旧历史保留 | 官方、旧 API、归档三种测试会话的 ID、正文、归档位置保留，原文件备份一致；独立 Codex 默认/归档列表可见，重开 GUI 后仍可查阅原文 |
+| 主机配置 | 当前 Windows Codex 与 Claude 的 5 个配置/登录文件 SHA256 全部保持不变 |
+
+图片测试使用用户指定的临时图片 Key；QA-only 本地转发将两组测试服务接到同一流程。正式主服务 Key 的图片权限仍需服务开通后复验。安装版本检测通过不代表所有 Agent 的聊天和图片兼容性都已验收；本轮完整对话链路只测 Codex。Claude Desktop 保留官网下载入口。
+
+前端安装相关 86 项、App 集成 26 项、原生安装命令 166 项及运行环境 2 项通过；Windows PowerShell 运行环境复用与退出码检查通过。测试证据、截图和图片 SHA256 在本地 `.artifacts/isolated-e2e-204abf6/evidence/`，不包含 Key。测试环境、Agent 安装和凭据在验收后删除，清理结果随证据保存。
+
+安装包的固定下载入口在分支 README 顶部，完整 CI 通过后更新 `oceanway-preview` 测试版；发布页标明对应源码提交。
+
 ## 待验收
 
-- 新 UI 基线 990e74d 的 GitHub 构建 41395730434 已完成 Windows x64、macOS arm64 和 macOS Intel 三平台产物；下载的 Windows 包已完成七项 MCP stdio 检查。本轮后续修复尚未打包，安装程序执行、完整 Windows GUI 和另一台干净电脑接入仍需验证。
+- 204abf6 的构建 41401338172 已产出 Windows x64 和 macOS arm64 安装包，Windows 原生 MCP 七项检查通过；macOS Intel 前端测试超时。c0e61ae 的构建 41438362540 暴露 macOS 脚本执行和 Windows/WSL 命令选择问题，已修正并提交后续 CI。完整 Windows GUI、实际运行安装程序和另一台干净电脑接入仍需验证。
 - MCP/Skills 的外部服务和安装来源、提示词写入所有 Agent、系统安装/卸载、macOS 终端恢复、费用与账户实际账单未逐客户端完成真实 GUI 验收。
 - 本轮未访问真实用户会话正文，未改动当前 Codex 配置或进程；客户真实旧账号历史可见性与旧会话继续聊天尚未作为全客户端通过项。
 - 上游扫描按可解析文件返回列表；部分目录或单文件读取失败会记日志并跳过，尚未逐项在页面展示诊断。辅助子 Agent 记录按上游规则省略。

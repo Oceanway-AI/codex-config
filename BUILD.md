@@ -90,4 +90,4 @@ CI 使用 `ditto -c -k --keepParent` 将 `.app` 打包为：
 
 产物名称为 `Oceanway-Config-<platform>-<commit>`；Windows 另有 `Oceanway-Config-windows-native-<commit>` 供隔离集成测试。Actions 产物保留 14 天。
 
-[release.yml](.github/workflows/release.yml) 当前是手动复用同一构建流程。它生成 Actions 产物；正式 GitHub Release、签名更新包和更新清单尚未发布。
+[release.yml](.github/workflows/release.yml) 手动复用同一构建流程。开发分支 `codex/oceanway-config-rebuild` 三个平台全部成功后，自动更新 `oceanway-preview` 测试版 Release；README 顶部的固定下载链接指向这些安装包。Release 说明登记源码提交和构建记录，附件提供 SHA256。正式版本、签名更新包和更新清单另行发布。

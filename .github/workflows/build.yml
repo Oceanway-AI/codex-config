@@ -4,7 +4,7 @@ on:
   workflow_call:
   workflow_dispatch:
   push:
-    branches: [main, master, 'codex/**']
+    branches: [main, master, "codex/**"]
   pull_request:
 
 permissions:
@@ -116,3 +116,60 @@ jobs:
           path: apps/desktop/src-tauri/target/release/oceanway-config.exe
           if-no-files-found: error
           retention-days: 14
+
+  publish-preview:
+    name: Publish branch installers
+    needs: build
+    if: github.ref == 'refs/heads/codex/oceanway-config-rebuild' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: oceanway-preview-release
+      cancel-in-progress: false
+    steps:
+      - uses: actions/download-artifact@v6
+        with:
+          path: artifacts
+      - name: Publish verified installers
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          BUILD_SHA: ${{ github.sha }}
+          BUILD_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          current=$(gh api "repos/$GH_REPO/git/ref/heads/codex/oceanway-config-rebuild" --jq .object.sha)
+          if [[ "$current" != "$BUILD_SHA" ]]; then
+            echo 'A newer branch revision exists; its build will publish the preview.'
+            exit 0
+          fi
+          mkdir -p release
+          cp "artifacts/Oceanway-Config-windows-x64-$BUILD_SHA/"*.exe release/Oceanway-Config-Windows-x64-setup.exe
+          cp "artifacts/Oceanway-Config-macos-arm64-$BUILD_SHA/Oceanway-Config-macos-arm64.zip" release/
+          cp "artifacts/Oceanway-Config-macos-intel-$BUILD_SHA/Oceanway-Config-macos-intel.zip" release/
+          (cd release && sha256sum * > SHA256SUMS.txt)
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          Path('notes.md').write_text(f"""Oceanway Config 开发分支测试版
+
+          源码提交：`{os.environ['BUILD_SHA']}`
+          [查看构建与测试记录]({os.environ['BUILD_URL']})
+
+          - Windows：下载 `Oceanway-Config-Windows-x64-setup.exe`，双击安装。
+          - macOS：下载对应芯片的 ZIP，解压后将应用放入“应用程序”。
+          - 三个平台的前端测试、原生定向测试、安装包构建及包内 MCP 检查均通过后更新此测试版。
+
+          点击应用中的“安装”会下载对应 Agent，并自动补齐所需运行环境。此版本属于开发测试版。
+          """, encoding='utf-8')
+          PY
+          tag=oceanway-preview
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh api --method PATCH "repos/$GH_REPO/git/refs/tags/$tag" -f sha="$BUILD_SHA" -F force=true
+            gh release upload "$tag" release/* --clobber
+            gh release edit "$tag" --title 'Oceanway Config 最新测试版' --notes-file notes.md --prerelease --latest=false
+          else
+            gh release create "$tag" release/* --target "$BUILD_SHA" --title 'Oceanway Config 最新测试版' --notes-file notes.md --prerelease --latest=false
+          fi

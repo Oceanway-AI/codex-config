@@ -5039,6 +5039,7 @@ fn installer_with_npm_fallback(installer: &str, tool: &str) -> String {
 
 fn posix_install_command_for(tool: &str) -> String {
     match tool {
+        "codex" => CODEX_FRESH_INSTALL_UNIX.to_string(),
         "claude" => installer_with_npm_fallback(CLAUDE_INSTALL_UNIX, tool),
         // Grok 的 npm fallback **会切换用户的分发模式**（该包 postinstall 把
         // `~/.grok/config.toml` 的 `[cli] installer` 写成 `npm`，此后 `grok update` 一律走

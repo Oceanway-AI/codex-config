@@ -4,10 +4,10 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 # Produce the same verified installation packages as branch CI.
-# Publishing and signed updates will be added with the Oceanway release channel.
+# The development branch also updates the downloadable preview release.
 jobs:
   package:
     uses: ./.github/workflows/build.yml
