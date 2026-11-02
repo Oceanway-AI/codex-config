@@ -234,8 +234,73 @@ fn request(count: usize) -> ImageTestRequest {
         prompts: Vec::new(),
         count,
         reference_paths: Vec::new(),
+        reference_urls: Vec::new(),
         size: "1024x1024".into(),
     }
+}
+
+#[test]
+fn async_receipts_resume_after_restart_without_a_second_generation() {
+    let _serial=WORKER_TEST.lock().unwrap();
+    let home=TempHome::new();
+    let mock=Mock::new(|_,request| {
+        assert_eq!(request.headers["authorization"],format!("Bearer {LOCAL_FIXTURE_KEY}"));
+        match (request.method.as_str(),request.path.as_str()) {
+            ("POST","/v1/images/generations")=>{
+                let body:Value=serde_json::from_slice(&request.body).unwrap();
+                assert_eq!(body["async"],true);
+                assert_eq!(body["n"],1);
+                Reply{status:202,headers:vec![],body:serde_json::to_vec(&json!({"task_id":"async-task-1","status":"queued"})).unwrap()}
+            }
+            ("GET","/v1/images/async-task-1")=>Reply::json(json!({"status":"completed",
+                "outputs":[{"index":0,"sha256":hash(&png(320,160))}],"data":[{"index":0}]})),
+            ("GET","/v1/images/async-task-1/outputs/0/content")=>Reply{status:200,headers:vec![],body:png(320,160)},
+            _=>panic!("unexpected request {} {}",request.method,request.path),
+        }
+    });
+    save_local_fixture_provider(&home.0,&mock.base,LOCAL_FIXTURE_KEY);
+    let service=ImageJobs::new(&home.0).unwrap();
+    let job=service.start(request(1),None,false).unwrap();
+    wait_until(||lock(&service.shared).unwrap().jobs[&job.id].items.get(&1).is_some_and(|i|i.status=="remote_pending"));
+    assert_eq!(mock.count(),1);
+    assert!(service.retry(&job.id).is_err());
+    let manifest=fs::read_to_string(Path::new(&job.output_directory).join("manifest.json")).unwrap();
+    assert!(manifest.contains("async-task-1"));
+    assert!(!manifest.contains(LOCAL_FIXTURE_KEY));
+    service.cancel_all();
+    drop(service);
+    // Emulate a crash after output fsync but before the manifest completion write.
+    wait_until(||try_job_ownership(&home.0,&job.id).unwrap().is_some());
+    fs::write(Path::new(&job.output_directory).join("1.png"),png(320,160)).unwrap();
+    let recovered=ImageJobs::new(&home.0).unwrap();
+    wait_until(||recovered.status(&job.id).unwrap().completed==1);
+    let completed=recovered.status(&job.id).unwrap();
+    assert_eq!(completed.status,"completed");
+    assert_eq!(completed.items[0].outputs.len(),1);
+    assert_eq!(mock.requests.lock().unwrap().iter().filter(|r|r.method=="POST").count(),1);
+    assert_eq!(mock.requests.lock().unwrap().iter().filter(|r|r.path.ends_with("/content")).count(),1);
+    assert!(recovered.retry(&job.id).is_err());
+}
+
+#[test]
+fn async_pending_task_retains_original_key_and_blocks_resubmission() {
+    let _serial=WORKER_TEST.lock().unwrap();
+    let home=TempHome::new();
+    let mock=Mock::new(|_,request| {
+        if request.method=="POST" {return Reply::json(json!({"id":"async-key-bound","status":"queued"}));}
+        panic!("changed credentials must never be sent for an existing task");
+    });
+    save_local_fixture_provider(&home.0,&mock.base,LOCAL_FIXTURE_KEY);
+    let service=ImageJobs::new(&home.0).unwrap();
+    let job=service.start(request(1),None,false).unwrap();
+    wait_until(||lock(&service.shared).unwrap().jobs[&job.id].items.get(&1).is_some_and(|i|i.status=="remote_pending"));
+    save_local_fixture_provider(&home.0,&mock.base,"changed-key");
+    service.status(&job.id).unwrap();
+    wait_until(||!lock(&service.shared).unwrap().jobs[&job.id].remote_polling);
+    let status=service.status(&job.id).unwrap();
+    assert_eq!(status.items[0].status,"remote_pending");
+    assert!(status.items[0].error.as_ref().unwrap().contains("Query this original job"));
+    assert_eq!(mock.count(),1);
 }
 
 fn input(home: &TempHome, mock: &Mock, count: usize) -> (String, Input) {

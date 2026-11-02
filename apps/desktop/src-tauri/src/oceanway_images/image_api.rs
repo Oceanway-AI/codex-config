@@ -23,6 +23,11 @@ use std::sync::{mpsc, Arc, Condvar, Mutex, MutexGuard, OnceLock, Weak};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+#[path = "async_images.rs"]
+mod async_images;
+#[path = "image_protocol.rs"]
+mod image_protocol;
+
 const IMAGE_BYTES: usize = 50 * 1024 * 1024;
 const REFERENCE_BYTES: usize = 256 * 1024 * 1024;
 const JSON_BYTES: usize = 72 * 1024 * 1024;
@@ -71,6 +76,8 @@ pub struct ImageTestRequest {
     pub count: usize,
     #[serde(default)]
     pub reference_paths: Vec<String>,
+    #[serde(default)]
+    pub reference_urls: Vec<String>,
     #[serde(default = "default_size")]
     pub size: String,
 }
@@ -126,6 +133,8 @@ pub struct ImageItem {
     pub retry_blocked: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub post_started: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_task: Option<async_images::RemoteTask>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -157,6 +166,7 @@ impl ImageItem {
             count_mismatch: false,
             retry_blocked: false,
             post_started: false,
+            remote_task: None,
         }
     }
 }
@@ -236,6 +246,8 @@ struct StoredJob {
     // The kernel lock lives as long as this registry entry, including while
     // cancellation drains admitted requests. It is never cloned or serialized.
     ownership: Mutex<Option<File>>,
+    remote_polling: bool,
+    remote_poll_after: Option<Instant>,
 }
 
 impl StoredJob {
@@ -272,6 +284,8 @@ impl StoredJob {
             revision: 0,
             submission_guard: no_submission_guard(),
             ownership: Mutex::new(None),
+            remote_polling: false,
+            remote_poll_after: None,
         }
     }
 
@@ -293,7 +307,8 @@ impl StoredJob {
     }
 
     fn running(&self) -> bool {
-        self.active > 0 || (!self.stopped && !self.paused && !self.recovered && self.next.is_some())
+        self.active > 0 || self.items.values().any(|item| item.status == "remote_pending")
+            || (!self.stopped && !self.paused && !self.recovered && self.next.is_some())
     }
 
     fn claim(&mut self) -> Option<usize> {
@@ -320,6 +335,7 @@ impl StoredJob {
                 .saturating_sub(self.completed)
                 .saturating_sub(self.failed)
                 .saturating_sub(self.active)
+                .saturating_sub(self.items.values().filter(|item|item.status=="remote_pending").count())
         } else {
             0
         };
@@ -387,7 +403,7 @@ impl StoredJob {
             id: self.id.clone(),
             status: status.into(),
             model: self.input.request.model.clone(),
-            mode: if self.input.request.reference_paths.is_empty() { "generate" } else { "edit" }.into(),
+            mode: if self.input.request.reference_paths.is_empty() && self.input.request.reference_urls.is_empty() { "generate" } else { "edit" }.into(),
             total,
             completed: self.completed,
             failed: self.failed,
@@ -409,7 +425,7 @@ impl StoredJob {
                 "{BILLING_NOTICE} Items include attempted indices and at most two queue previews; \
                  other indices are {}. manifest.json is the durable progress record unless a \
                  persistenceError is reported. Restarting never automatically resumes POSTs. \
-                 Paused/recovered jobs require explicit retry; status only renews the 120s lease.{}{}",
+                 Status retrieves accepted remote tasks without another POST. Unsent paused slots require explicit retry.{}{}",
                 if self.stopped { "cancelled" } else if self.paused || self.recovered { "paused" } else { "queued" },
                 self.persistence_error.as_ref().map(|error| format!(" {error}")).unwrap_or_default(),
                 response_warning
@@ -536,6 +552,8 @@ struct JobManifest {
     prompts: Vec<String>,
     model: String,
     reference_paths: Vec<String>,
+    #[serde(default)]
+    reference_urls: Vec<String>,
     size: String,
     count: usize,
     output_directory: String,
@@ -588,6 +606,7 @@ fn persist_manifest(job: &StoredJob) -> Result<(), String> {
         prompts: job.input.request.prompts.clone(),
         model: job.input.request.model.clone(),
         reference_paths: job.input.request.reference_paths.clone(),
+        reference_urls: job.input.request.reference_urls.clone(),
         size: job.input.request.size.clone(),
         count: job.input.request.count,
         output_directory: job.input.directory.to_string_lossy().into_owned(),
@@ -843,9 +862,7 @@ fn worker(pool: Arc<WorkerPool>) {
         };
         let started = Instant::now();
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            execute_with_guard(&input, index, started, || {
-                authorize_post(&shared, &id, index, &input)
-            })
+            async_images::submit_item(&shared, &id, &input, index, started)
         }))
         .unwrap_or_else(|_| Err(Failure::new("Image worker failed; billing may be unknown.")));
         let elapsed = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
@@ -888,10 +905,13 @@ fn finish_item(
             item.sha256 = Some(result.outputs[0].sha256.clone());
             item.outputs = result.outputs;
             item.count_mismatch = result.count_mismatch;
+            item.error = None;
             job.completed += 1;
         }
         Err(failure) => {
-            item.status = if failure.not_sent {
+            item.status = if failure.remote_pending {
+                "remote_pending"
+            } else if failure.not_sent {
                 if job.paused {
                     "paused"
                 } else {
@@ -904,7 +924,7 @@ fn finish_item(
             item.error = Some(failure.message);
             item.request_id = failure.request_id;
             item.count_mismatch = failure.count_mismatch;
-            if !failure.not_sent {
+            if !failure.not_sent && !failure.remote_pending {
                 job.failed += 1;
             }
         }
@@ -1249,6 +1269,7 @@ impl ImageJobs {
 
     pub fn status(&self, id: &str) -> Result<ImageJob, String> {
         self.home()?;
+        async_images::schedule_refresh(&self.shared, id)?;
         let mut registry = lock(&self.shared)?;
         let job = find_job_mut(&mut registry, id)?;
         let expired = job.expire_lease();
@@ -1406,7 +1427,7 @@ impl ImageJobs {
 
     pub fn has_active_requests(&self) -> bool {
         lock(&self.shared)
-            .map(|registry| registry.jobs.values().any(|job| job.active > 0))
+            .map(|registry| registry.jobs.values().any(|job| job.active > 0 || job.remote_polling))
             .unwrap_or(true)
     }
 }
@@ -1451,10 +1472,16 @@ fn ensure_inputs_do_not_contain_key(request: &ImageTestRequest, key: &str) -> Re
         .chain(request.reference_paths.iter().map(String::as_str)),
         key,
     )?;
-    ensure_no_credential_in_values(request.prompts.iter().map(String::as_str), key)
+    ensure_no_credential_in_values(request.prompts.iter().chain(&request.reference_urls).map(String::as_str), key)
 }
 
 fn validate_request(mut request: ImageTestRequest) -> Result<ImageTestRequest, String> {
+    if request.reference_urls.len() > 16 {
+        return Err("At most 16 image reference URLs are supported.".into());
+    }
+    for reference in &request.reference_urls {
+        download_url(reference).map_err(|_| "Image references require real public HTTPS URLs.".to_string())?;
+    }
     if !request.model.trim().is_empty() {
         request.model = validate_model(&request.model)?;
     }
@@ -1867,6 +1894,7 @@ struct Failure {
     stop_job: bool,
     not_sent: bool,
     count_mismatch: bool,
+    remote_pending: bool,
 }
 
 impl Failure {
@@ -1877,6 +1905,7 @@ impl Failure {
             stop_job: false,
             not_sent: false,
             count_mismatch: false,
+            remote_pending: false,
         }
     }
 
@@ -1942,7 +1971,7 @@ fn status_failure(status: reqwest::StatusCode) -> Failure {
         401 => "Authentication rejected; check the saved OceanWay API key",
         403 => "Access denied; check model and account permissions",
         404 => "Image endpoint or model was not found",
-        413 => "Provider rejected the image payload size",
+        413 => "Provider rejected the request; check account storage quota and request limits",
         429 => "Provider rate limit or quota was reached",
         400 | 422 => "Provider rejected the model, prompt, references, or size",
         300..=399 => "Redirect refused; credentials were not forwarded",
@@ -1959,6 +1988,7 @@ fn safe_request_id(response: &Response, key: &str) -> Option<String> {
     let id = response
         .headers()
         .get("x-request-id")
+        .or_else(|| response.headers().get("x-oneapi-request-id"))
         .or_else(|| response.headers().get("request-id"))?
         .to_str()
         .ok()?;
@@ -1980,14 +2010,26 @@ fn json_response(
     limit: usize,
 ) -> Result<(Value, Option<String>), Failure> {
     let request_id = safe_request_id(&response, key);
+    let task_id = response.headers().get("x-task-id").and_then(|v|v.to_str().ok())
+        .filter(|v|async_images::valid_id(v) && (key.is_empty() || !v.contains(key))).map(str::to_owned);
     let result = (|| {
         if !response.status().is_success() {
-            // Never reflect provider error bodies, signed URLs, or raw reqwest errors.
-            return Err(status_failure(response.status()));
+            let mut failure = status_failure(response.status());
+            if let Ok(bytes) = bounded_read(response, 16 * 1024) {
+                if let Ok(body) = serde_json::from_slice::<Value>(&bytes) {
+                    if let Some(code) = async_images::safe_error_code(&body, key) {
+                        failure.message.push_str(&format!(" Code: {code}."));
+                    }
+                }
+            }
+            return Err(failure);
         }
         let bytes = bounded_read(response, limit)?;
-        let body = serde_json::from_slice(&bytes)
+        let mut body: Value = serde_json::from_slice(&bytes)
             .map_err(|_| Failure::new("Image endpoint returned invalid JSON."))?;
+        if let Some(id) = task_id {
+            if body.is_object() && body.get("task_id").is_none() { body["task_id"] = json!(id); }
+        }
         Ok(body)
     })();
     result
@@ -2023,6 +2065,7 @@ fn provider_guard_result(result: Result<(), String>) -> Result<(), Failure> {
         stop_job: true,
         not_sent: false,
         count_mismatch: false,
+        remote_pending: false,
     })
 }
 
@@ -2054,6 +2097,9 @@ fn post_image_at_with_guard(
             .ok_or_else(|| Failure::not_sent("Missing prompt for the requested image slot."))?
     };
     let editing = !input.references.is_empty();
+    if editing && Url::parse(&input.provider.api_base).ok().and_then(|url| url.host_str().map(str::to_owned)).as_deref() == Some("console.oceanway.tech") {
+        return Err(Failure::not_sent("Local reference upload is pending platform support. Supply the original image's HTTPS URL in reference_urls."));
+    }
     let endpoint = format!(
         "{}/images/{}",
         input.provider.api_base,
@@ -2080,7 +2126,10 @@ fn post_image_at_with_guard(
         }
         builder.multipart(form)
     } else {
-        let mut body = json!({ "model": request.model, "prompt": prompt, "n": 1 });
+        let mut body = json!({ "model": request.model, "prompt": prompt, "n": 1, "async": true, "response_format": "url", "output_format": "png" });
+        if !request.reference_urls.is_empty() {
+            body["reference_images"] = json!(request.reference_urls);
+        }
         if !request.size.is_empty() {
             body["size"] = Value::String(request.size.clone());
         }

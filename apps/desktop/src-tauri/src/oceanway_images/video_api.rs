@@ -70,11 +70,21 @@ fn client() -> Result<Client, String> {
         .build().map_err(|_| "Could not initialize the Oceanway video connection.".into())
 }
 
-fn json_response(response: Response) -> Result<Value, String> {
+fn json_response(response: Response, key: &str) -> Result<Value, String> {
     let status = response.status();
+    let request_id = response.headers().get("x-oneapi-request-id").or_else(||response.headers().get("x-request-id"))
+        .and_then(|v|v.to_str().ok()).filter(|v|valid_id(v) && (key.is_empty() || !v.contains(key)))
+        .map(|v|format!(" Request ID: {v}.")).unwrap_or_default();
     if !status.is_success() {
-        // Do not relay a gateway body which can contain credentials or signed URLs.
-        return Err(format!("Oceanway video API returned HTTP {}. Check the model, parameters and account status.", status.as_u16()));
+        // Preserve a bounded code and request ID without copying raw upstream bodies.
+        let mut bytes=Vec::new();
+        let _=response.take(16*1024).read_to_end(&mut bytes);
+        let body:Value=serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+        let code=body.pointer("/error/code").or_else(||body.get("code")).and_then(Value::as_str)
+            .filter(|v|v.len()<=96 && (key.is_empty() || !v.contains(key))
+                && v.bytes().all(|c|c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c,b'_'|b'-')))
+            .map(|v|format!(" Code: {v}.")).unwrap_or_default();
+        return Err(format!("Oceanway video API returned HTTP {}.{code}{request_id} Check the model, parameters and account resources.", status.as_u16()));
     }
     let mut data = Vec::new();
     response.take(JSON_LIMIT + 1).read_to_end(&mut data)
@@ -88,11 +98,11 @@ pub fn is_video_model(id: &str) -> bool { id.to_ascii_lowercase().starts_with("s
 fn catalog(base: &str, key: &str) -> Result<Vec<Value>, String> {
     let client = client()?;
     let available = json_response(client.get(format!("{base}/models")).bearer_auth(key)
-        .send().map_err(|_| "Could not load the models available to this Key.")?)?;
+        .send().map_err(|_| "Could not load the models available to this Key.")?,key)?;
     let mut origin = reqwest::Url::parse(base).map_err(|_| "Invalid Oceanway endpoint.")?;
     origin.set_path("/api/platform/v1/public/offering");
     let offering = json_response(client.get(origin).send()
-        .map_err(|_| "Could not load Oceanway video capabilities.")?)?;
+        .map_err(|_| "Could not load Oceanway video capabilities.")?,key)?;
     let ids = available["data"].as_array().ok_or("Invalid Oceanway model list.")?;
     let models = offering.pointer("/data/models").and_then(Value::as_array)
         .ok_or("Invalid Oceanway public capabilities.")?;
@@ -277,7 +287,7 @@ impl Submission {
             let response = client()?.post(format!("{}/videos",provider.api_base)).bearer_auth(&provider.api_key)
                 .json(&body).send().map_err(|_| "Video submission result is unknown. Do not resubmit automatically; check the account task history.")?;
             if response.status().is_client_error() { self.stored.job.status = "failed".into(); }
-            let value = json_response(response)?;
+            let value = json_response(response,&provider.api_key)?;
             let id = value["id"].as_str().or_else(||value["task_id"].as_str()).filter(|s|valid_id(s))
                 .ok_or("Video submission returned no valid task ID. Do not resubmit automatically.")?;
             self.stored.job.task_id = Some(id.into());
@@ -325,7 +335,7 @@ pub fn refresh(home: &Path, id: &str) -> Result<(), String> {
         let provider = provider::read_record(home)?;
         if stored.credential != format!("{:x}",Sha256::digest(provider.api_key.as_bytes())) { return Err("Restore the original Oceanway Key to query this video job.".into()); }
         let value = json_response(client()?.get(format!("{}/videos/{task}",provider.api_base)).bearer_auth(&provider.api_key)
-            .send().map_err(|_| "Could not query the video task. Call get_video_job again; no generation request will be repeated.")?)?;
+            .send().map_err(|_| "Could not query the video task. Call get_video_job again; no generation request will be repeated.")?,&provider.api_key)?;
         stored.job.status = remote_status(&value)?.into();
         stored.job.progress = value["progress"].as_f64();
         stored.job.error = None;

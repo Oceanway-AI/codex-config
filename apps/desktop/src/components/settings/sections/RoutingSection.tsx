@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import { OCEANWAY_EDITION } from "@/config/edition";
+import { isOceanwayApp } from "@/config/appConfig";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import { useQueries } from "@tanstack/react-query";
@@ -121,7 +123,7 @@ export function RoutingSection({ onOpenApp }: RoutingSectionProps) {
   }, [savedClientHost]);
 
   const modeQueries = useQueries({
-    queries: MODE_APP_IDS.map((app) => ({
+    queries: MODE_APP_IDS.filter((app) => !OCEANWAY_EDITION || isOceanwayApp(app)).map((app) => ({
       queryKey: ["providers", app, "mode"],
       queryFn: () => proxyApi.getAppMode(app),
     })),
@@ -134,7 +136,7 @@ export function RoutingSection({ onOpenApp }: RoutingSectionProps) {
     "claude-desktop": useProvidersQuery("claude-desktop").data,
   };
 
-  const usingApps = MODE_APP_IDS.flatMap((app, index) => {
+  const usingApps = MODE_APP_IDS.filter((app) => !OCEANWAY_EDITION || isOceanwayApp(app)).flatMap((app, index) => {
     const view = modeQueries[index]?.data;
     if (!view || view.mode === "direct") return [];
     const routeName =
@@ -435,7 +437,7 @@ export function RoutingSection({ onOpenApp }: RoutingSectionProps) {
             aria-label={t("settings.advanced.failover.title")}
             value={failoverApp}
             onValueChange={setFailoverApp}
-            items={PROXY_APP_IDS.map((app) => ({
+            items={PROXY_APP_IDS.filter((app) => !OCEANWAY_EDITION || isOceanwayApp(app)).map((app) => ({
               value: app,
               label: APP_DISPLAY_NAME[app],
             }))}

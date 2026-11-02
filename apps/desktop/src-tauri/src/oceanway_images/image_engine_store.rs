@@ -313,6 +313,7 @@ fn recover_owned_job(home: &Path, id: String, entry: Value) -> Result<Option<Sto
         prompts: manifest.prompts,
         count: manifest.count,
         reference_paths: manifest.reference_paths,
+        reference_urls: manifest.reference_urls,
         size: manifest.size,
     })?;
     validate_model(&request.model)?;
@@ -351,12 +352,19 @@ fn recover_owned_job(home: &Path, id: String, entry: Value) -> Result<Option<Sto
                     | "succeeded"
                     | "uncertain"
                     | "integrity_failed"
+                    | "remote_pending"
             )
         {
             return Err("Invalid image slot in referenced manifest; no jobs were resumed.".into());
         }
         item.preview_data_url = None;
-        if item.status == "running" {
+        if let Some(task) = &item.remote_task {
+            async_images::validate_receipt(task)?;
+            item.retry_blocked = true;
+        }
+        if item.status == "running" && item.remote_task.is_some() {
+            item.status = "remote_pending".into();
+        } else if item.status == "running" {
             item.status = "uncertain".into();
             item.error = Some(
                 "Process ended before this request's outcome was recorded. It may have \

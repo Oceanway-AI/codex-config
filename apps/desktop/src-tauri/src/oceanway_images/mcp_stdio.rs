@@ -72,6 +72,9 @@ struct GenerateArgs {
     /// Preserve order and duplicate roles. Never substitute descriptions for unavailable files.
     #[serde(default)]
     reference_paths: Vec<String>,
+    /// Ordered real HTTPS URLs of reference images. Local uploads depend on the model's published protocol.
+    #[serde(default)]
+    reference_urls: Vec<String>,
 }
 
 impl GenerateArgs {
@@ -400,6 +403,7 @@ impl ImageMcp {
                 count: args.count,
                 size: args.size,
                 reference_paths: args.reference_paths,
+                reference_urls: args.reference_urls,
             };
             jobs.start_guarded(request, Some(&workspace), true, cancelled)
         })
@@ -838,6 +842,7 @@ mod tests {
             message: String::new(),
             output_directory: "output/images/test-job".into(),
             reference_paths: vec![],
+            reference_urls: vec![],
             reference_hashes: vec![],
             warnings: vec![],
             count_mismatch: false,

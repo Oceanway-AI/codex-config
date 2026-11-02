@@ -1,4 +1,5 @@
 import { OCEANWAY_EDITION } from "@/config/edition";
+import { isOceanwayApp } from "@/config/appConfig";
 import { useTranslation } from "react-i18next";
 import { Loader2 } from "lucide-react";
 import type {
@@ -142,7 +143,7 @@ export function AppConfigSection({
 
   return (
     <>
-      {DIRECTORY_APPS.map((app) => (
+      {DIRECTORY_APPS.filter((app) => !OCEANWAY_EDITION || isOceanwayApp(app)).map((app) => (
         <SettingsBlock
           key={app}
           id={`app-config-${app}`}

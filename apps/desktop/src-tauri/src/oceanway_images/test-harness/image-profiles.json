@@ -1,0 +1,3159 @@
+{
+  "source": "https://console.oceanway.tech/api/platform/v1/public/offering",
+  "captured": "2026-11-03",
+  "models": {
+    "gemini-3-pro-image-preview": {
+      "max_reference_items": 14,
+      "default_variant": "3c2ba6f53aff7cdf163003949e92f86642d57b38f83bcacb9df720fdfb4f179f",
+      "contract_version": "media-generation.v1",
+      "revision": "a4750fdd803387392a14c38a6be3e9234f9d1fba739f81ba60c221365fa1ea57",
+      "variants": [
+        {
+          "protocol": "gemini",
+          "operation": "generate",
+          "method": "POST",
+          "path": "/v1beta/models/{model}:generateContent",
+          "id": "3c2ba6f53aff7cdf163003949e92f86642d57b38f83bcacb9df720fdfb4f179f",
+          "defaults": {
+            "aspect_ratio": "1:1",
+            "async": true,
+            "image_size": "1K",
+            "images": 1,
+            "response_modalities": [
+              "TEXT",
+              "IMAGE"
+            ]
+          },
+          "specifications_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "aspect_ratio": {
+                "default": "1:1",
+                "enum": [
+                  "1:1",
+                  "2:3",
+                  "3:2",
+                  "3:4",
+                  "4:3",
+                  "4:5",
+                  "5:4",
+                  "9:16",
+                  "16:9",
+                  "21:9",
+                  "9:21",
+                  "1:2",
+                  "2:1",
+                  "5:2",
+                  "2:5",
+                  "1:4",
+                  "4:1",
+                  "1:8",
+                  "8:1",
+                  "9:19.5",
+                  "19.5:9",
+                  "9:20",
+                  "20:9"
+                ],
+                "type": "string"
+              },
+              "async": {
+                "const": true,
+                "default": true,
+                "type": "boolean"
+              },
+              "image_size": {
+                "default": "1K",
+                "enum": [
+                  "1K",
+                  "2K",
+                  "4K"
+                ],
+                "type": "string"
+              },
+              "images": {
+                "const": 1,
+                "default": 1,
+                "type": "integer"
+              },
+              "response_modalities": {
+                "const": [
+                  "TEXT",
+                  "IMAGE"
+                ],
+                "default": [
+                  "TEXT",
+                  "IMAGE"
+                ],
+                "type": "array"
+              },
+              "safety_settings": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "category": {
+                      "type": "string"
+                    },
+                    "threshold": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "category",
+                    "threshold"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "system_instruction": {
+                "type": "object"
+              }
+            },
+            "required": [
+              "async"
+            ],
+            "type": "object"
+          },
+          "parameter_bindings": {
+            "aspect_ratio": "generationConfig.imageConfig.aspectRatio",
+            "async": "async",
+            "image_size": "generationConfig.imageConfig.imageSize",
+            "images": "generationConfig.candidateCount",
+            "response_modalities": "generationConfig.responseModalities",
+            "safety_settings": "safetySettings",
+            "system_instruction": "systemInstruction"
+          },
+          "max_reference_items": 14,
+          "native_reference_inputs": [
+            {
+              "protocol": "gemini",
+              "operation": "generate",
+              "field": "contents.parts.fileData",
+              "transport": "url-array",
+              "roles": [
+                "reference_image"
+              ],
+              "max_items": 14
+            },
+            {
+              "protocol": "gemini",
+              "operation": "generate",
+              "field": "contents.parts.inlineData",
+              "transport": "inline-data-array",
+              "roles": [
+                "reference_image"
+              ],
+              "max_items": 14,
+              "max_item_bytes": 4194304,
+              "max_total_bytes": 8388608,
+              "mime_types": [
+                "image/png",
+                "image/jpeg",
+                "image/webp"
+              ]
+            }
+          ]
+        }
+      ],
+      "parameter_bindings": {
+        "aspect_ratio": "generationConfig.imageConfig.aspectRatio",
+        "async": "async",
+        "image_size": "generationConfig.imageConfig.imageSize",
+        "images": "generationConfig.candidateCount",
+        "response_modalities": "generationConfig.responseModalities",
+        "safety_settings": "safetySettings",
+        "system_instruction": "systemInstruction"
+      },
+      "size_presets": [
+        {
+          "resolution": "1K",
+          "aspect_ratio": "1:1",
+          "parameters": {
+            "aspect_ratio": "1:1",
+            "image_size": "1K"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "2:3",
+          "parameters": {
+            "aspect_ratio": "2:3",
+            "image_size": "1K"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "3:2",
+          "parameters": {
+            "aspect_ratio": "3:2",
+            "image_size": "1K"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "3:4",
+          "parameters": {
+            "aspect_ratio": "3:4",
+            "image_size": "1K"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "4:3",
+          "parameters": {
+            "aspect_ratio": "4:3",
+            "image_size": "1K"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "4:5",
+          "parameters": {
+            "aspect_ratio": "4:5",
+            "image_size": "1K"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "5:4",
+          "parameters": {
+            "aspect_ratio": "5:4",
+            "image_size": "1K"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "9:16",
+          "parameters": {
+            "aspect_ratio": "9:16",
+            "image_size": "1K"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "16:9",
+          "parameters": {
+            "aspect_ratio": "16:9",
+            "image_size": "1K"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "21:9",
+          "parameters": {
+            "aspect_ratio": "21:9",
+            "image_size": "1K"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "9:21",
+          "parameters": {
+            "aspect_ratio": "9:21",
+            "image_size": "1K"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "1:2",
+          "parameters": {
+            "aspect_ratio": "1:2",
+            "image_size": "1K"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "2:1",
+          "parameters": {
+            "aspect_ratio": "2:1",
+            "image_size": "1K"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "5:2",
+          "parameters": {
+            "aspect_ratio": "5:2",
+            "image_size": "1K"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "2:5",
+          "parameters": {
+            "aspect_ratio": "2:5",
+            "image_size": "1K"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "1:4",
+          "parameters": {
+            "aspect_ratio": "1:4",
+            "image_size": "1K"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "4:1",
+          "parameters": {
+            "aspect_ratio": "4:1",
+            "image_size": "1K"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "1:8",
+          "parameters": {
+            "aspect_ratio": "1:8",
+            "image_size": "1K"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "8:1",
+          "parameters": {
+            "aspect_ratio": "8:1",
+            "image_size": "1K"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "9:19.5",
+          "parameters": {
+            "aspect_ratio": "9:19.5",
+            "image_size": "1K"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "19.5:9",
+          "parameters": {
+            "aspect_ratio": "19.5:9",
+            "image_size": "1K"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "9:20",
+          "parameters": {
+            "aspect_ratio": "9:20",
+            "image_size": "1K"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "20:9",
+          "parameters": {
+            "aspect_ratio": "20:9",
+            "image_size": "1K"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "1:1",
+          "parameters": {
+            "aspect_ratio": "1:1",
+            "image_size": "2K"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "2:3",
+          "parameters": {
+            "aspect_ratio": "2:3",
+            "image_size": "2K"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "3:2",
+          "parameters": {
+            "aspect_ratio": "3:2",
+            "image_size": "2K"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "3:4",
+          "parameters": {
+            "aspect_ratio": "3:4",
+            "image_size": "2K"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "4:3",
+          "parameters": {
+            "aspect_ratio": "4:3",
+            "image_size": "2K"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "4:5",
+          "parameters": {
+            "aspect_ratio": "4:5",
+            "image_size": "2K"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "5:4",
+          "parameters": {
+            "aspect_ratio": "5:4",
+            "image_size": "2K"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "9:16",
+          "parameters": {
+            "aspect_ratio": "9:16",
+            "image_size": "2K"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "16:9",
+          "parameters": {
+            "aspect_ratio": "16:9",
+            "image_size": "2K"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "21:9",
+          "parameters": {
+            "aspect_ratio": "21:9",
+            "image_size": "2K"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "9:21",
+          "parameters": {
+            "aspect_ratio": "9:21",
+            "image_size": "2K"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "1:2",
+          "parameters": {
+            "aspect_ratio": "1:2",
+            "image_size": "2K"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "2:1",
+          "parameters": {
+            "aspect_ratio": "2:1",
+            "image_size": "2K"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "5:2",
+          "parameters": {
+            "aspect_ratio": "5:2",
+            "image_size": "2K"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "2:5",
+          "parameters": {
+            "aspect_ratio": "2:5",
+            "image_size": "2K"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "1:4",
+          "parameters": {
+            "aspect_ratio": "1:4",
+            "image_size": "2K"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "4:1",
+          "parameters": {
+            "aspect_ratio": "4:1",
+            "image_size": "2K"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "1:8",
+          "parameters": {
+            "aspect_ratio": "1:8",
+            "image_size": "2K"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "8:1",
+          "parameters": {
+            "aspect_ratio": "8:1",
+            "image_size": "2K"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "9:19.5",
+          "parameters": {
+            "aspect_ratio": "9:19.5",
+            "image_size": "2K"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "19.5:9",
+          "parameters": {
+            "aspect_ratio": "19.5:9",
+            "image_size": "2K"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "9:20",
+          "parameters": {
+            "aspect_ratio": "9:20",
+            "image_size": "2K"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "20:9",
+          "parameters": {
+            "aspect_ratio": "20:9",
+            "image_size": "2K"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "1:1",
+          "parameters": {
+            "aspect_ratio": "1:1",
+            "image_size": "4K"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "2:3",
+          "parameters": {
+            "aspect_ratio": "2:3",
+            "image_size": "4K"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "3:2",
+          "parameters": {
+            "aspect_ratio": "3:2",
+            "image_size": "4K"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "3:4",
+          "parameters": {
+            "aspect_ratio": "3:4",
+            "image_size": "4K"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "4:3",
+          "parameters": {
+            "aspect_ratio": "4:3",
+            "image_size": "4K"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "4:5",
+          "parameters": {
+            "aspect_ratio": "4:5",
+            "image_size": "4K"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "5:4",
+          "parameters": {
+            "aspect_ratio": "5:4",
+            "image_size": "4K"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "9:16",
+          "parameters": {
+            "aspect_ratio": "9:16",
+            "image_size": "4K"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "16:9",
+          "parameters": {
+            "aspect_ratio": "16:9",
+            "image_size": "4K"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "21:9",
+          "parameters": {
+            "aspect_ratio": "21:9",
+            "image_size": "4K"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "9:21",
+          "parameters": {
+            "aspect_ratio": "9:21",
+            "image_size": "4K"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "1:2",
+          "parameters": {
+            "aspect_ratio": "1:2",
+            "image_size": "4K"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "2:1",
+          "parameters": {
+            "aspect_ratio": "2:1",
+            "image_size": "4K"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "5:2",
+          "parameters": {
+            "aspect_ratio": "5:2",
+            "image_size": "4K"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "2:5",
+          "parameters": {
+            "aspect_ratio": "2:5",
+            "image_size": "4K"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "1:4",
+          "parameters": {
+            "aspect_ratio": "1:4",
+            "image_size": "4K"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "4:1",
+          "parameters": {
+            "aspect_ratio": "4:1",
+            "image_size": "4K"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "1:8",
+          "parameters": {
+            "aspect_ratio": "1:8",
+            "image_size": "4K"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "8:1",
+          "parameters": {
+            "aspect_ratio": "8:1",
+            "image_size": "4K"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "9:19.5",
+          "parameters": {
+            "aspect_ratio": "9:19.5",
+            "image_size": "4K"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "19.5:9",
+          "parameters": {
+            "aspect_ratio": "19.5:9",
+            "image_size": "4K"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "9:20",
+          "parameters": {
+            "aspect_ratio": "9:20",
+            "image_size": "4K"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "20:9",
+          "parameters": {
+            "aspect_ratio": "20:9",
+            "image_size": "4K"
+          }
+        }
+      ],
+      "native_reference_inputs": [
+        {
+          "protocol": "gemini",
+          "operation": "generate",
+          "field": "contents.parts.fileData",
+          "transport": "url-array",
+          "roles": [
+            "reference_image"
+          ],
+          "max_items": 14
+        },
+        {
+          "protocol": "gemini",
+          "operation": "generate",
+          "field": "contents.parts.inlineData",
+          "transport": "inline-data-array",
+          "roles": [
+            "reference_image"
+          ],
+          "max_items": 14,
+          "max_item_bytes": 4194304,
+          "max_total_bytes": 8388608,
+          "mime_types": [
+            "image/png",
+            "image/jpeg",
+            "image/webp"
+          ]
+        }
+      ],
+      "native_endpoints": [
+        {
+          "protocol": "gemini",
+          "operation": "generate",
+          "method": "POST",
+          "path": "/v1beta/models/{model}:generateContent"
+        }
+      ],
+      "mode": "image-openai",
+      "output_contracts": [
+        "oceanway.assets.v1"
+      ],
+      "defaults": {
+        "aspect_ratio": "1:1",
+        "async": true,
+        "image_size": "1K",
+        "images": 1,
+        "response_modalities": [
+          "TEXT",
+          "IMAGE"
+        ]
+      },
+      "input_modes": [
+        "text_to_image",
+        "image_to_image"
+      ],
+      "specifications_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "aspect_ratio": {
+            "default": "1:1",
+            "enum": [
+              "1:1",
+              "2:3",
+              "3:2",
+              "3:4",
+              "4:3",
+              "4:5",
+              "5:4",
+              "9:16",
+              "16:9",
+              "21:9",
+              "9:21",
+              "1:2",
+              "2:1",
+              "5:2",
+              "2:5",
+              "1:4",
+              "4:1",
+              "1:8",
+              "8:1",
+              "9:19.5",
+              "19.5:9",
+              "9:20",
+              "20:9"
+            ],
+            "type": "string"
+          },
+          "async": {
+            "const": true,
+            "default": true,
+            "type": "boolean"
+          },
+          "image_size": {
+            "default": "1K",
+            "enum": [
+              "1K",
+              "2K",
+              "4K"
+            ],
+            "type": "string"
+          },
+          "images": {
+            "const": 1,
+            "default": 1,
+            "type": "integer"
+          },
+          "response_modalities": {
+            "const": [
+              "TEXT",
+              "IMAGE"
+            ],
+            "default": [
+              "TEXT",
+              "IMAGE"
+            ],
+            "type": "array"
+          },
+          "safety_settings": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "category": {
+                  "type": "string"
+                },
+                "threshold": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "category",
+                "threshold"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "system_instruction": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "async"
+        ],
+        "type": "object"
+      },
+      "async_supported": true,
+      "prompt_min_characters": 1
+    },
+    "gpt-image-2": {
+      "default_variant": "48cf8da1ef5bdb3eef0de09006d684a6064d6b196b47ad433de32638b04f2863",
+      "contract_version": "media-generation.v1",
+      "revision": "7667a74beda7c54af4c0e701ed7039584d7b5b438a3a0d871d1658606fe11275",
+      "variants": [
+        {
+          "protocol": "openai-images",
+          "operation": "generate",
+          "method": "POST",
+          "path": "/images/generations",
+          "id": "1eae1958d2ffd2db36eaa23e16f296c493532d6998b2456b4640744044629229",
+          "defaults": {
+            "async": true,
+            "background": "auto",
+            "images": 1,
+            "moderation": "auto",
+            "output_compression": 100,
+            "output_format": "webp",
+            "quality": "auto",
+            "response_format": "url",
+            "size": "1024x1024"
+          },
+          "specifications_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "async": {
+                "const": true,
+                "default": true,
+                "type": "boolean"
+              },
+              "background": {
+                "default": "auto",
+                "enum": [
+                  "auto",
+                  "opaque",
+                  "transparent"
+                ],
+                "type": "string"
+              },
+              "images": {
+                "default": 1,
+                "maximum": 10,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "moderation": {
+                "default": "auto",
+                "enum": [
+                  "auto",
+                  "low"
+                ],
+                "type": "string"
+              },
+              "output_compression": {
+                "default": 100,
+                "maximum": 100,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "output_format": {
+                "default": "webp",
+                "enum": [
+                  "webp"
+                ],
+                "type": "string"
+              },
+              "quality": {
+                "default": "auto",
+                "enum": [
+                  "auto",
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max"
+                ],
+                "type": "string"
+              },
+              "response_format": {
+                "const": "url",
+                "default": "url",
+                "type": "string"
+              },
+              "size": {
+                "default": "1024x1024",
+                "enum": [
+                  "1024x1024",
+                  "680x1020",
+                  "1020x680",
+                  "768x1024",
+                  "1024x768",
+                  "816x1020",
+                  "1020x816",
+                  "576x1024",
+                  "1024x576",
+                  "1022x438",
+                  "438x1022",
+                  "512x1024",
+                  "1024x512",
+                  "1020x408",
+                  "408x1020",
+                  "256x1024",
+                  "1024x256",
+                  "128x1024",
+                  "1024x128",
+                  "468x1014",
+                  "1014x468",
+                  "450x1000",
+                  "1000x450",
+                  "2048x2048",
+                  "1364x2046",
+                  "2046x1364",
+                  "1536x2048",
+                  "2048x1536",
+                  "1632x2040",
+                  "2040x1632",
+                  "1152x2048",
+                  "2048x1152",
+                  "2044x876",
+                  "876x2044",
+                  "1024x2048",
+                  "2048x1024",
+                  "2040x816",
+                  "816x2040",
+                  "512x2048",
+                  "2048x512",
+                  "256x2048",
+                  "2048x256",
+                  "936x2028",
+                  "2028x936",
+                  "918x2040",
+                  "2040x918",
+                  "4096x4096",
+                  "2728x4092",
+                  "4092x2728",
+                  "3072x4096",
+                  "4096x3072",
+                  "3272x4090",
+                  "4090x3272",
+                  "2304x4096",
+                  "4096x2304",
+                  "4088x1752",
+                  "1752x4088",
+                  "2048x4096",
+                  "4096x2048",
+                  "4090x1636",
+                  "1636x4090",
+                  "1024x4096",
+                  "4096x1024",
+                  "512x4096",
+                  "4096x512",
+                  "1884x4082",
+                  "4082x1884",
+                  "1836x4080",
+                  "4080x1836"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "async"
+            ],
+            "type": "object"
+          },
+          "parameter_bindings": {
+            "async": "async",
+            "background": "background",
+            "images": "n",
+            "moderation": "moderation",
+            "output_compression": "output_compression",
+            "output_format": "output_format",
+            "quality": "quality",
+            "response_format": "response_format",
+            "size": "size"
+          },
+          "native_reference_inputs": [
+            {
+              "image_format": "openai",
+              "protocol": "openai-images",
+              "operation": "generate",
+              "field": "reference_images",
+              "transport": "url-array",
+              "roles": [
+                "reference_image"
+              ],
+              "max_items": 16
+            }
+          ]
+        },
+        {
+          "protocol": "openai-images",
+          "operation": "generate",
+          "method": "POST",
+          "path": "/images/generations",
+          "id": "48cf8da1ef5bdb3eef0de09006d684a6064d6b196b47ad433de32638b04f2863",
+          "defaults": {
+            "async": true,
+            "background": "auto",
+            "images": 1,
+            "moderation": "auto",
+            "output_format": "png",
+            "quality": "auto",
+            "response_format": "url",
+            "size": "1024x1024"
+          },
+          "specifications_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "async": {
+                "const": true,
+                "default": true,
+                "type": "boolean"
+              },
+              "background": {
+                "default": "auto",
+                "enum": [
+                  "auto",
+                  "opaque",
+                  "transparent"
+                ],
+                "type": "string"
+              },
+              "images": {
+                "default": 1,
+                "maximum": 10,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "moderation": {
+                "default": "auto",
+                "enum": [
+                  "auto",
+                  "low"
+                ],
+                "type": "string"
+              },
+              "output_format": {
+                "default": "png",
+                "enum": [
+                  "png"
+                ],
+                "type": "string"
+              },
+              "quality": {
+                "default": "auto",
+                "enum": [
+                  "auto",
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max"
+                ],
+                "type": "string"
+              },
+              "response_format": {
+                "const": "url",
+                "default": "url",
+                "type": "string"
+              },
+              "size": {
+                "default": "1024x1024",
+                "enum": [
+                  "1024x1024",
+                  "680x1020",
+                  "1020x680",
+                  "768x1024",
+                  "1024x768",
+                  "816x1020",
+                  "1020x816",
+                  "576x1024",
+                  "1024x576",
+                  "1022x438",
+                  "438x1022",
+                  "512x1024",
+                  "1024x512",
+                  "1020x408",
+                  "408x1020",
+                  "256x1024",
+                  "1024x256",
+                  "128x1024",
+                  "1024x128",
+                  "468x1014",
+                  "1014x468",
+                  "450x1000",
+                  "1000x450",
+                  "2048x2048",
+                  "1364x2046",
+                  "2046x1364",
+                  "1536x2048",
+                  "2048x1536",
+                  "1632x2040",
+                  "2040x1632",
+                  "1152x2048",
+                  "2048x1152",
+                  "2044x876",
+                  "876x2044",
+                  "1024x2048",
+                  "2048x1024",
+                  "2040x816",
+                  "816x2040",
+                  "512x2048",
+                  "2048x512",
+                  "256x2048",
+                  "2048x256",
+                  "936x2028",
+                  "2028x936",
+                  "918x2040",
+                  "2040x918",
+                  "4096x4096",
+                  "2728x4092",
+                  "4092x2728",
+                  "3072x4096",
+                  "4096x3072",
+                  "3272x4090",
+                  "4090x3272",
+                  "2304x4096",
+                  "4096x2304",
+                  "4088x1752",
+                  "1752x4088",
+                  "2048x4096",
+                  "4096x2048",
+                  "4090x1636",
+                  "1636x4090",
+                  "1024x4096",
+                  "4096x1024",
+                  "512x4096",
+                  "4096x512",
+                  "1884x4082",
+                  "4082x1884",
+                  "1836x4080",
+                  "4080x1836"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "async"
+            ],
+            "type": "object"
+          },
+          "parameter_bindings": {
+            "async": "async",
+            "background": "background",
+            "images": "n",
+            "moderation": "moderation",
+            "output_format": "output_format",
+            "quality": "quality",
+            "response_format": "response_format",
+            "size": "size"
+          },
+          "native_reference_inputs": [
+            {
+              "image_format": "openai",
+              "protocol": "openai-images",
+              "operation": "generate",
+              "field": "reference_images",
+              "transport": "url-array",
+              "roles": [
+                "reference_image"
+              ],
+              "max_items": 16
+            }
+          ]
+        },
+        {
+          "protocol": "openai-images",
+          "operation": "generate",
+          "method": "POST",
+          "path": "/images/generations",
+          "id": "e45b27e8eebe9315c6dd246151126e0f849ff090b4c2f01c409d7396b9eb66fe",
+          "defaults": {
+            "async": true,
+            "background": "auto",
+            "images": 1,
+            "moderation": "auto",
+            "output_compression": 100,
+            "output_format": "jpeg",
+            "quality": "auto",
+            "response_format": "url",
+            "size": "1024x1024"
+          },
+          "specifications_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "async": {
+                "const": true,
+                "default": true,
+                "type": "boolean"
+              },
+              "background": {
+                "default": "auto",
+                "enum": [
+                  "auto",
+                  "opaque"
+                ],
+                "type": "string"
+              },
+              "images": {
+                "default": 1,
+                "maximum": 10,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "moderation": {
+                "default": "auto",
+                "enum": [
+                  "auto",
+                  "low"
+                ],
+                "type": "string"
+              },
+              "output_compression": {
+                "default": 100,
+                "maximum": 100,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "output_format": {
+                "default": "jpeg",
+                "enum": [
+                  "jpeg"
+                ],
+                "type": "string"
+              },
+              "quality": {
+                "default": "auto",
+                "enum": [
+                  "auto",
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max"
+                ],
+                "type": "string"
+              },
+              "response_format": {
+                "const": "url",
+                "default": "url",
+                "type": "string"
+              },
+              "size": {
+                "default": "1024x1024",
+                "enum": [
+                  "1024x1024",
+                  "680x1020",
+                  "1020x680",
+                  "768x1024",
+                  "1024x768",
+                  "816x1020",
+                  "1020x816",
+                  "576x1024",
+                  "1024x576",
+                  "1022x438",
+                  "438x1022",
+                  "512x1024",
+                  "1024x512",
+                  "1020x408",
+                  "408x1020",
+                  "256x1024",
+                  "1024x256",
+                  "128x1024",
+                  "1024x128",
+                  "468x1014",
+                  "1014x468",
+                  "450x1000",
+                  "1000x450",
+                  "2048x2048",
+                  "1364x2046",
+                  "2046x1364",
+                  "1536x2048",
+                  "2048x1536",
+                  "1632x2040",
+                  "2040x1632",
+                  "1152x2048",
+                  "2048x1152",
+                  "2044x876",
+                  "876x2044",
+                  "1024x2048",
+                  "2048x1024",
+                  "2040x816",
+                  "816x2040",
+                  "512x2048",
+                  "2048x512",
+                  "256x2048",
+                  "2048x256",
+                  "936x2028",
+                  "2028x936",
+                  "918x2040",
+                  "2040x918",
+                  "4096x4096",
+                  "2728x4092",
+                  "4092x2728",
+                  "3072x4096",
+                  "4096x3072",
+                  "3272x4090",
+                  "4090x3272",
+                  "2304x4096",
+                  "4096x2304",
+                  "4088x1752",
+                  "1752x4088",
+                  "2048x4096",
+                  "4096x2048",
+                  "4090x1636",
+                  "1636x4090",
+                  "1024x4096",
+                  "4096x1024",
+                  "512x4096",
+                  "4096x512",
+                  "1884x4082",
+                  "4082x1884",
+                  "1836x4080",
+                  "4080x1836"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "async"
+            ],
+            "type": "object"
+          },
+          "parameter_bindings": {
+            "async": "async",
+            "background": "background",
+            "images": "n",
+            "moderation": "moderation",
+            "output_compression": "output_compression",
+            "output_format": "output_format",
+            "quality": "quality",
+            "response_format": "response_format",
+            "size": "size"
+          },
+          "native_reference_inputs": [
+            {
+              "image_format": "openai",
+              "protocol": "openai-images",
+              "operation": "generate",
+              "field": "reference_images",
+              "transport": "url-array",
+              "roles": [
+                "reference_image"
+              ],
+              "max_items": 16
+            }
+          ]
+        }
+      ],
+      "parameter_bindings": {
+        "async": "async",
+        "background": "background",
+        "images": "n",
+        "moderation": "moderation",
+        "output_format": "output_format",
+        "quality": "quality",
+        "response_format": "response_format",
+        "size": "size"
+      },
+      "size_presets": [
+        {
+          "resolution": "1K",
+          "aspect_ratio": "1:1",
+          "width": 1024,
+          "height": 1024,
+          "parameters": {
+            "size": "1024x1024"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "2:3",
+          "width": 680,
+          "height": 1020,
+          "parameters": {
+            "size": "680x1020"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "3:2",
+          "width": 1020,
+          "height": 680,
+          "parameters": {
+            "size": "1020x680"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "3:4",
+          "width": 768,
+          "height": 1024,
+          "parameters": {
+            "size": "768x1024"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "4:3",
+          "width": 1024,
+          "height": 768,
+          "parameters": {
+            "size": "1024x768"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "4:5",
+          "width": 816,
+          "height": 1020,
+          "parameters": {
+            "size": "816x1020"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "5:4",
+          "width": 1020,
+          "height": 816,
+          "parameters": {
+            "size": "1020x816"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "9:16",
+          "width": 576,
+          "height": 1024,
+          "parameters": {
+            "size": "576x1024"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "16:9",
+          "width": 1024,
+          "height": 576,
+          "parameters": {
+            "size": "1024x576"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "21:9",
+          "width": 1022,
+          "height": 438,
+          "parameters": {
+            "size": "1022x438"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "9:21",
+          "width": 438,
+          "height": 1022,
+          "parameters": {
+            "size": "438x1022"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "1:2",
+          "width": 512,
+          "height": 1024,
+          "parameters": {
+            "size": "512x1024"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "2:1",
+          "width": 1024,
+          "height": 512,
+          "parameters": {
+            "size": "1024x512"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "5:2",
+          "width": 1020,
+          "height": 408,
+          "parameters": {
+            "size": "1020x408"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "2:5",
+          "width": 408,
+          "height": 1020,
+          "parameters": {
+            "size": "408x1020"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "1:4",
+          "width": 256,
+          "height": 1024,
+          "parameters": {
+            "size": "256x1024"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "4:1",
+          "width": 1024,
+          "height": 256,
+          "parameters": {
+            "size": "1024x256"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "1:8",
+          "width": 128,
+          "height": 1024,
+          "parameters": {
+            "size": "128x1024"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "8:1",
+          "width": 1024,
+          "height": 128,
+          "parameters": {
+            "size": "1024x128"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "9:19.5",
+          "width": 468,
+          "height": 1014,
+          "parameters": {
+            "size": "468x1014"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "19.5:9",
+          "width": 1014,
+          "height": 468,
+          "parameters": {
+            "size": "1014x468"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "9:20",
+          "width": 450,
+          "height": 1000,
+          "parameters": {
+            "size": "450x1000"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "20:9",
+          "width": 1000,
+          "height": 450,
+          "parameters": {
+            "size": "1000x450"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "1:1",
+          "width": 2048,
+          "height": 2048,
+          "parameters": {
+            "size": "2048x2048"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "2:3",
+          "width": 1364,
+          "height": 2046,
+          "parameters": {
+            "size": "1364x2046"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "3:2",
+          "width": 2046,
+          "height": 1364,
+          "parameters": {
+            "size": "2046x1364"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "3:4",
+          "width": 1536,
+          "height": 2048,
+          "parameters": {
+            "size": "1536x2048"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "4:3",
+          "width": 2048,
+          "height": 1536,
+          "parameters": {
+            "size": "2048x1536"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "4:5",
+          "width": 1632,
+          "height": 2040,
+          "parameters": {
+            "size": "1632x2040"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "5:4",
+          "width": 2040,
+          "height": 1632,
+          "parameters": {
+            "size": "2040x1632"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "9:16",
+          "width": 1152,
+          "height": 2048,
+          "parameters": {
+            "size": "1152x2048"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "16:9",
+          "width": 2048,
+          "height": 1152,
+          "parameters": {
+            "size": "2048x1152"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "21:9",
+          "width": 2044,
+          "height": 876,
+          "parameters": {
+            "size": "2044x876"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "9:21",
+          "width": 876,
+          "height": 2044,
+          "parameters": {
+            "size": "876x2044"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "1:2",
+          "width": 1024,
+          "height": 2048,
+          "parameters": {
+            "size": "1024x2048"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "2:1",
+          "width": 2048,
+          "height": 1024,
+          "parameters": {
+            "size": "2048x1024"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "5:2",
+          "width": 2040,
+          "height": 816,
+          "parameters": {
+            "size": "2040x816"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "2:5",
+          "width": 816,
+          "height": 2040,
+          "parameters": {
+            "size": "816x2040"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "1:4",
+          "width": 512,
+          "height": 2048,
+          "parameters": {
+            "size": "512x2048"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "4:1",
+          "width": 2048,
+          "height": 512,
+          "parameters": {
+            "size": "2048x512"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "1:8",
+          "width": 256,
+          "height": 2048,
+          "parameters": {
+            "size": "256x2048"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "8:1",
+          "width": 2048,
+          "height": 256,
+          "parameters": {
+            "size": "2048x256"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "9:19.5",
+          "width": 936,
+          "height": 2028,
+          "parameters": {
+            "size": "936x2028"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "19.5:9",
+          "width": 2028,
+          "height": 936,
+          "parameters": {
+            "size": "2028x936"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "9:20",
+          "width": 918,
+          "height": 2040,
+          "parameters": {
+            "size": "918x2040"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "20:9",
+          "width": 2040,
+          "height": 918,
+          "parameters": {
+            "size": "2040x918"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "1:1",
+          "width": 4096,
+          "height": 4096,
+          "parameters": {
+            "size": "4096x4096"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "2:3",
+          "width": 2728,
+          "height": 4092,
+          "parameters": {
+            "size": "2728x4092"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "3:2",
+          "width": 4092,
+          "height": 2728,
+          "parameters": {
+            "size": "4092x2728"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "3:4",
+          "width": 3072,
+          "height": 4096,
+          "parameters": {
+            "size": "3072x4096"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "4:3",
+          "width": 4096,
+          "height": 3072,
+          "parameters": {
+            "size": "4096x3072"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "4:5",
+          "width": 3272,
+          "height": 4090,
+          "parameters": {
+            "size": "3272x4090"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "5:4",
+          "width": 4090,
+          "height": 3272,
+          "parameters": {
+            "size": "4090x3272"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "9:16",
+          "width": 2304,
+          "height": 4096,
+          "parameters": {
+            "size": "2304x4096"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "16:9",
+          "width": 4096,
+          "height": 2304,
+          "parameters": {
+            "size": "4096x2304"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "21:9",
+          "width": 4088,
+          "height": 1752,
+          "parameters": {
+            "size": "4088x1752"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "9:21",
+          "width": 1752,
+          "height": 4088,
+          "parameters": {
+            "size": "1752x4088"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "1:2",
+          "width": 2048,
+          "height": 4096,
+          "parameters": {
+            "size": "2048x4096"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "2:1",
+          "width": 4096,
+          "height": 2048,
+          "parameters": {
+            "size": "4096x2048"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "5:2",
+          "width": 4090,
+          "height": 1636,
+          "parameters": {
+            "size": "4090x1636"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "2:5",
+          "width": 1636,
+          "height": 4090,
+          "parameters": {
+            "size": "1636x4090"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "1:4",
+          "width": 1024,
+          "height": 4096,
+          "parameters": {
+            "size": "1024x4096"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "4:1",
+          "width": 4096,
+          "height": 1024,
+          "parameters": {
+            "size": "4096x1024"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "1:8",
+          "width": 512,
+          "height": 4096,
+          "parameters": {
+            "size": "512x4096"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "8:1",
+          "width": 4096,
+          "height": 512,
+          "parameters": {
+            "size": "4096x512"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "9:19.5",
+          "width": 1884,
+          "height": 4082,
+          "parameters": {
+            "size": "1884x4082"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "19.5:9",
+          "width": 4082,
+          "height": 1884,
+          "parameters": {
+            "size": "4082x1884"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "9:20",
+          "width": 1836,
+          "height": 4080,
+          "parameters": {
+            "size": "1836x4080"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "20:9",
+          "width": 4080,
+          "height": 1836,
+          "parameters": {
+            "size": "4080x1836"
+          }
+        }
+      ],
+      "native_reference_inputs": [
+        {
+          "image_format": "openai",
+          "protocol": "openai-images",
+          "operation": "generate",
+          "field": "reference_images",
+          "transport": "url-array",
+          "roles": [
+            "reference_image"
+          ],
+          "max_items": 16
+        }
+      ],
+      "native_endpoints": [
+        {
+          "protocol": "openai-images",
+          "operation": "generate",
+          "method": "POST",
+          "path": "/images/generations"
+        }
+      ],
+      "mode": "image-openai",
+      "output_contracts": [
+        "oceanway.assets.v1"
+      ],
+      "defaults": {
+        "async": true,
+        "background": "auto",
+        "images": 1,
+        "moderation": "auto",
+        "output_format": "png",
+        "quality": "auto",
+        "response_format": "url",
+        "size": "1024x1024"
+      },
+      "input_modes": [
+        "text_to_image",
+        "image_to_image"
+      ],
+      "specifications_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "async": {
+            "const": true,
+            "default": true,
+            "type": "boolean"
+          },
+          "background": {
+            "default": "auto",
+            "enum": [
+              "auto",
+              "opaque",
+              "transparent"
+            ],
+            "type": "string"
+          },
+          "images": {
+            "default": 1,
+            "maximum": 10,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "moderation": {
+            "default": "auto",
+            "enum": [
+              "auto",
+              "low"
+            ],
+            "type": "string"
+          },
+          "output_format": {
+            "default": "png",
+            "enum": [
+              "png"
+            ],
+            "type": "string"
+          },
+          "quality": {
+            "default": "auto",
+            "enum": [
+              "auto",
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ],
+            "type": "string"
+          },
+          "response_format": {
+            "const": "url",
+            "default": "url",
+            "type": "string"
+          },
+          "size": {
+            "default": "1024x1024",
+            "enum": [
+              "1024x1024",
+              "680x1020",
+              "1020x680",
+              "768x1024",
+              "1024x768",
+              "816x1020",
+              "1020x816",
+              "576x1024",
+              "1024x576",
+              "1022x438",
+              "438x1022",
+              "512x1024",
+              "1024x512",
+              "1020x408",
+              "408x1020",
+              "256x1024",
+              "1024x256",
+              "128x1024",
+              "1024x128",
+              "468x1014",
+              "1014x468",
+              "450x1000",
+              "1000x450",
+              "2048x2048",
+              "1364x2046",
+              "2046x1364",
+              "1536x2048",
+              "2048x1536",
+              "1632x2040",
+              "2040x1632",
+              "1152x2048",
+              "2048x1152",
+              "2044x876",
+              "876x2044",
+              "1024x2048",
+              "2048x1024",
+              "2040x816",
+              "816x2040",
+              "512x2048",
+              "2048x512",
+              "256x2048",
+              "2048x256",
+              "936x2028",
+              "2028x936",
+              "918x2040",
+              "2040x918",
+              "4096x4096",
+              "2728x4092",
+              "4092x2728",
+              "3072x4096",
+              "4096x3072",
+              "3272x4090",
+              "4090x3272",
+              "2304x4096",
+              "4096x2304",
+              "4088x1752",
+              "1752x4088",
+              "2048x4096",
+              "4096x2048",
+              "4090x1636",
+              "1636x4090",
+              "1024x4096",
+              "4096x1024",
+              "512x4096",
+              "4096x512",
+              "1884x4082",
+              "4082x1884",
+              "1836x4080",
+              "4080x1836"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "async"
+        ],
+        "type": "object"
+      },
+      "async_supported": true,
+      "prompt_min_characters": 1
+    },
+    "grok-imagine-image": {
+      "default_variant": "a859456a173aeaa34d1f74f2b62a595accf4ae97a890f7d2154a8c6ebc828a1a",
+      "contract_version": "media-generation.v1",
+      "revision": "bb67dfaab9f887e601162a0bcdd976d2be6f19d7432bd628aab1d9e3502f4a9f",
+      "variants": [
+        {
+          "protocol": "openai-images",
+          "operation": "generate",
+          "method": "POST",
+          "path": "/images/generations",
+          "id": "a859456a173aeaa34d1f74f2b62a595accf4ae97a890f7d2154a8c6ebc828a1a",
+          "defaults": {
+            "async": true,
+            "images": 1,
+            "quality": "auto",
+            "response_format": "url",
+            "size": "1024x1024"
+          },
+          "specifications_schema": {
+            "additionalProperties": false,
+            "properties": {
+              "async": {
+                "const": true,
+                "default": true,
+                "type": "boolean"
+              },
+              "images": {
+                "default": 1,
+                "maximum": 10,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "quality": {
+                "default": "auto",
+                "enum": [
+                  "auto",
+                  "low",
+                  "medium",
+                  "high"
+                ],
+                "type": "string"
+              },
+              "response_format": {
+                "const": "url",
+                "default": "url",
+                "type": "string"
+              },
+              "size": {
+                "default": "1024x1024",
+                "enum": [
+                  "1024x1024",
+                  "680x1020",
+                  "1020x680",
+                  "768x1024",
+                  "1024x768",
+                  "816x1020",
+                  "1020x816",
+                  "576x1024",
+                  "1024x576",
+                  "1022x438",
+                  "438x1022",
+                  "512x1024",
+                  "1024x512",
+                  "1020x408",
+                  "408x1020",
+                  "256x1024",
+                  "1024x256",
+                  "128x1024",
+                  "1024x128",
+                  "468x1014",
+                  "1014x468",
+                  "450x1000",
+                  "1000x450",
+                  "2048x2048",
+                  "1364x2046",
+                  "2046x1364",
+                  "1536x2048",
+                  "2048x1536",
+                  "1632x2040",
+                  "2040x1632",
+                  "1152x2048",
+                  "2048x1152",
+                  "2044x876",
+                  "876x2044",
+                  "1024x2048",
+                  "2048x1024",
+                  "2040x816",
+                  "816x2040",
+                  "512x2048",
+                  "2048x512",
+                  "256x2048",
+                  "2048x256",
+                  "936x2028",
+                  "2028x936",
+                  "918x2040",
+                  "2040x918",
+                  "4096x4096",
+                  "2728x4092",
+                  "4092x2728",
+                  "3072x4096",
+                  "4096x3072",
+                  "3272x4090",
+                  "4090x3272",
+                  "2304x4096",
+                  "4096x2304",
+                  "4088x1752",
+                  "1752x4088",
+                  "2048x4096",
+                  "4096x2048",
+                  "4090x1636",
+                  "1636x4090",
+                  "1024x4096",
+                  "4096x1024",
+                  "512x4096",
+                  "4096x512",
+                  "1884x4082",
+                  "4082x1884",
+                  "1836x4080",
+                  "4080x1836"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "async"
+            ],
+            "type": "object"
+          },
+          "parameter_bindings": {
+            "async": "async",
+            "images": "n",
+            "quality": "quality",
+            "response_format": "response_format",
+            "size": "size"
+          },
+          "native_reference_inputs": [
+            {
+              "image_format": "xai",
+              "protocol": "openai-images",
+              "operation": "generate",
+              "field": "reference_images",
+              "transport": "url-array",
+              "roles": [
+                "reference_image"
+              ],
+              "max_items": 1
+            }
+          ]
+        }
+      ],
+      "parameter_bindings": {
+        "async": "async",
+        "images": "n",
+        "quality": "quality",
+        "response_format": "response_format",
+        "size": "size"
+      },
+      "size_presets": [
+        {
+          "resolution": "1K",
+          "aspect_ratio": "1:1",
+          "width": 1024,
+          "height": 1024,
+          "parameters": {
+            "size": "1024x1024"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "2:3",
+          "width": 680,
+          "height": 1020,
+          "parameters": {
+            "size": "680x1020"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "3:2",
+          "width": 1020,
+          "height": 680,
+          "parameters": {
+            "size": "1020x680"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "3:4",
+          "width": 768,
+          "height": 1024,
+          "parameters": {
+            "size": "768x1024"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "4:3",
+          "width": 1024,
+          "height": 768,
+          "parameters": {
+            "size": "1024x768"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "4:5",
+          "width": 816,
+          "height": 1020,
+          "parameters": {
+            "size": "816x1020"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "5:4",
+          "width": 1020,
+          "height": 816,
+          "parameters": {
+            "size": "1020x816"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "9:16",
+          "width": 576,
+          "height": 1024,
+          "parameters": {
+            "size": "576x1024"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "16:9",
+          "width": 1024,
+          "height": 576,
+          "parameters": {
+            "size": "1024x576"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "21:9",
+          "width": 1022,
+          "height": 438,
+          "parameters": {
+            "size": "1022x438"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "9:21",
+          "width": 438,
+          "height": 1022,
+          "parameters": {
+            "size": "438x1022"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "1:2",
+          "width": 512,
+          "height": 1024,
+          "parameters": {
+            "size": "512x1024"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "2:1",
+          "width": 1024,
+          "height": 512,
+          "parameters": {
+            "size": "1024x512"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "5:2",
+          "width": 1020,
+          "height": 408,
+          "parameters": {
+            "size": "1020x408"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "2:5",
+          "width": 408,
+          "height": 1020,
+          "parameters": {
+            "size": "408x1020"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "1:4",
+          "width": 256,
+          "height": 1024,
+          "parameters": {
+            "size": "256x1024"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "4:1",
+          "width": 1024,
+          "height": 256,
+          "parameters": {
+            "size": "1024x256"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "1:8",
+          "width": 128,
+          "height": 1024,
+          "parameters": {
+            "size": "128x1024"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "8:1",
+          "width": 1024,
+          "height": 128,
+          "parameters": {
+            "size": "1024x128"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "9:19.5",
+          "width": 468,
+          "height": 1014,
+          "parameters": {
+            "size": "468x1014"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "19.5:9",
+          "width": 1014,
+          "height": 468,
+          "parameters": {
+            "size": "1014x468"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "9:20",
+          "width": 450,
+          "height": 1000,
+          "parameters": {
+            "size": "450x1000"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "20:9",
+          "width": 1000,
+          "height": 450,
+          "parameters": {
+            "size": "1000x450"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "1:1",
+          "width": 2048,
+          "height": 2048,
+          "parameters": {
+            "size": "2048x2048"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "2:3",
+          "width": 1364,
+          "height": 2046,
+          "parameters": {
+            "size": "1364x2046"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "3:2",
+          "width": 2046,
+          "height": 1364,
+          "parameters": {
+            "size": "2046x1364"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "3:4",
+          "width": 1536,
+          "height": 2048,
+          "parameters": {
+            "size": "1536x2048"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "4:3",
+          "width": 2048,
+          "height": 1536,
+          "parameters": {
+            "size": "2048x1536"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "4:5",
+          "width": 1632,
+          "height": 2040,
+          "parameters": {
+            "size": "1632x2040"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "5:4",
+          "width": 2040,
+          "height": 1632,
+          "parameters": {
+            "size": "2040x1632"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "9:16",
+          "width": 1152,
+          "height": 2048,
+          "parameters": {
+            "size": "1152x2048"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "16:9",
+          "width": 2048,
+          "height": 1152,
+          "parameters": {
+            "size": "2048x1152"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "21:9",
+          "width": 2044,
+          "height": 876,
+          "parameters": {
+            "size": "2044x876"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "9:21",
+          "width": 876,
+          "height": 2044,
+          "parameters": {
+            "size": "876x2044"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "1:2",
+          "width": 1024,
+          "height": 2048,
+          "parameters": {
+            "size": "1024x2048"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "2:1",
+          "width": 2048,
+          "height": 1024,
+          "parameters": {
+            "size": "2048x1024"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "5:2",
+          "width": 2040,
+          "height": 816,
+          "parameters": {
+            "size": "2040x816"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "2:5",
+          "width": 816,
+          "height": 2040,
+          "parameters": {
+            "size": "816x2040"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "1:4",
+          "width": 512,
+          "height": 2048,
+          "parameters": {
+            "size": "512x2048"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "4:1",
+          "width": 2048,
+          "height": 512,
+          "parameters": {
+            "size": "2048x512"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "1:8",
+          "width": 256,
+          "height": 2048,
+          "parameters": {
+            "size": "256x2048"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "8:1",
+          "width": 2048,
+          "height": 256,
+          "parameters": {
+            "size": "2048x256"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "9:19.5",
+          "width": 936,
+          "height": 2028,
+          "parameters": {
+            "size": "936x2028"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "19.5:9",
+          "width": 2028,
+          "height": 936,
+          "parameters": {
+            "size": "2028x936"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "9:20",
+          "width": 918,
+          "height": 2040,
+          "parameters": {
+            "size": "918x2040"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "20:9",
+          "width": 2040,
+          "height": 918,
+          "parameters": {
+            "size": "2040x918"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "1:1",
+          "width": 4096,
+          "height": 4096,
+          "parameters": {
+            "size": "4096x4096"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "2:3",
+          "width": 2728,
+          "height": 4092,
+          "parameters": {
+            "size": "2728x4092"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "3:2",
+          "width": 4092,
+          "height": 2728,
+          "parameters": {
+            "size": "4092x2728"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "3:4",
+          "width": 3072,
+          "height": 4096,
+          "parameters": {
+            "size": "3072x4096"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "4:3",
+          "width": 4096,
+          "height": 3072,
+          "parameters": {
+            "size": "4096x3072"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "4:5",
+          "width": 3272,
+          "height": 4090,
+          "parameters": {
+            "size": "3272x4090"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "5:4",
+          "width": 4090,
+          "height": 3272,
+          "parameters": {
+            "size": "4090x3272"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "9:16",
+          "width": 2304,
+          "height": 4096,
+          "parameters": {
+            "size": "2304x4096"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "16:9",
+          "width": 4096,
+          "height": 2304,
+          "parameters": {
+            "size": "4096x2304"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "21:9",
+          "width": 4088,
+          "height": 1752,
+          "parameters": {
+            "size": "4088x1752"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "9:21",
+          "width": 1752,
+          "height": 4088,
+          "parameters": {
+            "size": "1752x4088"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "1:2",
+          "width": 2048,
+          "height": 4096,
+          "parameters": {
+            "size": "2048x4096"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "2:1",
+          "width": 4096,
+          "height": 2048,
+          "parameters": {
+            "size": "4096x2048"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "5:2",
+          "width": 4090,
+          "height": 1636,
+          "parameters": {
+            "size": "4090x1636"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "2:5",
+          "width": 1636,
+          "height": 4090,
+          "parameters": {
+            "size": "1636x4090"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "1:4",
+          "width": 1024,
+          "height": 4096,
+          "parameters": {
+            "size": "1024x4096"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "4:1",
+          "width": 4096,
+          "height": 1024,
+          "parameters": {
+            "size": "4096x1024"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "1:8",
+          "width": 512,
+          "height": 4096,
+          "parameters": {
+            "size": "512x4096"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "8:1",
+          "width": 4096,
+          "height": 512,
+          "parameters": {
+            "size": "4096x512"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "9:19.5",
+          "width": 1884,
+          "height": 4082,
+          "parameters": {
+            "size": "1884x4082"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "19.5:9",
+          "width": 4082,
+          "height": 1884,
+          "parameters": {
+            "size": "4082x1884"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "9:20",
+          "width": 1836,
+          "height": 4080,
+          "parameters": {
+            "size": "1836x4080"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "20:9",
+          "width": 4080,
+          "height": 1836,
+          "parameters": {
+            "size": "4080x1836"
+          }
+        }
+      ],
+      "native_reference_inputs": [
+        {
+          "image_format": "xai",
+          "protocol": "openai-images",
+          "operation": "generate",
+          "field": "reference_images",
+          "transport": "url-array",
+          "roles": [
+            "reference_image"
+          ],
+          "max_items": 1
+        }
+      ],
+      "native_endpoints": [
+        {
+          "protocol": "openai-images",
+          "operation": "generate",
+          "method": "POST",
+          "path": "/images/generations"
+        }
+      ],
+      "mode": "image-openai",
+      "output_contracts": [
+        "oceanway.assets.v1"
+      ],
+      "defaults": {
+        "async": true,
+        "images": 1,
+        "quality": "auto",
+        "response_format": "url",
+        "size": "1024x1024"
+      },
+      "input_modes": [
+        "text_to_image",
+        "image_to_image"
+      ],
+      "specifications_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "async": {
+            "const": true,
+            "default": true,
+            "type": "boolean"
+          },
+          "images": {
+            "default": 1,
+            "maximum": 10,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "quality": {
+            "default": "auto",
+            "enum": [
+              "auto",
+              "low",
+              "medium",
+              "high"
+            ],
+            "type": "string"
+          },
+          "response_format": {
+            "const": "url",
+            "default": "url",
+            "type": "string"
+          },
+          "size": {
+            "default": "1024x1024",
+            "enum": [
+              "1024x1024",
+              "680x1020",
+              "1020x680",
+              "768x1024",
+              "1024x768",
+              "816x1020",
+              "1020x816",
+              "576x1024",
+              "1024x576",
+              "1022x438",
+              "438x1022",
+              "512x1024",
+              "1024x512",
+              "1020x408",
+              "408x1020",
+              "256x1024",
+              "1024x256",
+              "128x1024",
+              "1024x128",
+              "468x1014",
+              "1014x468",
+              "450x1000",
+              "1000x450",
+              "2048x2048",
+              "1364x2046",
+              "2046x1364",
+              "1536x2048",
+              "2048x1536",
+              "1632x2040",
+              "2040x1632",
+              "1152x2048",
+              "2048x1152",
+              "2044x876",
+              "876x2044",
+              "1024x2048",
+              "2048x1024",
+              "2040x816",
+              "816x2040",
+              "512x2048",
+              "2048x512",
+              "256x2048",
+              "2048x256",
+              "936x2028",
+              "2028x936",
+              "918x2040",
+              "2040x918",
+              "4096x4096",
+              "2728x4092",
+              "4092x2728",
+              "3072x4096",
+              "4096x3072",
+              "3272x4090",
+              "4090x3272",
+              "2304x4096",
+              "4096x2304",
+              "4088x1752",
+              "1752x4088",
+              "2048x4096",
+              "4096x2048",
+              "4090x1636",
+              "1636x4090",
+              "1024x4096",
+              "4096x1024",
+              "512x4096",
+              "4096x512",
+              "1884x4082",
+              "4082x1884",
+              "1836x4080",
+              "4080x1836"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "async"
+        ],
+        "type": "object"
+      },
+      "async_supported": true,
+      "prompt_min_characters": 1
+    }
+  }
+}
