@@ -111,7 +111,24 @@ cargo test --locked --lib live::project::codex::tests -- --test-threads=1
 - 修正版独立 Windows Codex 正常发现并调用默认 Oceanway MCP；一次 count=2 图片批次实际返回 HTTP 400，无图片，未自动重提；现用 Codex/Claude 配置 hash 不变。
 - 最小异步图片请求返回 `account asset storage is full`。平台请求 ID：`202611021706141114096698268d9d6AlMabJng`。需平台处理账户存储额度后重新验收真实生成。
 - 最小视频请求返回 HTTP 413；请求 ID：`202611021630451831257558268d9d6s6px3Lfr`。源码中账户存储预留失败也会被包装成请求体过大，实际根因需日志确认。
-- Windows Codex、Claude Desktop 默认安装的修复脚本在独立 GitHub Windows 环境均成功；线上 EXE 尚未重打包切换，下载服务器 SSH 当前连接超时。
+- Windows Codex、Claude Desktop 默认安装的修复脚本在独立 GitHub Windows 环境均成功；已重新封装并发布到下载服务器 `20261103-1`，安装清单同步更新文件大小和 SHA256。
 - API Key 本地素材上传由技术人员后续处理；本期视频参考传真实 HTTPS 图片/视频/音频链接。
 
 本轮原生媒体回归：[41488357344](https://github.com/Oceanway-AI/codex-config/actions/runs/41488357344)。完整应用安装包构建与主服务实际生成单独验收，不以工具发现或本地 fixture 成功替代。详细记录维护在文档仓 PROC-02-027 第 6 节。
+
+### 安装包交付与国内下载复核
+
+源码 `f9539676b3faed0e05d0ce15bccc7c0f6351fcb7` 的[构建 41489066959](https://github.com/Oceanway-AI/codex-config/actions/runs/41489066959)已完成。Windows x64 与 macOS arm64 构建及包内 MCP 检查通过；macOS Intel 的两个图标选择器前端测试失败，分支统一发布步骤因此跳过。
+
+| 开发测试包 | 大小 | SHA256 |
+| --- | --- | --- |
+| [Windows x64 安装器](https://api.ocean-way.top/downloads/agents/oceanway-config-windows-x64-f953967.exe) | 13,559,099 字节 | `b99925cae9f8ac8d4c791d61a3500843ef0209ee7046a27e263591b2ece231f5` |
+| [Mac Apple 芯片应用包](https://api.ocean-way.top/downloads/agents/oceanway-config-macos-arm64-f953967.zip) | 18,738,724 字节 | `e9c3c053888276c3a88779a4888d6e14ec46761cb4e36363601c0a42a2224c26` |
+
+两份文件从上述构建取得，本地与服务器 SHA256 一致；版本信息为 Oceanway Config 0.1.0。主服务图片和视频的实际阻塞仍见上文。
+
+下载服务器已切换到 `/opt/oceanway-agent-downloads/published/20261103-1`。16 项 Agent 包均校验后发布，其中更新了 Codex、Claude Desktop 两个 Windows 包内的 PowerShell 模块路径修复，其他 14 项包的 SHA256 与上一版本一致。服务器已回读新安装清单和安装包分段内容。
+
+Globalping 的西安/桂林电信、武汉/长沙联通、台山/深圳移动共 6 个国内节点均返回安装清单 HTTP 200，并对 Codex、Claude Desktop Windows 安装包返回 64 KiB 分段 HTTP 206。5 个节点标记为用户接入网络，武汉为数据中心网络；这项结果证明所测线路可访问并读取文件，完整大文件下载另行验收。
+
+本机关闭请求代理后，Windows 和 WSL 仍出现连接超时。DNS 指向正确，服务器服务和防火墙检查正常；服务端抓包看到本机 SYN 与服务器 SYN-ACK 重传，连接没有完成。异常已缩小至本机至服务器的网络链路，具体网关或运营商节点尚未定位，不归因为所有国内网络均不可达。证据在 `.artifacts/offline-install-research/`，包括 Globalping 测量结果、直连结果和服务器抓包。
