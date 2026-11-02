@@ -1,5 +1,10 @@
 name: Verify Windows offline package installation
 on:
+  push:
+    branches: [codex/oceanway-config-rebuild]
+    paths:
+      - scripts/agent-downloads/install-desktop.ps1
+      - .github/workflows/verify-windows-desktop-package.yml
   workflow_dispatch:
     inputs:
       app:
@@ -18,7 +23,7 @@ jobs:
       - name: Download and verify the independent offline package
         shell: pwsh
         env:
-          TARGET_APP: ${{ inputs.app }}
+          TARGET_APP: ${{ inputs.app || 'codex' }}
         run: |
           $base = 'https://api.ocean-way.top/downloads/agents/'
           $manifest = Invoke-RestMethod ($base + 'manifest.json')
@@ -54,7 +59,7 @@ jobs:
       - uses: actions/upload-artifact@v6
         if: always()
         with:
-          name: windows-${{ inputs.app }}-install-diagnostics
+          name: windows-${{ inputs.app || 'codex' }}-install-diagnostics
           path: |
             ${{ runner.temp }}/desktop-install.log
             ${{ runner.temp }}/packages.json
