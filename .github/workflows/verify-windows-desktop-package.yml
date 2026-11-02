@@ -27,19 +27,22 @@ jobs:
         run: |
           $base = 'https://api.ocean-way.top/downloads/agents/'
           $manifest = Invoke-RestMethod ($base + 'manifest.json')
-          $entry = $manifest.packages | Where-Object { $_.app -eq $env:TARGET_APP -and $_.filename -like '*-windows-x64-offline.zip' } | Select-Object -First 1
+          $entry = $manifest.packages | Where-Object { $_.app -eq $env:TARGET_APP -and $_.filename -like '*-windows-x64-offline.exe' } | Select-Object -First 1
           if (!$entry) { throw 'Offline package not found' }
-          $zip = Join-Path $env:RUNNER_TEMP 'offline.zip'
+          $zip = Join-Path $env:RUNNER_TEMP 'offline.exe'
           curl.exe --fail --connect-timeout 15 --max-time 600 --output $zip ($base + $entry.filename)
           if ($LASTEXITCODE -ne 0) { throw 'Download failed' }
           if ((Get-FileHash $zip -Algorithm SHA256).Hash -ne $entry.sha256) { throw 'Checksum mismatch' }
-          Expand-Archive $zip (Join-Path $env:RUNNER_TEMP 'offline')
-          Copy-Item scripts/agent-downloads/install-desktop.ps1 (Join-Path $env:RUNNER_TEMP 'offline/install-desktop.ps1')
+          & 7z x $zip ('-o' + (Join-Path $env:RUNNER_TEMP 'offline')) -y | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'Extraction failed' }
+          $package = Get-ChildItem (Join-Path $env:RUNNER_TEMP 'offline') -Recurse -Filter package.json | Select-Object -First 1
+          if (!$package) { throw 'Package manifest missing' }
+          Copy-Item scripts/agent-downloads/install-desktop.ps1 (Join-Path $package.Directory.FullName 'install-desktop.ps1')
       - name: Run default Windows installation and collect progress
         shell: pwsh
         run: |
           $env:OCEANWAY_INSTALL_LOG = Join-Path $env:RUNNER_TEMP 'desktop-install.log'
-          $script = Join-Path $env:RUNNER_TEMP 'offline/install-desktop.ps1'
+          $script = (Get-ChildItem (Join-Path $env:RUNNER_TEMP 'offline') -Recurse -Filter install-desktop.ps1 | Select-Object -First 1).FullName
           $p = Start-Process powershell.exe -WindowStyle Hidden -PassThru -ArgumentList @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',"`"$script`"",'-Elevated')
           $deadline = (Get-Date).AddMinutes(12)
           while (!$p.HasExited -and (Get-Date) -lt $deadline) {
