@@ -1,9 +1,17 @@
 param([switch]$VerifyOnly, [switch]$Elevated)
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+$transcribing = $false
+if ($env:OCEANWAY_INSTALL_LOG) {
+    Start-Transcript -LiteralPath $env:OCEANWAY_INSTALL_LOG -Force | Out-Null
+    $transcribing = $true
+}
 
 try {
     $manifest = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'package.json') -Raw | ConvertFrom-Json
     foreach ($item in $manifest.files) {
+        Write-Output "Checking file: $($item.name)"
         $file = Join-Path $PSScriptRoot $item.name
         if (!(Test-Path -LiteralPath $file -PathType Leaf)) { throw "Missing file: $($item.name). Extract the entire ZIP first." }
         if ((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash -ne $item.sha256) {
@@ -11,6 +19,7 @@ try {
         }
     }
     $package = Join-Path $PSScriptRoot $manifest.package
+    Write-Output 'Checking publisher signature...'
     $signature = Get-AuthenticodeSignature -LiteralPath $package
     # Windows package deployment validates the publisher's signature as well.
     if ($signature.Status -ne 'Valid') { throw "Publisher signature verification failed: $($signature.StatusMessage)" }
@@ -40,7 +49,9 @@ try {
     $options = @{ Online = $true; PackagePath = $package; Regions = 'all'; ErrorAction = 'Stop' }
     if ($manifest.license) { $options.LicensePath = Join-Path $PSScriptRoot $manifest.license }
     else { $options.SkipLicense = $true }
+    Write-Output 'Registering the offline package and license...'
     Add-AppxProvisionedPackage @options | Out-Null
+    Write-Output 'Installing the package for the current Windows user...'
     Add-AppxPackage -Path $package -ErrorAction Stop
     if (!(Get-AppxPackage -Name $manifest.identity)) { throw 'Windows has staged the package. Sign out and sign in, then run detection in Oceanway Config.' }
     Write-Output 'Installation complete. Return to Oceanway Config and click Detect again.'
@@ -51,4 +62,6 @@ try {
     Write-Host $installError -ForegroundColor Red
     Write-Host 'Close the application if it is running, then retry. Existing settings and chat history are kept.'
     exit 1
+} finally {
+    if ($transcribing) { Stop-Transcript | Out-Null }
 }

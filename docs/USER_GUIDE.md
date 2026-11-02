@@ -2,7 +2,7 @@
 
 Oceanway Config 基于 CC Switch，帮助你把 Oceanway API 配到本机的 Codex、Claude Code 等应用。首次使用按首页三个步骤操作即可。
 
-本版提供 Codex、Claude Code、Gemini CLI、OpenCode、OpenClaw 的 Oceanway 接入。其他应用的安装与历史管理入口保留，接入状态以页面显示为准。
+本版提供 Codex 桌面版、Claude Desktop、Claude Code 终端版、DeepSeek Harness 桌面版、Hermes 桌面版和 Kimi Code Desktop。
 
 ## 1. 连接 Oceanway
 
@@ -12,13 +12,11 @@ Oceanway Config 基于 CC Switch，帮助你把 Oceanway API 配到本机的 Cod
 
 ## 2. 选择应用
 
-首页直接显示 Codex 和 Claude Code，已安装的常用应用默认勾选。还没安装时，点击卡片上的“安装”，程序会准备所需运行环境、安装 Agent 并自动检测。左下角“应用”保留完整的安装、升级、卸载和检测入口；Codex 桌面版和 Claude Desktop 的官方下载入口也在这里。其他 Agent 可从“其他应用”展开。
+首页显示常用应用。未安装时点击“下载安装”，程序从 Oceanway 服务器下载完整包，显示进度、校验并按默认设置安装，完成后自动检测。系统弹出授权提示时按提示确认。左下角“应用”可查看六款应用的安装状态。
 
-“应用”页的 Codex 安装使用 OpenAI 官方独立安装器，无需先安装 Node.js。安装成功后会显示版本和路径，再回首页配置即可。
+Mac 应用默认装入“应用程序”目录，Claude Code 装入默认用户目录。当前 Hermes 没有 Mac Intel 包，对应系统会显示不可安装；Windows Hermes 需要 Windows 11 22H2 或更新版本。
 
-需要 Node.js 的 Agent 会自动检查并准备运行环境，用户无需手动执行命令。下载失败时页面显示原因，可检查网络后重新点击安装。
-
-模型会自动选好：Codex 默认 GPT，Claude Code 默认 Claude，Gemini CLI 默认 Gemini。点击模型旁的“更换”，可以查看完整可用清单，选择其他模型。生图使用单独的图片模型，点击“生图设置”可以调整。
+模型会自动选好：Codex 默认 GPT，Claude 系列默认 Claude，DeepSeek Harness 默认 DeepSeek，Kimi 默认 Kimi。点击“更换”查看完整可用清单。图片模型独立选择，可在“生图设置”调整。
 
 选好应用后点击“一键配置”。如果 Key 没有图片模型权限，页面会提示，你仍可先完成对话配置。
 
@@ -30,11 +28,21 @@ Oceanway Config 基于 CC Switch，帮助你把 Oceanway API 配到本机的 Cod
 
 ## 在对话中生图
 
-一键配置会给 Codex、Claude Code、Gemini CLI、OpenCode 注册 Oceanway 图片 MCP，并写入默认生图规则。OpenClaw 当前仅支持对话接入，图片功能尚未适配。打开新会话后，直接用自然语言描述图片，例如：
+一键配置会向选中的 Agent 注册 Oceanway 媒体 MCP，并写入默认生图规则。打开新会话后，直接用自然语言描述图片，例如：
 
 > 帮我生成两张不同构图的海边咖啡馆宣传图。
 
 Agent 会通过 Oceanway 图片工具提交任务，多张图片可以并行生成，再把结果返回当前会话。生图使用 Key 有权限的图片模型。若提示没有图片模型，先确认该 Key 已开通图片能力，再重新连接配置。
+
+## 在对话中生成视频
+
+Key 有视频模型时，一键配置会同时注册视频工具。在 Agent 中描述视频，例如：
+
+> 生成一段 5 秒海边日落视频，镜头缓慢推进。
+
+也可提供图片、视频和音频的真实 HTTPS 链接作为参考。工具按模型能力检查参数，保存任务编号，查询同一个任务并将完成视频保存到当前工作目录的 output/videos。直接上传本地附件需等待平台上传入口接入；目前没有首尾帧模式。
+
+遇到生成错误时查看任务状态；查询或下载失败可继续查原任务，不需要重新生成。
 
 ## 查找以前的会话
 
@@ -54,7 +62,7 @@ Codex 的普通与归档会话都会读取。隐藏某个侧栏应用入口后�
 | 高级功能 → Skills | 查找、安装和管理技能，选择使用技能的应用                   |
 | 高级功能 → 提示词 | 编辑、启用、导入和复制提示词                               |
 | 用量统计          | 查看本地记录汇总的请求、Token 和费用估算，按应用及日期筛选 |
-| 应用              | 管理 Agent 的安装、升级、卸载和显示状态                    |
+| 应用              | 查看 Agent 状态、下载安装及重新检测                    |
 | 设置              | 调整语言、外观、应用目录、网络、备份、导出及日志等         |
 
 ## 遇到问题

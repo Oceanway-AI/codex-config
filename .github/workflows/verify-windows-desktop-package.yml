@@ -1,0 +1,62 @@
+name: Verify Windows offline package installation
+on:
+  workflow_dispatch:
+    inputs:
+      app:
+        type: choice
+        options: [codex, claude-desktop]
+        default: codex
+        required: true
+permissions:
+  contents: read
+jobs:
+  install:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+      - name: Download and verify the independent offline package
+        shell: pwsh
+        env:
+          TARGET_APP: ${{ inputs.app }}
+        run: |
+          $base = 'https://api.ocean-way.top/downloads/agents/'
+          $manifest = Invoke-RestMethod ($base + 'manifest.json')
+          $entry = $manifest.packages | Where-Object { $_.app -eq $env:TARGET_APP -and $_.filename -like '*-windows-x64-offline.zip' } | Select-Object -First 1
+          if (!$entry) { throw 'Offline package not found' }
+          $zip = Join-Path $env:RUNNER_TEMP 'offline.zip'
+          curl.exe --fail --connect-timeout 15 --max-time 600 --output $zip ($base + $entry.filename)
+          if ($LASTEXITCODE -ne 0) { throw 'Download failed' }
+          if ((Get-FileHash $zip -Algorithm SHA256).Hash -ne $entry.sha256) { throw 'Checksum mismatch' }
+          Expand-Archive $zip (Join-Path $env:RUNNER_TEMP 'offline')
+          Copy-Item scripts/agent-downloads/install-desktop.ps1 (Join-Path $env:RUNNER_TEMP 'offline/install-desktop.ps1')
+      - name: Run default Windows installation and collect progress
+        shell: pwsh
+        run: |
+          $env:OCEANWAY_INSTALL_LOG = Join-Path $env:RUNNER_TEMP 'desktop-install.log'
+          $script = Join-Path $env:RUNNER_TEMP 'offline/install-desktop.ps1'
+          $p = Start-Process powershell.exe -WindowStyle Hidden -PassThru -ArgumentList @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',"`"$script`"",'-Elevated')
+          $deadline = (Get-Date).AddMinutes(12)
+          while (!$p.HasExited -and (Get-Date) -lt $deadline) {
+            Start-Sleep -Seconds 15
+            if (Test-Path $env:OCEANWAY_INSTALL_LOG) { Get-Content $env:OCEANWAY_INSTALL_LOG -Tail 6 }
+            $p.Refresh()
+          }
+          if (!$p.HasExited) { taskkill.exe /PID $p.Id /T /F; throw 'Windows offline installer timed out' }
+          if ($p.ExitCode -ne 0) { throw "Windows offline installer exit: $($p.ExitCode)" }
+      - name: Collect Windows installation diagnostics
+        if: always()
+        shell: pwsh
+        run: |
+          Get-AppxPackage | Select-Object Name,Version,Status | ConvertTo-Json > "$env:RUNNER_TEMP/packages.json"
+          Get-WinEvent -LogName 'Microsoft-Windows-AppXDeploymentServer/Operational' -MaxEvents 35 -ErrorAction Continue | Format-List TimeCreated,Id,Message > "$env:RUNNER_TEMP/appx-events.txt"
+          if (Test-Path C:/Windows/Logs/DISM/dism.log) { Get-Content C:/Windows/Logs/DISM/dism.log -Tail 150 > "$env:RUNNER_TEMP/dism-tail.txt" }
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: windows-${{ inputs.app }}-install-diagnostics
+          path: |
+            ${{ runner.temp }}/desktop-install.log
+            ${{ runner.temp }}/packages.json
+            ${{ runner.temp }}/appx-events.txt
+            ${{ runner.temp }}/dism-tail.txt
