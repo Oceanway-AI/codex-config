@@ -41,6 +41,13 @@ pub(super) fn safe_error_code(body: &Value, key: &str) -> Option<String> {
 pub(super) fn submit_item(shared: &Arc<Shared>, id: &str, input: &Input, index: usize, started: Instant) -> Result<SavedResult, Failure> {
     verify_unused_slot(input,index)?;
     let (body,request_id,provider,query_base) = image_protocol::submit(input,index,started,||authorize_post(shared,id,index,input))?;
+    let body = image_protocol::normalize_sync(body);
+    // Gateways may return a finished image with an X-Task-ID tracking header.
+    // Consume that image before interpreting the header as a pending receipt.
+    if body.get("data").and_then(Value::as_array).is_some_and(|entries|entries.iter().any(|entry|
+        ["b64_json","url"].iter().any(|field|entry.get(*field).and_then(Value::as_str).is_some_and(|value|!value.is_empty())))) {
+        return save_response_images(input,index,&body,request_id,started);
+    }
     let task_id = body.get("task_id").or_else(||body.get("id")).and_then(Value::as_str);
     if let Some(task_id) = task_id.filter(|_|body.get("status").is_some() || body.get("task_id").is_some()) {
         let task = RemoteTask { id: task_id.into(), api_base: provider.api_base.clone(), query_base,
@@ -58,7 +65,7 @@ pub(super) fn submit_item(shared: &Arc<Shared>, id: &str, input: &Input, index: 
         return Err(Failure { remote_pending: true, request_id,
             ..Failure::new("Oceanway accepted the image task. Query this job to retrieve the result.") });
     }
-    save_response_images(input,index,&image_protocol::normalize_sync(body),request_id,started)
+    save_response_images(input,index,&body,request_id,started)
 }
 
 pub(super) fn schedule_refresh(shared: &Arc<Shared>, id: &str) -> Result<(), String> {

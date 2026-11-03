@@ -250,6 +250,62 @@ fn nested_platform_storage_failure_keeps_useful_reason_without_raw_provider_deta
 }
 
 #[test]
+fn completed_images_with_task_tracking_do_not_poll_or_resubmit() {
+    let _serial=WORKER_TEST.lock().unwrap();
+    for variant in 0..3 {
+        let home=TempHome::new();
+        let mock=Mock::new(move |_,request| {
+            assert_eq!(request.method,"POST","finished images must not be queried as tasks");
+            assert_eq!(request.path,"/v1/images/generations");
+            let request_body:Value=serde_json::from_slice(&request.body).unwrap();
+            assert!(request_body.get("async").is_none(),"custom providers use standard Images requests");
+            assert_eq!(request_body["n"],1);
+            let body=match variant {
+                0=>success(),
+                1=>json!({"task_id":"finished-task","status":"completed","data":success()["data"]}),
+                _=>json!({"candidates":[{"content":{"parts":[{"inlineData":{"data":STANDARD.encode(png(320,160)),"mimeType":"image/png"}}]}}]}),
+            };
+            let mut reply=Reply::json(body);
+            reply.headers.push(("X-Task-ID".into(),"finished-task".into()));
+            reply
+        });
+        save_local_fixture_provider(&home.0,&mock.base,LOCAL_FIXTURE_KEY);
+        let service=ImageJobs::new(&home.0).unwrap();
+        let job=service.start(request(1),None,false).unwrap();
+        let result=finished(&service,&job.id);
+        assert_eq!(result.completed,1);
+        assert_eq!(result.failed,0);
+        assert!(result.items[0].remote_task.is_none());
+        assert_eq!(result.items[0].outputs.len(),1);
+        assert_eq!(fs::read(&result.items[0].outputs[0].path).unwrap(),png(320,160));
+        service.status(&job.id).unwrap();
+        assert_eq!(mock.count(),1);
+        assert!(service.retry(&job.id).is_err());
+    }
+}
+
+#[test]
+fn invalid_finished_image_with_tracking_header_fails_without_task_polling() {
+    let _serial=WORKER_TEST.lock().unwrap();
+    let home=TempHome::new();
+    let mock=Mock::new(|_,request| {
+        assert_eq!(request.method,"POST");
+        let mut reply=Reply::json(json!({"data":[{"b64_json":"!invalid!"}]}));
+        reply.headers.push(("X-Task-ID".into(),"invalid-image-task".into()));
+        reply
+    });
+    save_local_fixture_provider(&home.0,&mock.base,LOCAL_FIXTURE_KEY);
+    let service=ImageJobs::new(&home.0).unwrap();
+    let job=service.start(request(1),None,false).unwrap();
+    let result=finished(&service,&job.id);
+    assert_eq!(result.completed,0);
+    assert_eq!(result.failed,1);
+    assert!(result.items[0].remote_task.is_none());
+    service.status(&job.id).unwrap();
+    assert_eq!(mock.count(),1);
+}
+
+#[test]
 fn asynchronous_image_polling_obeys_retry_after_without_resubmitting() {
     let _serial=WORKER_TEST.lock().unwrap();
     let home=TempHome::new();
@@ -278,7 +334,7 @@ fn async_receipts_resume_after_restart_without_a_second_generation() {
         match (request.method.as_str(),request.path.as_str()) {
             ("POST","/v1/images/generations")=>{
                 let body:Value=serde_json::from_slice(&request.body).unwrap();
-                assert_eq!(body["async"],true);
+                assert!(body.get("async").is_none());
                 assert_eq!(body["n"],1);
                 Reply{status:202,headers:vec![],body:serde_json::to_vec(&json!({"task_id":"async-task-1","status":"queued"})).unwrap()}
             }

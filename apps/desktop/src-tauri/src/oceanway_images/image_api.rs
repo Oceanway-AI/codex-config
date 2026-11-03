@@ -2134,7 +2134,9 @@ fn post_image_at_with_guard(
         }
         builder.multipart(form)
     } else {
-        let mut body = json!({ "model": request.model, "prompt": prompt, "n": 1, "async": true, "response_format": "url", "output_format": "png" });
+        // Custom gateways use standard Images responses; Console async requests
+        // are prepared separately from its published model capabilities.
+        let mut body = json!({ "model": request.model, "prompt": prompt, "n": 1, "response_format": "url", "output_format": "png" });
         if !request.reference_urls.is_empty() {
             body["reference_images"] = json!(request.reference_urls);
         }

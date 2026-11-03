@@ -1,6 +1,6 @@
 # Oceanway Config 功能核验
 
-更新：2026-11-03。工作包：WP-CODEXCONFIG-001。开发分支：`codex/oceanway-config-rebuild`。源码 `3d60b9f3670466de87b3f2774158b6a1e880ea7c` 的三平台图片版安装包已发布到 [oceanway-preview](https://github.com/Oceanway-AI/codex-config/releases/tag/oceanway-preview)。
+更新：2026-11-03。工作包：WP-CODEXCONFIG-001。开发分支：`codex/oceanway-config-rebuild`。三平台安装包与对应源码、构建记录见 [oceanway-preview](https://github.com/Oceanway-AI/codex-config/releases/tag/oceanway-preview)。
 
 ## 当前用户可见功能
 
@@ -21,7 +21,11 @@
 
 本地 HTTP 测试确认两个原生下载任务同时接收字节，取消一个后另一个继续并校验完成。前端使用实际任务控制器验证独立进度、取消、打开安装包与页面切换。自定义地址覆盖模型查询、六款 Agent 配置、Codex 空白身份与 Key 轮换、图片 MCP 保存读回及旧记录兼容。独立 MCP 进程使用本地兼容 API 查询全部图片模型并生成两张实际 PNG。
 
-默认 Console 真实模型查询仍返回 36 个文本与 8 个图片模型；额外 4 个视频模型继续不进入配置流程，本轮没有提交付费生成。现用 Codex/Claude 四个配置文件 SHA256 未变。完整证据在 `.artifacts/concurrent-download-baseurl-20261103/`，文档仓记录为 PROC-02-030。更新安装包通过开发分支构建发布，状态以 Release 对应源码与运行记录为准。
+默认 Console 真实模型查询仍返回 36 个文本与 8 个图片模型；额外 4 个视频模型继续不进入配置流程，该查询没有提交付费生成。现用 Codex/Claude 四个配置文件 SHA256 未变。完整证据在 `.artifacts/concurrent-download-baseurl-20261103/`，文档仓记录为 PROC-02-030。更新安装包通过开发分支构建发布，状态以 Release 对应源码与运行记录为准。
+
+用户指定的自定义站点 `https://model.ocean-way.top` 实际返回 49 个模型，其中 36 个文本、9 个图片、4 个视频。Windows 应用从 GUI 保存该地址与 Key 后，独立 Codex 进程真实完成文本对话。随后发现图片兼容错误：同步图片响应同时带有 `X-Task-ID`，旧 MCP 把该编号当成待查询任务，而站点没有对应查询路由，返回 HTTP 404。使用同一地址与 Key 直接请求标准图片接口，40.86 秒返回一张 1024×1024 PNG，证明此次问题不是该图片渠道无法生成。
+
+修复后优先保存响应内的图片；自定义地址使用标准 Images 请求，默认 Console 继续按公开能力请求异步任务。回归覆盖同步图片带任务头、正文含任务编号、Gemini 内联图片及无效图片；已有异步恢复测试继续检查不会重复生成。成品在 Codex 中的复测及发布结果登记至 PROC-02-030。
 
 ## 上轮 Windows 安装版验收
 
@@ -56,7 +60,7 @@ Claude Desktop 的 Cowork 隔离测试遇到系统虚拟机服务与隔离用户
 
 ## 历史保留
 
-复用 CC Switch 原生适配器及 Codex 统一历史能力。修复 Oceanway 版本对切回已保存官方/其他供应商的拦截；Oceanway 自身配置继续校验专用网关。统一历史设置在配置成功后开启，配置预检查失败时保留此前设置。
+复用 CC Switch 原生适配器及 Codex 统一历史能力，支持切回已保存的官方或其他供应商。接入默认使用 Console，也支持用户填写的兼容服务地址。统一历史设置在配置成功后开启，配置预检查失败时保留此前设置。
 
 Codex 往返顺序为 Oceanway → 官方 → Oceanway → 其他已保存供应商 → 官方 → Oceanway。每次重开独立 app-server，调用未指定供应商筛选参数的默认 `thread/list`。旧会话均可见，正文 SHA256 一致。历史兼容只调整必要的供应商元数据，保留原文件备份、ID、正文和附件引用。
 
