@@ -1,3 +1,4 @@
+import { OCEANWAY_EDITION } from "@/config/edition";
 import { memo, useCallback, useMemo, useState } from "react";
 import { Copy } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -93,7 +94,7 @@ export const SessionFinalReply = memo(function SessionFinalReply({
     [],
   );
 
-  const cost = style.showStepCost ? final.cost : undefined;
+  const cost = !OCEANWAY_EDITION && style.showStepCost ? final.cost : undefined;
 
   return (
     <div className="group/final relative min-w-0 px-1.5 py-1">

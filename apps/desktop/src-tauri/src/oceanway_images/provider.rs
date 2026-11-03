@@ -222,6 +222,119 @@ pub fn read_provider_summary(home: &Path) -> Result<ProviderSummary, String> {
     Ok(summary(&load(home)?.0))
 }
 
+/// Discover the current Key's full image catalog. Saved selections are user
+/// preferences, not a replacement for the gateway's entitlement list.
+pub(super) fn image_models(home: &Path) -> Result<serde_json::Value, String> {
+    let record = read_record(home)?;
+    let models = fetch_image_models(&record.api_base, &record.api_key)?;
+    let default_model = record.default_model.filter(|id| models.contains(id));
+    Ok(serde_json::json!({"default_model": default_model, "models": models}))
+}
+
+pub(super) fn fetch_image_models(base: &str, key: &str) -> Result<Vec<String>, String> {
+    let client = reqwest::blocking::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(25))
+        .redirect(reqwest::redirect::Policy::none())
+        .build().map_err(|_| "Could not initialize Oceanway model discovery.")?;
+    let read = |response: reqwest::blocking::Response| -> Result<serde_json::Value, String> {
+        if !response.status().is_success() {
+            return Err(format!("Could not load Oceanway models (HTTP {}).", response.status().as_u16()));
+        }
+        let mut bytes = Vec::new();
+        response.take(4 * 1024 * 1024 + 1).read_to_end(&mut bytes)
+            .map_err(|_| "Could not read Oceanway models.")?;
+        if bytes.len() > 4 * 1024 * 1024 { return Err("Oceanway model response is too large.".into()); }
+        serde_json::from_slice(&bytes).map_err(|_| "Invalid Oceanway model response.".into())
+    };
+    let available = read(client.get(format!("{base}/models")).bearer_auth(key)
+        .send().map_err(|_| "Could not load models available to this Key. Please retry.")?)?;
+    let mut origin = Url::parse(base).map_err(|_| "Invalid Oceanway endpoint.")?;
+    origin.set_path("/api/platform/v1/public/offering");
+    let offering = read(client.get(origin).send()
+        .map_err(|_| "Could not load Oceanway image capabilities. Please retry.")?)?;
+    select_image_models(&available, &offering)
+}
+
+fn select_image_models(available: &serde_json::Value, offering: &serde_json::Value) -> Result<Vec<String>, String> {
+    let ids = available["data"].as_array().ok_or("Invalid Oceanway model list.")?;
+    let rows = offering.pointer("/data/models").and_then(serde_json::Value::as_array)
+        .ok_or("Invalid Oceanway image capabilities.")?;
+    let mut models: Vec<String> = rows.iter().filter(|row|
+        row["model_type"] == "image" && row["invocation_status"] == "available"
+            && ids.iter().any(|id| id["id"] == row["model_name"]))
+        .filter_map(|row| row["model_name"].as_str().filter(|id| valid_model(id)).map(str::to_owned))
+        .collect();
+    models.sort();
+    models.dedup();
+    Ok(models)
+}
+
+#[cfg(test)]
+mod catalog_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn discovery_reads_the_full_authenticated_catalog_without_changing_saved_preferences() {
+        use std::net::TcpListener;
+        let server = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}/v1", server.local_addr().unwrap());
+        let worker = std::thread::spawn(move || {
+            for index in 0..2 {
+                let (mut stream, _) = server.accept().unwrap();
+                stream.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+                let mut header = Vec::new();
+                while !header.ends_with(b"\r\n\r\n") {
+                    let mut byte = [0]; stream.read_exact(&mut byte).unwrap(); header.push(byte[0]);
+                }
+                let header = String::from_utf8(header).unwrap().to_lowercase();
+                let body = if index == 0 {
+                    assert!(header.starts_with("get /v1/models "));
+                    assert!(header.contains("authorization: bearer catalog-fixture-secret"));
+                    json!({"data":[{"id":"saved-image"},{"id":"new-image"}]})
+                } else {
+                    assert!(header.starts_with("get /api/platform/v1/public/offering "));
+                    assert!(!header.contains("authorization:"));
+                    json!({"data":{"models":[
+                        {"model_name":"saved-image","model_type":"image","invocation_status":"available"},
+                        {"model_name":"new-image","model_type":"image","invocation_status":"available"},
+                        {"model_name":"not-entitled","model_type":"image","invocation_status":"available"}]}})
+                }.to_string();
+                write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",body.len(),body).unwrap();
+            }
+        });
+        let home = std::env::temp_dir().join(format!("oceanway-catalog-{}-{}", std::process::id(), SEQUENCE.fetch_add(1, Ordering::Relaxed)));
+        fs::create_dir(&home).unwrap();
+        let home = fs::canonicalize(home).unwrap();
+        fixture(&home,&base,"catalog-fixture-secret","saved-image");
+        let before = fs::read(home.join(RECORD_NAME)).unwrap();
+        let result = image_models(&home).unwrap();
+        worker.join().unwrap();
+        assert_eq!(result,json!({"default_model":"saved-image","models":["new-image","saved-image"]}));
+        assert!(!result.to_string().contains("catalog-fixture-secret"));
+        assert_eq!(fs::read(home.join(RECORD_NAME)).unwrap(),before);
+        fs::remove_file(home.join(RECORD_NAME)).unwrap(); fs::remove_dir(home).unwrap();
+    }
+
+    #[test]
+    fn discovers_every_entitled_image_family_without_text_video_or_unavailable_models() {
+        let available = json!({"data":[{"id":"gpt-image-2"},{"id":"gemini-nano-banana-2.1"},
+            {"id":"grok-imagine-image"},{"id":"new-picture-model"},{"id":"gpt-6"},
+            {"id":"seedance-2.0"},{"id":"offline-image"},{"id":"unclassified"}]});
+        let mut rows: Vec<_> = ["gpt-image-2","gemini-nano-banana-2.1","grok-imagine-image",
+            "new-picture-model","not-entitled"].iter().map(|id|
+            json!({"model_name":id,"model_type":"image","invocation_status":"available"})).collect();
+        rows.extend([
+            json!({"model_name":"gpt-6","model_type":"text","invocation_status":"available"}),
+            json!({"model_name":"seedance-2.0","model_type":"video","invocation_status":"available"}),
+            json!({"model_name":"offline-image","model_type":"image","invocation_status":"unavailable"})]);
+        assert_eq!(select_image_models(&available,&json!({"data":{"models":rows}})).unwrap(),
+            vec!["gemini-nano-banana-2.1","gpt-image-2","grok-imagine-image","new-picture-model"]);
+        assert!(select_image_models(&json!({}),&json!({})).is_err());
+    }
+}
+
 /// Backend-only access for configuring agent adapters. Never register this as an
 /// IPC command, serialize its return value, or include it in diagnostic logs.
 pub fn read_api_key(home: &Path) -> Result<String, String> {

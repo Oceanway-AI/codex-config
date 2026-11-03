@@ -84,6 +84,7 @@ export function isGlobalPage(view: View): view is GlobalPage {
 
 export function parseView(value: string | null | undefined): View | null {
   if (!value) return null;
+  if (OCEANWAY_EDITION && value === "usage") return "connection";
   if (value in LEGACY_VIEWS) return LEGACY_VIEWS[value];
   if (value === "settings") return "settings";
   if ((APP_PAGES as string[]).includes(value)) return value as AppPage;

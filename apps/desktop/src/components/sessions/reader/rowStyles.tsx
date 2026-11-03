@@ -1,3 +1,4 @@
+import { OCEANWAY_EDITION } from "@/config/edition";
 import { memo, type ReactNode } from "react";
 
 import { cn } from "@/lib/utils";
@@ -88,14 +89,14 @@ export const StepMetaText = memo(function StepMetaText({
       <span key="lines">{rt("lines", { count: meta.lineCount })}</span>,
     );
   }
-  if (meta.tokens !== undefined) {
+  if (!OCEANWAY_EDITION && meta.tokens !== undefined) {
     parts.push(
       <span key="tok">
         {rt("summaryTokens", { tokens: formatTokens(meta.tokens) })}
       </span>,
     );
   }
-  if (meta.costUsd !== undefined) {
+  if (!OCEANWAY_EDITION && meta.costUsd !== undefined) {
     parts.push(<span key="cost">{moneyCompact(meta.costUsd)}</span>);
   }
   if (parts.length === 0) return null;

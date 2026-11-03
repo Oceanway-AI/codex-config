@@ -6,9 +6,13 @@ export interface ConnectionSummary {
   baseUrl: string;
   configuredApps: string[];
   defaultImageModel: string | null;
+  allowedImageModels?: string[];
+  appModels?: Record<string, { model: string; models: string[] }>;
 }
 export interface OceanwayModel {
   id: string;
+  supportedProtocols?: string[];
+  modelType?: string;
 }
 export interface ModelCatalog {
   baseUrl: string;
@@ -27,7 +31,7 @@ export interface DetectedApp {
 }
 export interface ApplyRequest {
   apiKey: string;
-  apps: { appId: string; model: string }[];
+  apps: { appId: string; model: string; models?: string[] }[];
   imageModel?: string;
   allowedImageModels?: string[];
 }

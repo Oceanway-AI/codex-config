@@ -1,5 +1,45 @@
 import type { OceanwayModel } from "@/lib/api/oceanway";
 
+export function conversationProtocol(appId: string, defaultModel = ""): string {
+  if (appId === "codex") return "openai-responses";
+  if (appId.startsWith("claude")) return "anthropic-messages";
+  if (appId === "hermes") {
+    const family = defaultModel.split("/").pop() ?? defaultModel;
+    if (/^(gpt-|o1|o3|o4)/i.test(family)) return "openai-responses";
+    if (/^claude-/i.test(family)) return "anthropic-messages";
+  }
+  return "openai-chat";
+}
+
+export function compatibleConversationModels(
+  appId: string,
+  models: OceanwayModel[],
+  defaultModel = "",
+): string[] {
+  if (!defaultModel) {
+    defaultModel = recommendedModel(
+      appId,
+      conversationModels(
+        models.filter(
+          (model) =>
+            model.supportedProtocols === undefined ||
+            model.supportedProtocols.includes(
+              conversationProtocol(appId, model.id),
+            ),
+        ),
+      ),
+    );
+  }
+  const protocol = conversationProtocol(appId, defaultModel);
+  return conversationModels(
+    models.filter(
+      (model) =>
+        model.supportedProtocols === undefined ||
+        model.supportedProtocols.includes(protocol),
+    ),
+  );
+}
+
 // Capability metadata is not consistently supplied by /models. Conservative
 // classification keeps media/embedding models out of conversation selectors.
 export function isImageModel(id: string): boolean {
@@ -11,12 +51,24 @@ export function isVideoModel(id: string): boolean {
   return /(?:seedance|sora|veo|kling|(?:^|[-_/])video(?:[-_/]|$))/i.test(id);
 }
 export function videoModels(models: OceanwayModel[]): string[] {
-  return [...new Set(models.map((m) => m.id).filter(isVideoModel))].sort(
-    (a, b) => b.localeCompare(a, "en", { numeric: true }),
-  );
+  return [
+    ...new Set(
+      models
+        .filter((m) =>
+          m.modelType ? m.modelType === "video" : isVideoModel(m.id),
+        )
+        .map((m) => m.id),
+    ),
+  ].sort((a, b) => b.localeCompare(a, "en", { numeric: true }));
 }
 export function conversationModels(models: OceanwayModel[]): string[] {
-  return [...new Set(models.map((m) => m.id))]
+  return [
+    ...new Set(
+      models
+        .filter((m) => !m.modelType || m.modelType === "text")
+        .map((m) => m.id),
+    ),
+  ]
     .filter(
       (id) =>
         !isImageModel(id) &&
@@ -28,9 +80,15 @@ export function conversationModels(models: OceanwayModel[]): string[] {
     .sort((a, b) => b.localeCompare(a, "en", { numeric: true }));
 }
 export function imageModels(models: OceanwayModel[]): string[] {
-  return [...new Set(models.map((m) => m.id).filter(isImageModel))].sort(
-    (a, b) => b.localeCompare(a, "en", { numeric: true }),
-  );
+  return [
+    ...new Set(
+      models
+        .filter((m) =>
+          m.modelType ? m.modelType === "image" : isImageModel(m.id),
+        )
+        .map((m) => m.id),
+    ),
+  ].sort((a, b) => b.localeCompare(a, "en", { numeric: true }));
 }
 
 export function recommendedImageModel(models: string[]): string {

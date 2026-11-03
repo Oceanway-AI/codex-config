@@ -1531,3 +1531,25 @@ fn migration_v23_to_v24_adds_dsh_flags_without_changing_omp_or_skill_state() {
             .get::<_, bool>(0))
         .unwrap());
 }
+
+#[test]
+fn migration_v24_to_v25_preserves_existing_mcp_settings() {
+    let conn = Connection::open_in_memory().unwrap();
+    Database::create_tables_on_conn(&conn).unwrap();
+    conn.execute_batch(
+        "ALTER TABLE mcp_servers DROP COLUMN enabled_claude_desktop;
+         INSERT INTO mcp_servers (id, name, server_config, enabled_claude, enabled_codex, enabled_dsh)
+         VALUES ('media', 'Oceanway Media', '{\"command\":\"keep-me\"}', 1, 1, 1);",
+    ).unwrap();
+    Database::set_user_version(&conn, 24).unwrap();
+    Database::apply_schema_migrations_on_conn(&conn).unwrap();
+    assert_eq!(Database::get_user_version(&conn).unwrap(), SCHEMA_VERSION);
+    let row: (String, bool, bool, bool, bool) = conn.query_row(
+        "SELECT server_config, enabled_claude, enabled_codex, enabled_dsh, enabled_claude_desktop FROM mcp_servers WHERE id = 'media'",
+        [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+    ).unwrap();
+    assert_eq!(row, ("{\"command\":\"keep-me\"}".into(), true, true, true, false));
+    conn.execute("UPDATE mcp_servers SET enabled_claude_desktop = 1", []).unwrap();
+    Database::apply_schema_migrations_on_conn(&conn).unwrap();
+    assert!(conn.query_row("SELECT enabled_claude_desktop FROM mcp_servers", [], |r| r.get::<_, bool>(0)).unwrap());
+}

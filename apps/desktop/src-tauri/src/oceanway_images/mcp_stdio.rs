@@ -28,7 +28,7 @@ use std::time::Duration;
 use tokio::io::{AsyncRead, ReadBuf};
 use tokio::time::{sleep, timeout, Instant};
 
-const TOOL_NAMES: [&str; 7] = [
+const TOOL_NAMES: [&str; 8] = [
     "generate_images",
     "get_image_job",
     "cancel_image_job",
@@ -36,6 +36,7 @@ const TOOL_NAMES: [&str; 7] = [
     "get_video_models",
     "generate_video",
     "get_video_job",
+    "get_image_models",
 ];
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
@@ -218,6 +219,11 @@ fn tools() -> Vec<Tool> {
             "Query a saved Oceanway video job and download its completed video to output/videos. Works after Agent restart with the same Oceanway settings. Does not submit or retry generation. Waits up to 20 seconds by default (maximum 30); poll while preparing, submitting, queued, in_progress or downloading. If outcome_unknown or interrupted, check the account task history and ask before starting a new paid request. A download/query error can be retried by polling the same job.",
             JsonObject::new(),
         ).with_input_schema::<GetArgs>().with_annotations(annotations(true, true, true)),
+        Tool::new(
+            "get_image_models",
+            "Query all image models currently available to the user's Oceanway account, plus the saved default model. Use this when the user wants to choose or switch image models. Pass the chosen model ID to generate_images; omit it to use the default. This only reads the model catalog and never generates images or returns credentials.",
+            JsonObject::new(),
+        ).with_input_schema::<EmptyArgs>().with_annotations(annotations(true, true, true)),
     ]
 }
 
@@ -315,6 +321,11 @@ impl ImageMcp {
         let jobs = self.jobs.clone();
         let home = blocking(move || jobs.home()).await?;
         match name {
+            "get_image_models" => {
+                let _: EmptyArgs = parse(arguments)?;
+                let value = blocking(move || super::provider::image_models(&home)).await?;
+                Ok(CallToolResult::structured(value))
+            }
             "get_video_models" => {
                 let _: EmptyArgs = parse(arguments)?;
                 let guard = Operation::new(self.session.clone());
@@ -478,7 +489,7 @@ impl ImageMcp {
                 "Image calls are disabled during the non-billing MCP discovery check.".into(),
             );
         }
-        if matches!(request.name.as_ref(),"get_video_models"|"generate_video"|"get_video_job") {
+        if matches!(request.name.as_ref(),"get_image_models"|"get_video_models"|"generate_video"|"get_video_job") {
             return self.video_dispatch(request.name.as_ref(),request.arguments.unwrap_or_default(),context)
                 .await.unwrap_or_else(tool_error);
         }
@@ -548,6 +559,10 @@ impl ServerHandler for ImageMcp {
         }
         let mut result = ListToolsResult::default();
         result.tools = tools();
+        // Current DeepSeek Harness requires explicit MCP list-cache metadata.
+        // Do not let a client keep tool schemas across application updates.
+        result.ttl_ms = Some(0);
+        result.cache_scope = Some(rmcp::model::CacheScope::Private);
         Ok(result)
     }
 

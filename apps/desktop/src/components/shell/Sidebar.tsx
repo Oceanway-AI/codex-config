@@ -1,4 +1,5 @@
 import { OCEANWAY_EDITION } from "@/config/edition";
+import { OCEANWAY_WEBSITE } from "@/config/oceanway";
 import { useId, useRef, useState, type ComponentType } from "react";
 import { useTranslation } from "react-i18next";
 import { useQuery } from "@tanstack/react-query";
@@ -24,6 +25,9 @@ import {
   SlidersHorizontal,
 } from "lucide-react";
 import type { AppId } from "@/lib/api";
+import { settingsApi } from "@/lib/api";
+import { toast } from "@/lib/toast";
+import { Button } from "@/components/ui/button";
 import type { VisibleApps } from "@/types";
 import { orderOceanwayAppIds as orderAppIds } from "@/config/appConfig";
 import type { GlobalPage, SettingsSection, View } from "@/lib/navigation";
@@ -69,7 +73,7 @@ interface SidebarProps {
 type DirectoryProps = SidebarProps & { collapsed: boolean };
 
 /**
- * Oceanway 主导航：连接 → 常用应用 / 更多应用 → 会话 / 用量 → 高级功能。
+ * Oceanway 主导航：官网 → 连接 → 全部应用 → 会话 → 高级功能。
  * 主目录统一滚动，底栏保留「应用 · 设置」；上游目录保持原有分组。
  * 进入设置后整条侧栏换成设置目录。收起时是 72px 的图标轨；
  * 展开 / 收起时宽度一步到位，边缘的滑动由盖板的 transform 动画画出（见 useSidebarCollapsed），文字不换行、被裁掉而不是挤成两行。
@@ -98,6 +102,28 @@ export function Sidebar(props: SidebarProps) {
         {t("nav.skipToContent")}
       </a>
       <SidebarTopBar collapsed={collapsed} onToggle={toggle} />
+      {OCEANWAY_EDITION && (
+        <div className="shrink-0 px-2 pb-3 pt-1">
+          <HoverTip
+            content={collapsed ? "登录 Oceanway 官网" : undefined}
+            side="right"
+          >
+            <Button
+              className="w-full gap-2"
+              size="compact"
+              aria-label="登录 Oceanway 官网"
+              onClick={() => {
+                void settingsApi.openExternal(OCEANWAY_WEBSITE).catch(() => {
+                  toast.error("官网未能打开，请稍后重试。");
+                });
+              }}
+            >
+              <Globe className="h-4 w-4 shrink-0" aria-hidden="true" />
+              {!collapsed && <span>登录 Oceanway 官网</span>}
+            </Button>
+          </HoverTip>
+        </div>
+      )}
       {inSettings ? (
         <SettingsDirectory {...props} collapsed={collapsed} />
       ) : (
@@ -236,11 +262,8 @@ function MainDirectory({
     (app) => visibleApps[app] && app !== "agy",
   );
   const onAppPage = isAppPage(view);
-  const [moreAppsOpen, setMoreAppsOpen] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const directoryId = useId();
-  const primaryApps = apps.filter((app) => app === "codex" || app === "claude");
-  const moreApps = apps.filter((app) => app !== "codex" && app !== "claude");
 
   // 选了的项里是 0 的不写（没配定价时金额总是 0）；命中率在今天还没有请求时不写；
   // 全都没有就整个不显示。两项都有时只写数、上下两行（「今日」放进悬停和读屏）：
@@ -300,14 +323,18 @@ function MainDirectory({
     },
   ];
 
-  const globals: typeof upstreamGlobals = [
-    {
-      page: "connection" as GlobalPage,
-      label: "连接 Oceanway",
-      icon: KeyRound,
-    },
-    ...upstreamGlobals.filter((item) => item.page !== "auth"),
-  ];
+  const globals: typeof upstreamGlobals = OCEANWAY_EDITION
+    ? [
+        {
+          page: "connection" as GlobalPage,
+          label: "连接 Oceanway",
+          icon: KeyRound,
+        },
+        ...upstreamGlobals.filter(
+          (item) => item.page !== "auth" && item.page !== "usage",
+        ),
+      ]
+    : upstreamGlobals;
 
   const isGlobalSelected = (page: GlobalPage) =>
     view === page || (page === "skills" && view === "skillsDiscovery");
@@ -359,34 +386,9 @@ function MainDirectory({
               className="mt-4 flex shrink-0 flex-col"
             >
               {!collapsed && (
-                <span className="px-4 pb-1 text-caption text-fg-3">
-                  常用应用
-                </span>
+                <span className="px-4 pb-1 text-caption text-fg-3">应用</span>
               )}
-              {primaryApps.map(renderApp)}
-              {moreApps.length > 0 && (
-                <>
-                  <NavDisclosure
-                    collapsed={collapsed}
-                    expanded={moreAppsOpen}
-                    controls={`${directoryId}-more-apps`}
-                    label="更多应用"
-                    icon={LayoutGrid}
-                    onClick={() => setMoreAppsOpen((open) => !open)}
-                  />
-                  <div
-                    id={`${directoryId}-more-apps`}
-                    className="flex flex-col"
-                  >
-                    {moreApps
-                      .filter(
-                        (app) =>
-                          moreAppsOpen || (onAppPage && activeApp === app),
-                      )
-                      .map(renderApp)}
-                  </div>
-                </>
-              )}
+              {apps.map(renderApp)}
             </div>
             <div
               className={cn(
@@ -395,9 +397,7 @@ function MainDirectory({
               )}
             />
             {globals
-              .filter(
-                (item) => item.page === "sessions" || item.page === "usage",
-              )
+              .filter((item) => item.page === "sessions")
               .map(renderGlobal)}
             <div className="mt-3 flex flex-col">
               <NavDisclosure

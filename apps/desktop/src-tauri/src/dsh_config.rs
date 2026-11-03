@@ -757,6 +757,11 @@ pub(crate) fn validate_provider(id: &str, config: &Value) -> Result<(), AppError
             "Add at least one DeepSeek Harness model".into(),
         ));
     };
+    if config.get("defaultModel").is_some_and(|default| {
+        default.as_str().is_none_or(|model| !models.contains_key(model))
+    }) {
+        return Err(AppError::InvalidInput("Choose a default from the selected DeepSeek Harness models".into()));
+    }
     for (id, model) in models {
         if id.trim().is_empty() || !model.is_object() {
             return Err(AppError::InvalidInput(
@@ -867,12 +872,50 @@ fn save_paths_and_commit<T>(
             let (credentials, native) = native_provider(id, &config, &texts[0])?;
             let mut next = vec![credentials];
             for text in profile_texts {
-                next.push(update_provider(text, id, Some(native.clone()), create)?);
+                let updated = update_provider(text, id, Some(native.clone()), create)?;
+                next.push(if let Some(model) = config["defaultModel"].as_str() {
+                    update_default_model(&updated, id, model)?
+                } else { updated });
             }
             Ok(next)
         },
         commit,
     )
+}
+
+/// Set the native default used by Desktop, Web and Headless for newly opened sessions.
+/// Existing sessions keep their own selected model and history.
+fn update_default_model(text: &str, provider: &str, model: &str) -> Result<String, AppError> {
+    let mut entry = entries(text)?.into_iter()
+        .find(|entry| entry["id"].as_str() == Some("agent-default-model"))
+        .unwrap_or(serde_yaml::to_value(json!({"id":"agent-default-model","config":{}})).unwrap());
+    if entry.get("config").is_none() { entry["config"] = Yaml::Mapping(Default::default()); }
+    let config = entry["config"].as_mapping_mut()
+        .ok_or_else(||AppError::Config("Invalid DeepSeek Harness default model configuration".into()))?;
+    config.insert("provider".into(), provider.into());
+    config.insert("model".into(), model.into());
+    // An effort supported by the previous provider may not be accepted by this model.
+    config.remove(Yaml::from("reasoningEffort"));
+    replace_entry(text, "agent-default-model", Some(entry))
+}
+
+#[cfg(test)]
+mod oceanway_default_tests {
+    use super::*;
+
+    #[test]
+    fn oceanway_default_selection_preserves_other_profile_entries() {
+        let other = "- id: customer-plugin\n  disabled: !!js \"false\"\n";
+        let text = format!("{other}- id: agent-default-model\n  config:\n    provider: deepseek-official\n    model: deepseek-flash\n    reasoningEffort: maximum\n");
+        let next = update_default_model(&text, "oceanway", "deepseek-v4.1-flash").unwrap();
+        assert!(next.starts_with(other));
+        let rows = entries(&next).unwrap();
+        let default = rows.iter().find(|e|e["id"] == "agent-default-model").unwrap();
+        assert_eq!(default["config"]["provider"], "oceanway");
+        assert_eq!(default["config"]["model"], "deepseek-v4.1-flash");
+        assert!(default["config"].get("reasoningEffort").is_none());
+        assert_eq!(next, update_default_model(&next, "oceanway", "deepseek-v4.1-flash").unwrap());
+    }
 }
 
 /// Seed a newly encountered profile once. Keep the receipt beside the native profiles, rather
@@ -1164,6 +1207,7 @@ fn native_provider(
         object.remove("kind");
         object.remove("enabled");
         object.remove("headers");
+        object.remove("defaultModel");
         object.insert(
             "displayName".into(),
             config.get("name").cloned().unwrap_or(json!(id)),

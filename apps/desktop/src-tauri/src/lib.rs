@@ -1375,58 +1375,7 @@ pub fn run() {
                     }
                 });
 
-                // Session log usage sync: 启动时同步一次，之后每 10 分钟兜底一次（防 CLI 清理旧会话
-                // 文件前漏导入）；用量页打开时由前端按所选间隔加扫
-                let db_for_session_sync = state.db.clone();
-                tauri::async_runtime::spawn(async move {
-                    const SESSION_SYNC_INTERVAL_SECS: u64 = 10 * 60;
 
-                    async fn run_session_sync(db: std::sync::Arc<crate::database::Database>, backfill: bool) {
-                        // 手动扫描模式下跳过定时扫描；backfill 轮（启动首轮）仍进入，
-                        // 费用回填只修补数据库既有行（含代理记账行），不读会话文件
-                        if !backfill && !crate::settings::get_settings().session_auto_sync_enabled {
-                            return;
-                        }
-                        let _guard = crate::services::session_usage::session_sync_mutex()
-                            .lock()
-                            .await;
-                        let task = tauri::async_runtime::spawn_blocking(move || {
-                            if backfill {
-                                if let Err(error) = db.backfill_missing_usage_costs() {
-                                    log::warn!("Usage cost startup backfill failed: {error}");
-                                }
-                            }
-                            if !crate::settings::get_settings().session_auto_sync_enabled {
-                                return crate::services::session_usage::SessionSyncResult::default();
-                            }
-                            crate::services::session_usage::sync_all_unlocked(&db)
-                        });
-                        match task.await {
-                            Ok(result) if !result.errors.is_empty() => {
-                                log::warn!(
-                                    "Session usage sync completed with {} error(s)",
-                                    result.errors.len()
-                                );
-                            }
-                            Ok(_) => {}
-                            Err(error) => log::warn!("Session usage blocking task failed: {error}"),
-                        }
-                    }
-
-                    // 首次同步（含费用回填）
-                    run_session_sync(db_for_session_sync.clone(), true).await;
-
-                    // 定期同步
-                    let mut interval = tokio::time::interval(std::time::Duration::from_secs(
-                        SESSION_SYNC_INTERVAL_SECS,
-                    ));
-                    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-                    interval.tick().await; // skip immediate first tick
-                    loop {
-                        interval.tick().await;
-                        run_session_sync(db_for_session_sync.clone(), false).await;
-                    }
-                });
             });
 
             // Linux: 禁用 WebKitGTK 硬件加速，防止 EGL 初始化失败导致白屏

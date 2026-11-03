@@ -2,6 +2,32 @@ use oceanway_image_service_tests::oceanway_images::mcp_stdio;
 use std::path::Path;
 
 #[tokio::test]
+async fn image_model_discovery_requires_configuration_instead_of_returning_a_fake_catalog() {
+    use rmcp::{model::CallToolRequestParams, transport::TokioChildProcess, ServiceExt};
+    use std::time::Duration;
+    use tokio::time::timeout;
+
+    let home = std::env::temp_dir().join(format!("oceanway-model-discovery-{}", std::process::id()));
+    std::fs::create_dir(&home).unwrap();
+    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_oceanway-image-mcp-fixture"));
+    command.arg("--image-mcp-stdio").env("OCEANWAY_CONFIG_HOME", &home)
+        .env_remove("OCEANWAY_MCP_CHECK_ONLY").kill_on_drop(true);
+    #[cfg(windows)]
+    command.creation_flags(0x08000000);
+    let mut client = timeout(Duration::from_secs(10), ().serve(TokioChildProcess::new(command).unwrap()))
+        .await.unwrap().unwrap();
+    let listed = client.list_tools(None).await.unwrap();
+    assert_eq!(listed.ttl_ms, Some(0));
+    assert_eq!(listed.cache_scope, Some(rmcp::model::CacheScope::Private));
+    let result = timeout(Duration::from_secs(5), client.call_tool(CallToolRequestParams::new("get_image_models")))
+        .await.unwrap().unwrap();
+    assert_eq!(result.is_error, Some(true));
+    assert!(result.structured_content.as_ref().and_then(|value| value.get("models")).is_none());
+    assert!(client.close_with_timeout(Duration::from_secs(5)).await.unwrap().is_some());
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[tokio::test]
 async fn real_child_process_initializes_without_credentials_or_image_requests() {
     let directory =
         std::env::temp_dir().join(format!("oceanway-stdio-fixture-{}", std::process::id()));
@@ -130,7 +156,7 @@ async fn discovery_check_preserves_existing_job_bytes_and_rejects_all_tool_calls
         .unwrap()
         .unwrap();
     let tools = client.list_all_tools().await.unwrap();
-    assert_eq!(tools.len(), 7);
+    assert_eq!(tools.len(), 8);
     for tool in tools {
         let result = timeout(
             Duration::from_secs(5),

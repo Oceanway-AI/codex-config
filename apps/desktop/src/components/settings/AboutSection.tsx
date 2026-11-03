@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { ExternalLink, Github, Globe, Info, Loader2 } from "lucide-react";
+import { Github, Globe, Info, Loader2 } from "lucide-react";
 import { getVersion } from "@tauri-apps/api/app";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
@@ -7,16 +7,13 @@ import { Badge } from "@/components/ui/badge";
 import { settingsApi } from "@/lib/api";
 import { toast } from "@/lib/toast";
 import oceanwayLogo from "@/assets/oceanway/oceanway-ai-app-blue.svg";
+import { OCEANWAY_WEBSITE } from "@/config/oceanway";
 
 interface AboutSectionProps {
   isPortable: boolean;
 }
 
-const OCEANWAY_WEBSITE = "https://ocean-way.top";
 const OCEANWAY_REPOSITORY = "https://github.com/Oceanway-AI/codex-config";
-const UPSTREAM_REPOSITORY = "https://github.com/farion1231/cc-switch";
-const UPSTREAM_LICENSE =
-  "https://github.com/farion1231/cc-switch/blob/c0189078aacdd80fd2462f59b345f55f62b41cf2/LICENSE";
 
 // Read the local build version without contacting an update service.
 let appVersionCache: string | null = null;
@@ -103,11 +100,8 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
           AI 应用。
         </p>
         <p className="text-fg-2">
-          基于 CC Switch 改造，沿用原有界面、应用管理和会话功能，简化 Oceanway
-          接入与模型选择。
-        </p>
-        <p className="text-caption text-fg-3">
-          当前为开发版本，功能仍在验证中。正式安装包和自动更新渠道尚未开放。
+          通过 Oceanway Console 网关接入模型。登录官网后，可进入 Console 管理
+          API Key、查看调用情况。
         </p>
       </div>
 
@@ -130,39 +124,6 @@ export function AboutSection({ isPortable }: AboutSectionProps) {
           <Github className="h-3.5 w-3.5" />
           项目 GitHub
         </Button>
-      </div>
-
-      <div className="space-y-3 px-5 py-4">
-        <div className="space-y-1">
-          <h3 className="text-body font-medium text-fg-1">开源来源与致谢</h3>
-          <p className="text-body text-fg-2">
-            感谢 CC Switch 作者及贡献者。本应用以 CC Switch v4.0.24 为基础，遵循
-            MIT 许可，保留原项目版权与许可声明。
-          </p>
-          <p className="text-caption text-fg-3">
-            CC Switch — Copyright (c) 2025 Jason Young
-          </p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <Button
-            type="button"
-            variant="neutral"
-            size="compact"
-            onClick={() => void openLink(UPSTREAM_REPOSITORY)}
-          >
-            <Github className="h-3.5 w-3.5" />
-            CC Switch 源项目
-          </Button>
-          <Button
-            type="button"
-            variant="neutral"
-            size="compact"
-            onClick={() => void openLink(UPSTREAM_LICENSE)}
-          >
-            <ExternalLink className="h-3.5 w-3.5" />
-            MIT 许可与版权
-          </Button>
-        </div>
       </div>
     </div>
   );

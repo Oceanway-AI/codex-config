@@ -4,7 +4,6 @@ import {
   Check,
   CheckCircle2,
   ChevronDown,
-  ChevronRight,
   CircleAlert,
   Download,
   Eye,
@@ -36,8 +35,9 @@ import {
   type ApplyResult,
 } from "@/lib/api/oceanway";
 import type { AppId } from "@/lib/api";
+import { ModelSelection } from "./ModelSelection";
 import {
-  conversationModels,
+  compatibleConversationModels,
   familyModels,
   imageModels,
   recommendedModel,
@@ -82,7 +82,6 @@ export function OceanwayConfigPanel({
   const [key, setKey] = useState("");
   const [showKey, setShowKey] = useState(false);
   const [editingKey, setEditingKey] = useState(false);
-  const [showAllApps, setShowAllApps] = useState(false);
   const [editingModels, setEditingModels] = useState<Record<string, boolean>>(
     {},
   );
@@ -91,7 +90,11 @@ export function OceanwayConfigPanel({
   const [catalog, setCatalog] = useState<ModelCatalog>();
   const [selected, setSelected] = useState<string[]>([]);
   const [models, setModels] = useState<Record<string, string>>({});
+  const [selectedModels, setSelectedModels] = useState<
+    Record<string, string[]>
+  >({});
   const [imageModel, setImageModel] = useState("");
+  const [selectedImages, setSelectedImages] = useState<string[]>([]);
   const [busy, setBusy] = useState<
     "load" | "check" | "save" | "launch" | "install" | null
   >("load");
@@ -103,21 +106,14 @@ export function OceanwayConfigPanel({
   const generation = useRef(0);
   const initialized = useRef(false);
   const detectedIds = useRef<string[]>([]);
-  const textModels = conversationModels(catalog?.models ?? []);
   const pictures = imageModels(catalog?.models ?? []);
-  const displayed = appId
-    ? apps.filter((a) => a.appId === appId)
-    : apps.filter(
-        (a) =>
-          showAllApps ||
-          COMMON_APPS.includes(a.appId) ||
-          selected.includes(a.appId),
-      );
-  const extraApps = apps.filter((a) => !COMMON_APPS.includes(a.appId));
+  const displayed = appId ? apps.filter((a) => a.appId === appId) : apps;
   const canSave =
     !!catalog &&
     selected.length > 0 &&
-    selected.every((id) => !!models[id]) &&
+    selected.every(
+      (id) => !!models[id] && selectedModels[id]?.includes(models[id]),
+    ) &&
     !busy;
   const step = result ? 3 : catalog ? 2 : 1;
   const appName = (id: string) => apps.find((a) => a.appId === id)?.name ?? id;
@@ -136,6 +132,7 @@ export function OceanwayConfigPanel({
     try {
       if (
         installer.job &&
+        (!appId || installer.job.appId === appId) &&
         ["ready", "awaiting_install"].includes(installer.job.stage)
       )
         await installer.check();
@@ -148,30 +145,55 @@ export function OceanwayConfigPanel({
           (a) =>
             available(a) &&
             (appId ? a.appId === appId : COMMON_APPS.includes(a.appId)) &&
-            (!initialized.current || !detectedIds.current.includes(a.appId)),
+            (appId ||
+              !initialized.current ||
+              !detectedIds.current.includes(a.appId)),
         )
         .map((a) => a.appId);
       setConnection(summary);
       setApps(detected);
       setSelected((previous) => [
         ...new Set([
-          ...previous.filter((id) =>
-            detected.some((a) => a.appId === id && available(a)),
+          ...previous.filter(
+            (id) =>
+              (!appId || id === appId) &&
+              detected.some((a) => a.appId === id && available(a)),
           ),
           ...newlyAvailable,
         ]),
       ]);
       initialized.current = true;
       detectedIds.current = detected.filter(available).map((a) => a.appId);
-      if (catalog)
+      if (catalog) {
         setModels((previous) =>
           Object.fromEntries(
             detected.map((a) => [
               a.appId,
-              previous[a.appId] ?? recommendedModel(a.appId, textModels),
+              previous[a.appId] ??
+                recommendedModel(
+                  a.appId,
+                  compatibleConversationModels(a.appId, catalog.models),
+                ),
             ]),
           ),
         );
+        setSelectedModels((previous) =>
+          Object.fromEntries(
+            detected.map((a) => [
+              a.appId,
+              previous[a.appId] ??
+                familyModels(
+                  a.appId,
+                  compatibleConversationModels(
+                    a.appId,
+                    catalog.models,
+                    models[a.appId],
+                  ),
+                ),
+            ]),
+          ),
+        );
+      }
     } catch (e) {
       setError(errorText(e));
     } finally {
@@ -195,9 +217,11 @@ export function OceanwayConfigPanel({
     setCatalog(undefined);
     setResult(undefined);
     setModels({});
+    setSelectedModels({});
     setOtherModels({});
     setEditingModels({});
     setImageModel("");
+    setSelectedImages([]);
     setEditingImage(false);
     setError("");
     setLaunchMessage("");
@@ -212,20 +236,51 @@ export function OceanwayConfigPanel({
       const data = await oceanwayApi.checkKey(key.trim());
       if (current !== generation.current) return;
       setCatalog(data);
-      const choices = conversationModels(data.models);
+      const selectionFor = (id: string) => {
+        const saved = !key.trim() ? connection?.appModels?.[id] : undefined;
+        let choices = compatibleConversationModels(
+          id,
+          data.models,
+          saved?.model,
+        );
+        if (saved && !choices.includes(saved.model)) {
+          choices = compatibleConversationModels(id, data.models);
+        }
+        const selected = saved?.models.filter((model) =>
+          choices.includes(model),
+        );
+        const list = selected?.length ? selected : familyModels(id, choices);
+        return {
+          models: list,
+          model:
+            saved && list.includes(saved.model)
+              ? saved.model
+              : recommendedModel(id, list),
+        };
+      };
       setModels(
         Object.fromEntries(
-          apps.map((a) => [a.appId, recommendedModel(a.appId, choices)]),
+          apps.map((a) => [a.appId, selectionFor(a.appId).model]),
+        ),
+      );
+      setSelectedModels(
+        Object.fromEntries(
+          apps.map((a) => [a.appId, selectionFor(a.appId).models]),
         ),
       );
       setOtherModels({});
       setEditingModels({});
       const images = imageModels(data.models);
+      const savedImages = !key.trim()
+        ? connection?.allowedImageModels?.filter((id) => images.includes(id))
+        : undefined;
+      const chosenImages = savedImages?.length ? savedImages : images;
+      setSelectedImages(chosenImages);
       setImageModel(
         connection?.defaultImageModel &&
-          images.includes(connection.defaultImageModel)
+          chosenImages.includes(connection.defaultImageModel)
           ? connection.defaultImageModel
-          : recommendedImageModel(images),
+          : recommendedImageModel(chosenImages),
       );
       setEditingImage(false);
       setEditingKey(false);
@@ -247,8 +302,14 @@ export function OceanwayConfigPanel({
     try {
       const response = await oceanwayApi.apply({
         apiKey: key.trim(),
-        apps: selected.map((id) => ({ appId: id, model: models[id] })),
-        ...(imageModel ? { imageModel, allowedImageModels: pictures } : {}),
+        apps: selected.map((id) => ({
+          appId: id,
+          model: models[id],
+          models: selectedModels[id],
+        })),
+        ...(imageModel
+          ? { imageModel, allowedImageModels: selectedImages }
+          : {}),
       });
       setResult(response);
       await queryClient.invalidateQueries();
@@ -348,7 +409,6 @@ export function OceanwayConfigPanel({
         className="min-h-0 flex-1 overflow-y-auto scroll-stable px-4 pb-8 pt-6 sm:px-6"
       >
         <div className="mx-auto max-w-[760px] space-y-6">
-          <AgentInstallProgress />
           <ol
             aria-label="配置进度"
             className="flex items-center gap-2 text-caption sm:gap-4"
@@ -549,7 +609,7 @@ export function OceanwayConfigPanel({
                     <p className="mt-1 text-caption text-fg-3">
                       {appId
                         ? catalog
-                          ? "模型已自动匹配，也可以按需更换。"
+                          ? "已勾选推荐系列，可多选模型，再设置默认模型。"
                           : "连接后会自动选择模型。"
                         : apps.some(available)
                           ? "可以多选。默认勾选已安装的常用应用。"
@@ -569,14 +629,23 @@ export function OceanwayConfigPanel({
                     const missingModel =
                       !!catalog && checked && !models[app.appId];
                     const isEditing = editingModels[app.appId] || missingModel;
-                    const choices = otherModels[app.appId]
-                      ? textModels
-                      : familyModels(app.appId, textModels);
-                    const currentModel = models[app.appId];
-                    const modelChoices =
-                      currentModel && !choices.includes(currentModel)
-                        ? [currentModel, ...choices]
-                        : choices;
+                    const compatible = compatibleConversationModels(
+                      app.appId,
+                      catalog?.models ?? [],
+                      models[app.appId],
+                    );
+                    const choices =
+                      app.appId !== "claude-desktop" && otherModels[app.appId]
+                        ? compatible
+                        : familyModels(app.appId, compatible);
+                    const modelChoices = [
+                      ...new Set([
+                        ...choices,
+                        ...(selectedModels[app.appId] ?? []).filter((id) =>
+                          compatible.includes(id),
+                        ),
+                      ]),
+                    ];
                     return (
                       <div
                         key={app.appId}
@@ -613,7 +682,7 @@ export function OceanwayConfigPanel({
                                 {!app.configurable
                                   ? (app.reason ?? "正在适配")
                                   : app.desktopInstalled
-                                    ? "已检测到 Codex 桌面版"
+                                    ? `已检测到 ${app.name}${app.name.endsWith("Desktop") ? "" : " 桌面版"}`
                                     : app.installed
                                       ? "已安装"
                                       : app.configExists
@@ -660,7 +729,9 @@ export function OceanwayConfigPanel({
                                   title={models[app.appId]}
                                 >
                                   {catalog
-                                    ? models[app.appId] || "请选择可用模型"
+                                    ? selectedModels[app.appId]?.length
+                                      ? `已选 ${selectedModels[app.appId].length} 个模型`
+                                      : "请选择可用模型"
                                     : family
                                       ? `默认使用 ${family} 系列`
                                       : "连接后自动匹配模型"}
@@ -679,7 +750,7 @@ export function OceanwayConfigPanel({
                                       }))
                                     }
                                   >
-                                    更换
+                                    选择模型
                                     <ChevronDown
                                       className={cn(
                                         "h-3.5 w-3.5 transition-transform",
@@ -691,6 +762,7 @@ export function OceanwayConfigPanel({
                               </div>
                             )}
                         </div>
+                        <AgentInstallProgress appId={app.appId} />
                         {catalog && isEditing && app.configurable && (
                           <div className="space-y-2 border-t border-border bg-subtle px-4 py-3">
                             {missingModel && (
@@ -700,47 +772,54 @@ export function OceanwayConfigPanel({
                                 模型，可选择其他模型或取消勾选。
                               </p>
                             )}
-                            <label className="flex flex-wrap items-center gap-2 text-caption text-fg-2">
-                              <span className="w-16 shrink-0">对话模型</span>
-                              <select
-                                aria-label={`${app.name} 对话模型`}
-                                value={models[app.appId] ?? ""}
-                                disabled={!!busy}
-                                onChange={(e) =>
-                                  setModels((m) => ({
-                                    ...m,
-                                    [app.appId]: e.target.value,
-                                  }))
-                                }
-                                className="h-9 min-w-0 flex-1 rounded-control border border-input bg-surface px-2 text-body"
-                              >
-                                <option value="">请选择可用模型</option>
-                                {modelChoices.map((model) => (
-                                  <option key={model} value={model}>
-                                    {model}
-                                  </option>
-                                ))}
-                              </select>
-                            </label>
-                            {familyModels(app.appId, textModels).length <
-                              textModels.length && (
-                              <button
-                                type="button"
-                                disabled={!!busy}
-                                aria-pressed={!!otherModels[app.appId]}
-                                className="text-caption text-action-text hover:underline focus-visible:underline"
-                                onClick={() =>
-                                  setOtherModels((s) => ({
-                                    ...s,
-                                    [app.appId]: !s[app.appId],
-                                  }))
-                                }
-                              >
-                                {otherModels[app.appId]
-                                  ? "只看推荐系列"
-                                  : "选择其他系列模型"}
-                              </button>
-                            )}
+                            <ModelSelection
+                              label={`${app.name} 对话`}
+                              choices={modelChoices}
+                              selected={selectedModels[app.appId] ?? []}
+                              defaultModel={models[app.appId] ?? ""}
+                              disabled={!!busy}
+                              onChange={(list, primary) => {
+                                const supported = compatibleConversationModels(
+                                  app.appId,
+                                  catalog.models,
+                                  primary,
+                                );
+                                const compatibleList = list.filter((id) =>
+                                  supported.includes(id),
+                                );
+                                setSelectedModels((previous) => ({
+                                  ...previous,
+                                  [app.appId]: compatibleList,
+                                }));
+                                setModels((previous) => ({
+                                  ...previous,
+                                  [app.appId]: primary,
+                                }));
+                              }}
+                            />
+                            <p className="text-caption text-fg-3">
+                              配好后，可在 {app.name} 里切换已选模型。
+                            </p>
+                            {app.appId !== "claude-desktop" &&
+                              familyModels(app.appId, compatible).length <
+                                compatible.length && (
+                                <button
+                                  type="button"
+                                  disabled={!!busy}
+                                  aria-pressed={!!otherModels[app.appId]}
+                                  className="text-caption text-action-text hover:underline focus-visible:underline"
+                                  onClick={() =>
+                                    setOtherModels((s) => ({
+                                      ...s,
+                                      [app.appId]: !s[app.appId],
+                                    }))
+                                  }
+                                >
+                                  {otherModels[app.appId]
+                                    ? "只看推荐系列"
+                                    : "选择其他系列模型"}
+                                </button>
+                              )}
                           </div>
                         )}
                       </div>
@@ -752,21 +831,6 @@ export function OceanwayConfigPanel({
                     </p>
                   )}
                 </div>
-                {!appId && extraApps.length > 0 && (
-                  <Button
-                    variant="quiet"
-                    size="compact"
-                    aria-expanded={showAllApps}
-                    onClick={() => setShowAllApps((v) => !v)}
-                  >
-                    <ChevronRight
-                      className={cn("h-3.5 w-3.5", showAllApps && "rotate-90")}
-                    />
-                    {showAllApps
-                      ? "收起其他应用"
-                      : `其他应用 (${extraApps.length})`}
-                  </Button>
-                )}
                 {displayed.some((a) => !a.installed) && (
                   <p className="text-caption text-fg-3">
                     Codex 和 Claude Desktop 从 Oceanway
@@ -791,7 +855,7 @@ export function OceanwayConfigPanel({
                       {!catalog
                         ? "有图片模型时自动配好，告诉 AI 想画什么就行。"
                         : imageModel
-                          ? "将自动配置 Oceanway 生图，支持一次生成多张。"
+                          ? `共 ${pictures.length} 个图片模型，可在对话中选择，支持一次生成多张。`
                           : pictures.length
                             ? "本次不修改生图设置。"
                             : "当前 Key 暂未开通图片模型，可以先使用对话。"}
@@ -817,23 +881,21 @@ export function OceanwayConfigPanel({
                 </div>
                 {editingImage && catalog && (
                   <div className="mt-3 border-t border-border pt-3">
-                    <label className="flex flex-wrap items-center gap-2 text-caption text-fg-2">
-                      <span className="w-16 shrink-0">图片模型</span>
-                      <select
-                        aria-label="图片模型"
-                        value={imageModel}
-                        disabled={!!busy}
-                        onChange={(e) => setImageModel(e.target.value)}
-                        className="h-9 min-w-0 flex-1 rounded-control border border-input bg-surface px-2 text-body"
-                      >
-                        <option value="">本次不修改生图设置</option>
-                        {pictures.map((model) => (
-                          <option key={model} value={model}>
-                            {model}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
+                    <ModelSelection
+                      label="图片"
+                      choices={pictures}
+                      selected={selectedImages}
+                      defaultModel={imageModel}
+                      disabled={!!busy}
+                      onChange={(list, primary) => {
+                        setSelectedImages(list);
+                        setImageModel(primary);
+                      }}
+                    />
+                    <p className="mt-3 text-caption text-fg-3">
+                      在对话中告诉 AI 使用哪个图片模型；未指定时使用默认模型。AI
+                      可查询当前 Key 的全部图片模型。
+                    </p>
                   </div>
                 )}
                 {catalog && videoModels(catalog.models).length > 0 && (

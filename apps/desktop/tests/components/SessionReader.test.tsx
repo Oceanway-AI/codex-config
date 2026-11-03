@@ -217,7 +217,7 @@ describe("SessionReader", () => {
       ).toBeInTheDocument();
     });
 
-    it("OpenCode：$ / → 图标标题，摘要合计 tokens 与费用", () => {
+    it("OpenCode：保留工具标题与会话正文，隐藏用量和金额", () => {
       renderReader("opencode", fixtures.opencode);
       expect(stepButton(/\$ bunx biome --version/)).toHaveAttribute(
         "aria-expanded",
@@ -226,8 +226,8 @@ describe("SessionReader", () => {
       const summaries = screen.getAllByRole("button", {
         name: /执行过程/,
       });
-      expect(summaries[0].textContent).toMatch(/tok/);
-      expect(summaries[0].textContent).toMatch(/\$0\.0\d+/);
+      expect(summaries[0].textContent).not.toMatch(/tok/);
+      expect(summaries[0].textContent).not.toMatch(/\$0\.0\d+/);
     });
 
     it("Pi：小写动词与 ● 状态符", () => {

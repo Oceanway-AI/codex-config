@@ -1616,6 +1616,16 @@ fn load_provider_in_home(home: &Path) -> Result<SavedProvider, String> {
 }
 
 fn resolve_model(provider: &SavedProvider, requested: &str) -> Result<String, String> {
+    resolve_model_with_catalog(provider, requested, || {
+        super::provider::fetch_image_models(&provider.api_base, &provider.key)
+    })
+}
+
+fn resolve_model_with_catalog(
+    provider: &SavedProvider,
+    requested: &str,
+    catalog: impl FnOnce() -> Result<Vec<String>, String>,
+) -> Result<String, String> {
     let requested = requested.trim();
     let selected = if requested.is_empty() {
         provider.default_model.as_deref().ok_or_else(|| {
@@ -1630,8 +1640,15 @@ fn resolve_model(provider: &SavedProvider, requested: &str) -> Result<String, St
         .iter()
         .any(|allowed| allowed == &model)
     {
+        // Users may choose any currently entitled image model in their Agent,
+        // including models added after Oceanway Config was last saved.
+        if provider.api_base == super::provider::API_BASE
+            && catalog()?.contains(&model)
+        {
+            return Ok(model);
+        }
         return Err(
-            "This image model is not available in the saved Oceanway model selection.".into(),
+            "This image model is not available to this Oceanway account. Call get_image_models to choose an available model.".into(),
         );
     }
     Ok(model)

@@ -1,3 +1,4 @@
+import { OCEANWAY_EDITION } from "@/config/edition";
 import { memo } from "react";
 import { ChevronRight, Copy } from "lucide-react";
 
@@ -66,13 +67,13 @@ export const SessionTimeline = memo(function SessionTimeline({
       }),
     });
   }
-  if (summary.tokens !== undefined) {
+  if (!OCEANWAY_EDITION && summary.tokens !== undefined) {
     parts.push({
       key: "tok",
       text: rt("summaryTokens", { tokens: formatTokens(summary.tokens) }),
     });
   }
-  if (summary.costUsd !== undefined) {
+  if (!OCEANWAY_EDITION && summary.costUsd !== undefined) {
     parts.push({ key: "cost", text: moneyCompact(summary.costUsd) });
   }
   const steps = summary.stepCount || stepTotal;

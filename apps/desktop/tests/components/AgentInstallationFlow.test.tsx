@@ -129,6 +129,20 @@ describe("installation button with the real status controller", () => {
       "50",
     );
     expect(screen.getByText("50% · 5.0 / 10.0 MB")).toBeVisible();
+    expect(
+      within(screen.getByRole("region", { name: "Codex" })).getByRole("status"),
+    ).toHaveTextContent("正在下载");
+    for (const name of [
+      "Claude Desktop",
+      "Claude Code",
+      "DeepSeek Harness",
+      "Hermes",
+      "Kimi Code Desktop",
+    ]) {
+      expect(
+        within(screen.getByRole("region", { name })).queryByRole("status"),
+      ).toBeNull();
+    }
 
     status = { ...status, stage: "ready", message: "下载完成，点击打开安装包" };
     await tick();

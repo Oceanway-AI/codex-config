@@ -2,113 +2,249 @@
   "baseUrl": "https://console.oceanway.tech/v1",
   "models": [
     {
-      "id": "claude-fable-5"
+      "id": "claude-fable-5",
+      "modelType": "text",
+      "supportedProtocols": [
+        "anthropic-messages",
+        "openai-responses",
+        "openai-chat"
+      ]
     },
     {
-      "id": "claude-fable-5-1"
+      "id": "claude-fable-5-1",
+      "modelType": "text",
+      "supportedProtocols": ["anthropic-messages"]
     },
     {
-      "id": "claude-haiku-4-5"
+      "id": "claude-haiku-4-5",
+      "modelType": "text",
+      "supportedProtocols": ["anthropic-messages"]
     },
     {
-      "id": "claude-haiku-5-5"
+      "id": "claude-haiku-5-5",
+      "modelType": "text",
+      "supportedProtocols": ["anthropic-messages"]
     },
     {
-      "id": "claude-opus-4-6"
+      "id": "claude-opus-4-6",
+      "modelType": "text",
+      "supportedProtocols": ["anthropic-messages"]
     },
     {
-      "id": "claude-opus-4-7"
+      "id": "claude-opus-4-7",
+      "modelType": "text",
+      "supportedProtocols": ["anthropic-messages"]
     },
     {
-      "id": "claude-opus-4-8"
+      "id": "claude-opus-4-8",
+      "modelType": "text",
+      "supportedProtocols": ["anthropic-messages"]
     },
     {
-      "id": "claude-opus-5"
+      "id": "claude-opus-5",
+      "modelType": "text",
+      "supportedProtocols": ["anthropic-messages"]
     },
     {
-      "id": "claude-opus-5-5"
+      "id": "claude-opus-5-5",
+      "modelType": "text",
+      "supportedProtocols": ["anthropic-messages"]
     },
     {
-      "id": "claude-sonnet-4-5"
+      "id": "claude-sonnet-4-5",
+      "modelType": "text",
+      "supportedProtocols": ["anthropic-messages"]
     },
     {
-      "id": "claude-sonnet-4-6"
+      "id": "claude-sonnet-4-6",
+      "modelType": "text",
+      "supportedProtocols": ["anthropic-messages"]
     },
     {
-      "id": "claude-sonnet-5"
+      "id": "claude-sonnet-5",
+      "modelType": "text",
+      "supportedProtocols": ["anthropic-messages"]
     },
     {
-      "id": "claude-sonnet-5-5"
+      "id": "claude-sonnet-5-5",
+      "modelType": "text",
+      "supportedProtocols": ["anthropic-messages"]
     },
     {
-      "id": "codex-auto-review"
+      "id": "codex-auto-review",
+      "modelType": "text",
+      "supportedProtocols": ["openai-responses"]
     },
     {
-      "id": "deepseek-v4-flash"
+      "id": "deepseek-v4-flash",
+      "modelType": "text",
+      "supportedProtocols": ["openai-chat", "openai-responses"]
     },
     {
-      "id": "deepseek-v4-pro"
+      "id": "deepseek-v4-pro",
+      "modelType": "text",
+      "supportedProtocols": ["openai-chat", "openai-responses"]
     },
     {
-      "id": "deepseek-v4.1-flash"
+      "id": "deepseek-v4.1-flash",
+      "modelType": "text",
+      "supportedProtocols": ["openai-chat", "openai-responses"]
     },
     {
-      "id": "gemini-2.5-flash"
+      "id": "gemini-2.5-flash",
+      "modelType": "text",
+      "supportedProtocols": ["gemini"]
     },
     {
-      "id": "gemini-2.5-flash-lite"
+      "id": "gemini-2.5-flash-lite",
+      "modelType": "text",
+      "supportedProtocols": ["gemini"]
     },
     {
-      "id": "gemini-3-flash"
+      "id": "gemini-3-flash",
+      "modelType": "text",
+      "supportedProtocols": ["gemini"]
     },
     {
-      "id": "gemini-3.1-flash-lite"
+      "id": "gemini-3-pro-image-preview",
+      "modelType": "image",
+      "supportedProtocols": ["oceanway-media-v1"]
     },
     {
-      "id": "gemini-3.8-flash"
+      "id": "gemini-3.1-flash-image-preview",
+      "modelType": "image",
+      "supportedProtocols": ["oceanway-media-v1"]
     },
     {
-      "id": "glm-5.2"
+      "id": "gemini-3.1-flash-lite",
+      "modelType": "text",
+      "supportedProtocols": ["gemini"]
     },
     {
-      "id": "glm-5.3"
+      "id": "gemini-3.8-flash",
+      "modelType": "text",
+      "supportedProtocols": ["gemini"]
     },
     {
-      "id": "glm-5.3-flash"
+      "id": "gemini-nano-banana-2.1",
+      "modelType": "image",
+      "supportedProtocols": ["oceanway-media-v1"]
     },
     {
-      "id": "gpt-5.6-luna"
+      "id": "glm-5.2",
+      "modelType": "text",
+      "supportedProtocols": ["openai-chat", "openai-responses"]
     },
     {
-      "id": "gpt-5.6-sol"
+      "id": "glm-5.3",
+      "modelType": "text",
+      "supportedProtocols": ["openai-chat", "openai-responses"]
     },
     {
-      "id": "gpt-5.6-terra"
+      "id": "glm-5.3-flash",
+      "modelType": "text",
+      "supportedProtocols": ["openai-chat", "openai-responses"]
     },
     {
-      "id": "gpt-6-astra"
+      "id": "gpt-5.6-luna",
+      "modelType": "text",
+      "supportedProtocols": ["openai-responses"]
     },
     {
-      "id": "gpt-6-luna"
+      "id": "gpt-5.6-sol",
+      "modelType": "text",
+      "supportedProtocols": ["openai-responses"]
     },
     {
-      "id": "gpt-6-sol"
+      "id": "gpt-5.6-terra",
+      "modelType": "text",
+      "supportedProtocols": ["openai-responses"]
     },
     {
-      "id": "gpt-6.1-sol"
+      "id": "gpt-6-astra",
+      "modelType": "text",
+      "supportedProtocols": ["openai-responses"]
     },
     {
-      "id": "grok-4.5"
+      "id": "gpt-6-luna",
+      "modelType": "text",
+      "supportedProtocols": ["openai-responses"]
     },
     {
-      "id": "grok-4.6"
+      "id": "gpt-6-sol",
+      "modelType": "text",
+      "supportedProtocols": ["openai-responses"]
     },
     {
-      "id": "kimi-k3-1"
+      "id": "gpt-6.1-sol",
+      "modelType": "text",
+      "supportedProtocols": ["openai-responses"]
     },
     {
-      "id": "minimax-m3"
+      "id": "gpt-image-2",
+      "modelType": "image",
+      "supportedProtocols": ["oceanway-media-v1"]
+    },
+    {
+      "id": "gpt-image-2.5-flare",
+      "modelType": "image",
+      "supportedProtocols": ["oceanway-media-v1"]
+    },
+    {
+      "id": "gpt-image-2.5-sunburst",
+      "modelType": "image",
+      "supportedProtocols": ["oceanway-media-v1"]
+    },
+    {
+      "id": "grok-4.5",
+      "modelType": "text",
+      "supportedProtocols": ["openai-chat", "openai-responses"]
+    },
+    {
+      "id": "grok-4.6",
+      "modelType": "text",
+      "supportedProtocols": ["openai-chat", "openai-responses"]
+    },
+    {
+      "id": "grok-imagine-image",
+      "modelType": "image",
+      "supportedProtocols": ["oceanway-media-v1"]
+    },
+    {
+      "id": "grok-imagine-image-2.0",
+      "modelType": "image",
+      "supportedProtocols": ["oceanway-media-v1"]
+    },
+    {
+      "id": "kimi-k3-1",
+      "modelType": "text",
+      "supportedProtocols": ["openai-chat", "openai-responses"]
+    },
+    {
+      "id": "minimax-m3",
+      "modelType": "text",
+      "supportedProtocols": ["openai-chat", "openai-responses"]
+    },
+    {
+      "id": "seedance-2.0",
+      "modelType": "video",
+      "supportedProtocols": ["oceanway-media-v1"]
+    },
+    {
+      "id": "seedance-2.0-fast",
+      "modelType": "video",
+      "supportedProtocols": ["oceanway-media-v1"]
+    },
+    {
+      "id": "seedance-2.0-mini",
+      "modelType": "video",
+      "supportedProtocols": ["oceanway-media-v1"]
+    },
+    {
+      "id": "seedance-2.5",
+      "modelType": "video",
+      "supportedProtocols": ["oceanway-media-v1"]
     }
   ],
-  "checkedAt": "2026-11-01T19:44:29.268454+00:00"
+  "checkedAt": "2026-11-03"
 }

@@ -1,7 +1,6 @@
 // Explicit local renderer fixture. Not included in the production build inputs.
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 import liveModelCatalog from "./test-fixtures/oceanway-model-catalog.json";
-import liveImageCatalog from "./test-fixtures/oceanway-image-catalog.json";
 if (!import.meta.env.DEV) throw new Error("Fixture is for development only");
 // Explicit UI samples only; no local application/version detection is performed.
 // ?empty=1 previews a new computer; ?desktop=only previews Codex GUI without CLI.
@@ -20,17 +19,11 @@ const installedCli = new Set(
 const fixtureVersion = "0.0.0-fixture";
 const apps = [
   ["codex", "Codex"],
-  ["claude", "Claude Code"],
-  ["gemini", "Gemini CLI"],
   ["claude-desktop", "Claude Desktop"],
-  ["opencode", "OpenCode"],
-  ["openclaw", "OpenClaw"],
-  ["grokbuild", "Grok Build"],
+  ["claude", "Claude Code"],
+  ["dsh", "DeepSeek Harness"],
   ["hermes", "Hermes"],
-  ["pi", "Pi"],
-  ["mcode", "MiniMax Code"],
-  ["kimi", "Kimi Code"],
-  ["omp", "Oh My Pi"],
+  ["kimi", "Kimi Code Desktop"],
 ];
 let configured = false;
 let configuredApps: string[] = [];
@@ -48,21 +41,16 @@ mockIPC(async (command, args: any) => {
       defaultImageModel: savedImageModel,
     };
   if (command === "oceanway_detect_apps")
-    return apps
-      .filter(([appId]) =>
-        ["codex", "claude", "gemini", "opencode", "openclaw"].includes(appId),
-      )
-      .map(([appId, name]) => ({
-        appId,
-        name,
-        installed:
-          installedCli.has(appId) ||
-          (appId === "codex" && codexDesktopInstalled),
-        desktopInstalled: appId === "codex" && codexDesktopInstalled,
-        configExists:
-          !empty && !desktopOnly && ["codex", "claude"].includes(appId),
-        configurable: true,
-      }));
+    return apps.map(([appId, name]) => ({
+      appId,
+      name,
+      installed:
+        installedCli.has(appId) || (appId === "codex" && codexDesktopInstalled),
+      desktopInstalled: appId === "codex" && codexDesktopInstalled,
+      configExists:
+        !empty && !desktopOnly && ["codex", "claude"].includes(appId),
+      configurable: true,
+    }));
   if (command === "get_tool_versions")
     return (args.tools ?? []).map((name: string) => ({
       name,
@@ -113,14 +101,12 @@ mockIPC(async (command, args: any) => {
   if (command === "oceanway_check_key") {
     if (!configured && args.apiKey !== "fixture-key")
       throw new Error("界面测试请填写 fixture-key，不使用真实 Key。");
-    // The user supplied a separate image test connection while the main Key
-    // has no image access. Only model IDs enter this renderer fixture.
+    // Sanitized catalog from the same Console Key used for native acceptance.
     return {
       ...liveModelCatalog,
-      models: [
-        ...liveModelCatalog.models,
-        ...(query.get("images") === "0" ? [] : liveImageCatalog.models),
-      ],
+      models: liveModelCatalog.models.filter(
+        (model) => query.get("images") !== "0" || model.modelType !== "image",
+      ),
     };
   }
   if (command === "oceanway_apply_config") {

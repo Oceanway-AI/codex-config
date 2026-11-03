@@ -85,7 +85,7 @@ async function expandModel(
   name: string,
 ) {
   await user.click(screen.getByRole("button", { name: `更换 ${name} 模型` }));
-  return screen.getByLabelText(`${name} 对话模型`);
+  return screen.getByLabelText(`${name} 对话默认模型`);
 }
 beforeEach(() => {
   vi.clearAllMocks();
@@ -126,6 +126,105 @@ beforeEach(() => {
 });
 
 describe("Oceanway guided configuration", () => {
+  it("keeps incompatible models out of the other-series picker", async () => {
+    vi.mocked(oceanwayApi.checkKey).mockResolvedValueOnce({
+      models: [
+        { id: "gpt-5", supportedProtocols: ["openai-responses"] },
+        { id: "gpt-5-mini", supportedProtocols: ["openai-responses"] },
+        {
+          id: "kimi-k3-1",
+          supportedProtocols: ["openai-chat", "openai-responses"],
+        },
+        { id: "claude-sonnet-5-5", supportedProtocols: ["anthropic-messages"] },
+      ],
+      baseUrl: "https://console.oceanway.tech/v1",
+      checkedAt: "2026-11-03",
+    });
+    const user = userEvent.setup();
+    mount("codex");
+    await connect(user);
+    await expandModel(user, "Codex");
+    await user.click(screen.getByRole("button", { name: "选择其他系列模型" }));
+    expect(
+      screen.getByRole("checkbox", { name: "接入 Codex 对话 kimi-k3-1" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("checkbox", {
+        name: "接入 Codex 对话 claude-sonnet-5-5",
+      }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("checkbox", { name: "接入 Codex 对话 gpt-5" }),
+    ).toBeChecked();
+    expect(
+      screen.getByRole("checkbox", { name: "接入 Codex 对话 gpt-5-mini" }),
+    ).toBeChecked();
+  });
+  it("saves multiple selected models and changes the default when its model is removed", async () => {
+    vi.mocked(oceanwayApi.checkKey).mockResolvedValueOnce({
+      models: [...models, { id: "gpt-5-nano" }, { id: "gpt-image-2" }],
+      baseUrl: "https://console.oceanway.tech/v1",
+      checkedAt: "2026-11-03",
+    });
+    const user = userEvent.setup();
+    mount("codex");
+    await connect(user);
+    const picker = await expandModel(user, "Codex");
+    await user.click(
+      screen.getByRole("checkbox", { name: "接入 Codex 对话 gpt-5" }),
+    );
+    expect(picker).not.toHaveValue("gpt-5");
+    await user.selectOptions(picker, "gpt-5-mini");
+    await user.click(screen.getByRole("button", { name: "生图设置" }));
+    await user.selectOptions(
+      screen.getByLabelText("图片默认模型"),
+      "gpt-image-1",
+    );
+    await user.click(screen.getByRole("button", { name: "一键配置" }));
+    await waitFor(() =>
+      expect(oceanwayApi.apply).toHaveBeenCalledWith(
+        expect.objectContaining({
+          apps: [
+            {
+              appId: "codex",
+              model: "gpt-5-mini",
+              models: ["gpt-5-nano", "gpt-5-mini"],
+            },
+          ],
+          imageModel: "gpt-image-1",
+          allowedImageModels: ["gpt-image-2", "gpt-image-1"],
+        }),
+      ),
+    );
+  });
+
+  it("restores the saved selection when reloading models with the stored key", async () => {
+    vi.mocked(oceanwayApi.connection).mockResolvedValueOnce({
+      configured: true,
+      keyPreview: "已保存",
+      baseUrl: "https://console.oceanway.tech/v1",
+      configuredApps: ["codex"],
+      defaultImageModel: "gpt-image-1",
+      allowedImageModels: ["gpt-image-1"],
+      appModels: { codex: { model: "gpt-5-mini", models: ["gpt-5-mini"] } },
+    });
+    const user = userEvent.setup();
+    mount("codex");
+    await screen.findByPlaceholderText("Key 已保存，可直接连接");
+    const connectButton = screen.getByRole("button", { name: "连接并继续" });
+    await waitFor(() => expect(connectButton).toBeEnabled());
+    await user.click(connectButton);
+    await screen.findByText("Oceanway 已连接");
+    const picker = await expandModel(user, "Codex");
+    expect(picker).toHaveValue("gpt-5-mini");
+    expect(
+      screen.getByRole("checkbox", { name: "接入 Codex 对话 gpt-5-mini" }),
+    ).toBeChecked();
+    expect(
+      screen.getByRole("checkbox", { name: "接入 Codex 对话 gpt-5" }),
+    ).not.toBeChecked();
+  });
+
   it("offers installation management instead of an unusable Key form for an unadapted app", async () => {
     const openApps = vi.fn();
     const user = userEvent.setup();
@@ -161,12 +260,14 @@ describe("Oceanway guided configuration", () => {
     expect(screen.getByRole("checkbox", { name: "配置 Codex" })).toBeEnabled();
     expect(screen.getByRole("checkbox", { name: "配置 Codex" })).toBeChecked();
     await connect(user);
-    expect(screen.queryByLabelText("Codex 对话模型")).toBeNull();
+    expect(screen.queryByLabelText("Codex 对话默认模型")).toBeNull();
     await user.click(screen.getByRole("button", { name: "一键配置" }));
     await screen.findByRole("region", { name: "配置结果" });
     expect(oceanwayApi.apply).toHaveBeenCalledWith(
       expect.objectContaining({
-        apps: [{ appId: "codex", model: "gpt-5" }],
+        apps: [
+          { appId: "codex", model: "gpt-5", models: ["gpt-5-mini", "gpt-5"] },
+        ],
       }),
     );
     expect(oceanwayApi.launch).not.toHaveBeenCalled();
@@ -181,12 +282,12 @@ describe("Oceanway guided configuration", () => {
     );
   });
 
-  it("keeps all eleven live image test models separate from conversation families", () => {
+  it("keeps all current Console image models separate from conversation families", () => {
     const combined = [...liveCatalog.models, ...liveImageCatalog.models];
     expect(imageModels(combined).sort()).toEqual(
       liveImageCatalog.models.map((model) => model.id).sort(),
     );
-    expect(imageModels(combined)).toHaveLength(11);
+    expect(imageModels(combined)).toHaveLength(8);
     expect(recommendedImageModel(imageModels(combined))).toBe("gpt-image-2");
     for (const { id } of liveImageCatalog.models)
       expect(conversationModels(combined)).not.toContain(id);
@@ -203,30 +304,16 @@ describe("Oceanway guided configuration", () => {
   });
 
   it("keeps model choices collapsed but exposes every real family model on demand", async () => {
-    vi.mocked(oceanwayApi.detectApps).mockResolvedValue([
-      ...detectedApps(),
-      {
-        appId: "gemini",
-        name: "Gemini CLI",
-        installed: true,
-        configExists: true,
-        configurable: true,
-      },
-    ]);
+    vi.mocked(oceanwayApi.detectApps).mockResolvedValue(detectedApps());
     vi.mocked(oceanwayApi.checkKey).mockResolvedValueOnce(liveCatalog);
     const user = userEvent.setup();
     mount();
     await connect(user);
-    expect(screen.getByText("36 个可用模型，已为你选好默认模型")).toBeVisible();
+    expect(screen.getByText("48 个可用模型，已为你选好默认模型")).toBeVisible();
     expect(screen.queryByRole("combobox")).toBeNull();
-    expect(
-      screen.queryByRole("checkbox", { name: "配置 Gemini CLI" }),
-    ).toBeNull();
-    await user.click(screen.getByRole("button", { name: "其他应用 (1)" }));
     for (const [name, prefix] of [
       ["Codex", "gpt-"],
       ["Claude Code", "claude-"],
-      ["Gemini CLI", "gemini-"],
     ]) {
       const select = await expandModel(user, name);
       const actual = within(select)
@@ -235,23 +322,23 @@ describe("Oceanway guided configuration", () => {
         .filter(Boolean)
         .sort();
       const expected = liveCatalog.models
+        .filter((m) => m.modelType === "text")
         .map((m) => m.id)
         .filter((id) => id.startsWith(prefix))
         .sort();
       expect(actual).toEqual(expected);
       expect(actual.length).toBeGreaterThan(1);
     }
-    expect(screen.getByLabelText("Codex 对话模型")).toHaveValue("gpt-6.1-sol");
-    expect(screen.getByLabelText("Claude Code 对话模型")).toHaveValue(
+    expect(screen.getByLabelText("Codex 对话默认模型")).toHaveValue(
+      "gpt-6.1-sol",
+    );
+    expect(screen.getByLabelText("Claude Code 对话默认模型")).toHaveValue(
       "claude-sonnet-5-5",
     );
-    expect(screen.getByLabelText("Gemini CLI 对话模型")).toHaveValue(
-      "gemini-3.8-flash",
-    );
     expect(
-      screen.getByText("当前 Key 暂未开通图片模型，可以先使用对话。"),
+      screen.getByText("共 8 个图片模型，可在对话中选择，支持一次生成多张。"),
     ).toBeVisible();
-    expect(screen.queryByLabelText("图片模型")).toBeNull();
+    expect(screen.queryByLabelText("图片默认模型")).toBeNull();
     expect(screen.getByRole("button", { name: "一键配置" })).toBeEnabled();
   });
 
@@ -272,8 +359,12 @@ describe("Oceanway guided configuration", () => {
         apiKey: "fixture-key",
         imageModel: "gpt-image-1",
         apps: [
-          { appId: "codex", model: "gpt-5" },
-          { appId: "claude", model: "claude-sonnet-4-5" },
+          { appId: "codex", model: "gpt-5", models: ["gpt-5-mini", "gpt-5"] },
+          {
+            appId: "claude",
+            model: "claude-sonnet-4-5",
+            models: ["claude-sonnet-4-5"],
+          },
         ],
       }),
     );
@@ -327,6 +418,11 @@ describe("Oceanway guided configuration", () => {
     await user.click(
       screen.getAllByRole("button", { name: "选择其他系列模型" })[0],
     );
+    await user.click(
+      screen.getByRole("checkbox", {
+        name: "接入 Codex 对话 claude-sonnet-4-5",
+      }),
+    );
     await user.selectOptions(codex, "claude-sonnet-4-5");
     expect(within(claude).queryByRole("option", { name: "gpt-5" })).toBeNull();
     await user.click(screen.getByRole("button", { name: "一键配置" }));
@@ -334,8 +430,16 @@ describe("Oceanway guided configuration", () => {
       expect(oceanwayApi.apply).toHaveBeenCalledWith(
         expect.objectContaining({
           apps: [
-            { appId: "codex", model: "claude-sonnet-4-5" },
-            { appId: "claude", model: "claude-sonnet-4-5" },
+            {
+              appId: "codex",
+              model: "claude-sonnet-4-5",
+              models: ["gpt-5-mini", "gpt-5", "claude-sonnet-4-5"],
+            },
+            {
+              appId: "claude",
+              model: "claude-sonnet-4-5",
+              models: ["claude-sonnet-4-5"],
+            },
           ],
         }),
       ),
@@ -348,6 +452,11 @@ describe("Oceanway guided configuration", () => {
     await connect(user);
     const codex = await expandModel(user, "Codex");
     await user.click(screen.getByRole("button", { name: "选择其他系列模型" }));
+    await user.click(
+      screen.getByRole("checkbox", {
+        name: "接入 Codex 对话 claude-sonnet-4-5",
+      }),
+    );
     await user.selectOptions(codex, "claude-sonnet-4-5");
     await user.click(screen.getByRole("button", { name: "只看推荐系列" }));
     expect(codex).toHaveValue("claude-sonnet-4-5");
@@ -362,8 +471,16 @@ describe("Oceanway guided configuration", () => {
       expect(oceanwayApi.apply).toHaveBeenCalledWith(
         expect.objectContaining({
           apps: [
-            { appId: "codex", model: "claude-sonnet-4-5" },
-            { appId: "claude", model: "claude-sonnet-4-5" },
+            {
+              appId: "codex",
+              model: "claude-sonnet-4-5",
+              models: ["gpt-5-mini", "gpt-5", "claude-sonnet-4-5"],
+            },
+            {
+              appId: "claude",
+              model: "claude-sonnet-4-5",
+              models: ["claude-sonnet-4-5"],
+            },
           ],
         }),
       ),
@@ -403,11 +520,11 @@ describe("Oceanway guided configuration", () => {
     const user = userEvent.setup();
     mount();
     await connect(user);
-    expect(screen.queryByLabelText("图片模型")).toBeNull();
+    expect(screen.queryByLabelText("图片默认模型")).toBeNull();
     await user.click(screen.getByRole("button", { name: "生图设置" }));
-    const images = screen.getByLabelText("图片模型");
+    const images = screen.getByLabelText("图片默认模型");
     expect(images).toHaveValue("gpt-image-2");
-    expect(within(images).getAllByRole("option")).toHaveLength(12);
+    expect(within(images).getAllByRole("option")).toHaveLength(8);
     const alternative = liveImageCatalog.models.find(
       (model) => model.id !== "gpt-image-2",
     )!.id;
@@ -619,7 +736,13 @@ describe("Oceanway guided configuration", () => {
     await waitFor(() =>
       expect(oceanwayApi.apply).toHaveBeenCalledWith(
         expect.objectContaining({
-          apps: [{ appId: "codex", model: "gpt-5-mini" }],
+          apps: [
+            {
+              appId: "codex",
+              model: "gpt-5-mini",
+              models: ["gpt-5-mini", "gpt-5"],
+            },
+          ],
         }),
       ),
     );

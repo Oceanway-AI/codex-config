@@ -97,7 +97,6 @@ export function OceanwayAppsPage() {
               按提示装好，再回来检测并连接 Oceanway。
             </p>
           </div>
-          <AgentInstallProgress />
           {message && (
             <p
               role="status"
@@ -168,6 +167,9 @@ export function OceanwayAppsPage() {
                             ? "当前系统暂无安装包"
                             : "下载安装"}
                     </Button>
+                  </div>
+                  <div className="mt-3">
+                    <AgentInstallProgress appId={id} />
                   </div>
                   {app?.installAvailable === false && (
                     <p className="mt-3 text-caption text-fg-3">{app.reason}</p>

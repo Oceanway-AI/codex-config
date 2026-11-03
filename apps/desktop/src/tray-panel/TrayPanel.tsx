@@ -1,3 +1,4 @@
+import { OCEANWAY_EDITION } from "@/config/edition";
 import {
   useCallback,
   useEffect,
@@ -65,6 +66,7 @@ const FOCUS_RING =
   "outline-none focus-visible:ring-2 focus-visible:ring-blue-500/60";
 
 function readTab(): Tab {
+  if (OCEANWAY_EDITION) return "config";
   try {
     return window.localStorage.getItem(TAB_KEY) === "usage"
       ? "usage"
@@ -315,7 +317,7 @@ function AppRow({
       ) : (
         <Chevron className="mt-2 h-4 w-4 shrink-0 text-muted-foreground" />
       )}
-      {app.quota && (
+      {!OCEANWAY_EDITION && app.quota && (
         <span className="col-span-2 col-start-2 min-w-0">
           <QuotaBlock quota={app.quota} texts={texts} />
         </span>
@@ -404,7 +406,7 @@ function SubRow({
           {texts.inUse}
         </span>
       )}
-      {provider?.quota && (
+      {!OCEANWAY_EDITION && provider?.quota && (
         <span className="min-w-0 [grid-column:2/-1]">
           <QuotaBlock quota={provider.quota} texts={texts} compact />
         </span>
@@ -1008,32 +1010,33 @@ export function TrayPanel() {
           </button>
         </div>
 
-        <div data-other-item className="shrink-0 px-3 pb-2">
-          <div
-            role="tablist"
-            className="flex rounded-lg bg-black/[0.06] p-0.5 dark:bg-white/[0.08]"
-          >
-            {(["config", "usage"] as const).map((value) => (
-              <button
-                key={value}
-                type="button"
-                role="tab"
-                aria-selected={tab === value}
-                onClick={() => changeTab(value)}
-                className={cn(
-                  "flex-1 rounded-md py-1 text-xs font-medium transition-colors",
-                  FOCUS_RING,
-                  tab === value
-                    ? "bg-white text-foreground shadow-sm dark:bg-white/[0.16]"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                {value === "config" ? texts.configTab : texts.usageTab}
-              </button>
-            ))}
+        {!OCEANWAY_EDITION && (
+          <div data-other-item className="shrink-0 px-3 pb-2">
+            <div
+              role="tablist"
+              className="flex rounded-lg bg-black/[0.06] p-0.5 dark:bg-white/[0.08]"
+            >
+              {(["config", "usage"] as const).map((value) => (
+                <button
+                  key={value}
+                  type="button"
+                  role="tab"
+                  aria-selected={tab === value}
+                  onClick={() => changeTab(value)}
+                  className={cn(
+                    "flex-1 rounded-md py-1 text-xs font-medium transition-colors",
+                    FOCUS_RING,
+                    tab === value
+                      ? "bg-white text-foreground shadow-sm dark:bg-white/[0.16]"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {value === "config" ? texts.configTab : texts.usageTab}
+                </button>
+              ))}
+            </div>
           </div>
-        </div>
-
+        )}
         <div className="tp-scroll min-h-0 flex-1" onScroll={() => relayout()}>
           {tab === "config" ? (
             <div className="flex flex-col gap-0.5 px-1.5 pb-1.5">

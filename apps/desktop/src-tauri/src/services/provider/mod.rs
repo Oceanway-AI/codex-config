@@ -6819,7 +6819,7 @@ impl ProviderService {
             .db
             .get_provider_by_id(id, app_type.as_str())?
             .ok_or_else(|| AppError::InvalidInput("供应商不存在".into()))?;
-        crate::oceanway::validate_provider(&target).map_err(AppError::InvalidInput)?;
+        crate::oceanway::validate_provider_switch(&target).map_err(AppError::InvalidInput)?;
         let app = app_type.as_str().to_string();
         let result = Self::switch_inner(state, app_type, id);
         match &result {

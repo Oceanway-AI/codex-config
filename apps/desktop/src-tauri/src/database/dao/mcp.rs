@@ -9,7 +9,7 @@ use indexmap::IndexMap;
 use rusqlite::{params, OptionalExtension, Row};
 
 const MCP_SERVER_SELECT: &str =
-    "SELECT id, name, server_config, description, homepage, docs, tags, enabled_claude, enabled_codex, enabled_gemini, enabled_grokbuild, enabled_opencode, enabled_hermes, enabled_mcode, enabled_pi, enabled_agy, enabled_kimi, enabled_omp, enabled_dsh FROM mcp_servers";
+    "SELECT id, name, server_config, description, homepage, docs, tags, enabled_claude, enabled_codex, enabled_gemini, enabled_grokbuild, enabled_opencode, enabled_hermes, enabled_mcode, enabled_pi, enabled_agy, enabled_kimi, enabled_omp, enabled_dsh, enabled_claude_desktop FROM mcp_servers";
 
 fn row_to_mcp_server(row: &Row<'_>) -> rusqlite::Result<(String, McpServer)> {
     let id: String = row.get(0)?;
@@ -48,6 +48,7 @@ fn row_to_mcp_server(row: &Row<'_>) -> rusqlite::Result<(String, McpServer)> {
                 kimi: row.get(16)?,
                 omp: row.get(17)?,
                 dsh: row.get(18)?,
+                claude_desktop: row.get(19)?,
             },
             description,
             homepage,
@@ -96,13 +97,13 @@ impl Database {
             AppType::GrokBuild => Some("enabled_grokbuild"),
             AppType::OpenCode => Some("enabled_opencode"),
             AppType::Hermes => Some("enabled_hermes"),
-            // These applications intentionally have no MCP flag in the SSOT.
             AppType::Mcode => Some("enabled_mcode"),
             AppType::Kimi => Some("enabled_kimi"),
             AppType::Dsh => Some("enabled_dsh"),
             AppType::Pi => Some("enabled_pi"),
             AppType::Omp => Some("enabled_omp"),
-            AppType::ClaudeDesktop | AppType::OpenClaw => None,
+            AppType::ClaudeDesktop => Some("enabled_claude_desktop"),
+            AppType::OpenClaw => None,
             AppType::Agy => Some("enabled_agy"),
         };
 
@@ -132,8 +133,8 @@ impl Database {
         conn.execute(
             "INSERT OR REPLACE INTO mcp_servers (
                 id, name, server_config, description, homepage, docs, tags,
-                enabled_claude, enabled_codex, enabled_gemini, enabled_grokbuild, enabled_opencode, enabled_hermes, enabled_mcode, enabled_pi, enabled_agy, enabled_kimi, enabled_omp, enabled_dsh
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+                enabled_claude, enabled_codex, enabled_gemini, enabled_grokbuild, enabled_opencode, enabled_hermes, enabled_mcode, enabled_pi, enabled_agy, enabled_kimi, enabled_omp, enabled_dsh, enabled_claude_desktop
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
             params![
                 server.id,
                 server.name,
@@ -157,6 +158,7 @@ impl Database {
                 server.apps.kimi,
                 server.apps.omp,
                 server.apps.dsh,
+                server.apps.claude_desktop,
             ],
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
@@ -275,13 +277,37 @@ mod tests {
         let original = test_server();
         db.save_mcp_server(&original).expect("seed server");
 
-        for app in [AppType::ClaudeDesktop, AppType::OpenClaw] {
+        for app in [AppType::OpenClaw] {
             let returned = db
                 .update_mcp_server_app_enabled("shared-server", &app, true)
                 .expect("toggle unsupported app")
                 .expect("server exists");
             assert_eq!(returned.apps, original.apps);
         }
+    }
+
+    #[test]
+    fn claude_desktop_mcp_survives_save_reload_and_toggle() {
+        let db = Database::memory().expect("create memory db");
+        let mut server = test_server();
+        server.apps = McpApps::default();
+        server.apps.set_enabled_for(&AppType::ClaudeDesktop, true);
+        assert!(!server.apps.is_empty());
+        assert_eq!(server.apps.enabled_apps(), vec![AppType::ClaudeDesktop]);
+        let serialized = serde_json::to_value(&server).unwrap();
+        assert_eq!(serialized["apps"]["claude-desktop"], true);
+        let from_json: McpServer = serde_json::from_value(serialized).unwrap();
+        db.save_mcp_server(&from_json).expect("save Desktop only MCP");
+        let saved = db.get_all_mcp_servers().unwrap();
+        assert!(saved["shared-server"].apps.is_enabled_for(&AppType::ClaudeDesktop));
+
+        db.update_mcp_server_app_enabled("shared-server", &AppType::Codex, true).unwrap();
+        db.update_mcp_server_app_enabled("shared-server", &AppType::ClaudeDesktop, false).unwrap();
+        let saved = db.get_all_mcp_servers().unwrap();
+        assert!(!saved["shared-server"].apps.claude_desktop);
+        assert!(saved["shared-server"].apps.codex);
+        db.update_mcp_server_app_enabled("shared-server", &AppType::ClaudeDesktop, true).unwrap();
+        assert!(db.get_all_mcp_servers().unwrap()["shared-server"].apps.claude_desktop);
     }
 
     #[test]

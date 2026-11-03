@@ -118,6 +118,9 @@ impl McpService {
         if prev_apps.claude && !server.apps.claude {
             Self::remove_server_from_app(state, &server.id, &AppType::Claude)?;
         }
+        if prev_apps.claude_desktop && !server.apps.claude_desktop {
+            Self::remove_server_from_app(state, &server.id, &AppType::ClaudeDesktop)?;
+        }
         if prev_apps.codex && !server.apps.codex {
             Self::remove_server_from_app(state, &server.id, &AppType::Codex)?;
         }

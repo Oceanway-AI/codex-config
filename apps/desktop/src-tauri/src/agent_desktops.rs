@@ -2,6 +2,9 @@
 use std::{path::PathBuf, process::{Command, Stdio}, time::{Duration, Instant}};
 
 #[cfg(target_os = "windows")]
+const WINDOWS_DISCOVERY: &str = include_str!("agent_desktops_windows.ps1");
+
+#[cfg(target_os = "windows")]
 pub(crate) fn windows_powershell(script: &str) -> Command {
     // A launcher using PowerShell 7 can pass a module path that hides Windows
     // PowerShell's Appx and Management modules. Use this runtime's own modules.
@@ -41,29 +44,7 @@ pub(crate) fn find(app: &str) -> Result<Option<PathBuf>, String> {
         "hermes" => "Hermes Agent",
         _ => return Ok(None),
     };
-    const SCRIPT: &str = r#"
-$ErrorActionPreference='SilentlyContinue'
-[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
-$name=$env:OCEANWAY_DESKTOP_NAME
-$candidates=@()
-foreach($root in @($env:LOCALAPPDATA,(Join-Path $env:LOCALAPPDATA 'Programs'),$env:ProgramFiles)) {
-  foreach($folder in @($name,$name.Replace(' ',''),$name.ToLower().Replace(' ','-'),'kimi-code-app')) {
-    foreach($exe in @("$name.exe",$name.Replace(' ','')+'.exe','kimi-code-app.exe')) {
-      $candidates+=Join-Path (Join-Path $root $folder) $exe
-    }
-  }
-}
-$keys=@('HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*')
-foreach($entry in (Get-ItemProperty $keys | Where-Object { $_.DisplayName -eq $name -or $_.DisplayName -like "$name *" })) {
-  if($entry.InstallLocation) { Get-ChildItem -LiteralPath $entry.InstallLocation -Filter '*.exe' | Where-Object { $_.BaseName -eq $name -or $_.BaseName -eq $name.Replace(' ','') -or $_.BaseName -eq 'kimi-code-app' } | ForEach-Object { $candidates+=$_.FullName } }
-}
-foreach($pkg in (Get-AppxPackage | Where-Object { $_.Name -like "*$($name.Replace(' ',''))*" -or ($name -eq 'Hermes Agent' -and $_.Name -eq 'NousResearch.HermesBundled') })) {
-  foreach($relative in @("app\$name.exe","$name.exe")) { $candidates+=Join-Path $pkg.InstallLocation $relative }
-}
-Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and ($_.ProcessName -eq $name -or $_.ProcessName -eq $name.Replace(' ','')) } | ForEach-Object { $candidates+=$_.Path }
-$candidates | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) -and (Test-Path -LiteralPath (Join-Path (Split-Path -Parent $_) 'resources\app.asar') -PathType Leaf) } | Select-Object -Unique -First 1
-"#;
-    let output=bounded_output(windows_powershell(SCRIPT).env("OCEANWAY_DESKTOP_NAME",names), 12)?;
+    let output=bounded_output(windows_powershell(WINDOWS_DISCOVERY).env("OCEANWAY_DESKTOP_NAME",names), 12)?;
     if !output.status.success() { return Err("桌面应用检测失败，请重新检测".into()); }
     Ok(String::from_utf8_lossy(&output.stdout).lines().map(str::trim).find(|line| !line.is_empty()).map(PathBuf::from))
 }
@@ -122,6 +103,43 @@ try {
 
 #[cfg(all(test, target_os = "windows"))]
 mod tests {
+    #[test]
+    fn oceanway_desktop_discovers_registry_icon_without_install_location() {
+        let fixture = tempfile::tempdir().unwrap();
+        let exe = fixture.path().join("Oceanway Probe Fixture.exe");
+        std::fs::write(&exe, b"fixture").unwrap();
+        std::fs::create_dir(fixture.path().join("resources")).unwrap();
+        std::fs::write(fixture.path().join("resources/app.asar"), b"fixture").unwrap();
+        let script = format!(r#"
+function Get-ItemProperty {{ [pscustomobject]@{{DisplayName=$env:OCEANWAY_DESKTOP_NAME;DisplayIcon=$env:OCEANWAY_TEST_ICON}} }}
+function Get-AppxPackage {{}}
+function Get-Process {{}}
+{}
+"#, super::WINDOWS_DISCOVERY);
+        let mut command = super::windows_powershell(&script);
+        command.env("OCEANWAY_DESKTOP_NAME", "Oceanway Probe Fixture")
+            .env("OCEANWAY_TEST_ICON", format!("\"{}\",0", exe.display()));
+        let output = super::bounded_output(&mut command, 20).unwrap();
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8(output.stdout).unwrap().trim(), exe.to_str().unwrap());
+    }
+
+    #[test]
+    fn oceanway_desktop_does_not_detect_kimi_as_another_app() {
+        let fixture = tempfile::tempdir().unwrap();
+        let app = fixture.path().join("kimi-code-app");
+        std::fs::create_dir_all(app.join("resources")).unwrap();
+        std::fs::write(app.join("kimi-code-app.exe"), b"fixture").unwrap();
+        std::fs::write(app.join("resources/app.asar"), b"fixture").unwrap();
+        let script = format!("function Get-ItemProperty {{}}\nfunction Get-AppxPackage {{}}\nfunction Get-Process {{}}\n{}", super::WINDOWS_DISCOVERY);
+        let mut command = super::windows_powershell(&script);
+        command.env("OCEANWAY_DESKTOP_NAME", "Oceanway Missing Fixture")
+            .env("LOCALAPPDATA", fixture.path()).env("ProgramFiles", fixture.path());
+        let output = super::bounded_output(&mut command, 20).unwrap();
+        assert!(output.status.success());
+        assert!(String::from_utf8(output.stdout).unwrap().trim().is_empty());
+    }
+
     #[test]
     fn oceanway_powershell_loads_system_modules_with_an_incompatible_parent_path() {
         let empty = tempfile::tempdir().unwrap();

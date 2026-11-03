@@ -248,6 +248,7 @@ pub fn import_from_codex(config: &mut MultiAppConfig) -> Result<usize, AppError>
                         name: id.clone(),
                         server: spec_v,
                         apps: McpApps {
+                            claude_desktop: false,
                             agy: false,
                             claude: false,
                             codex: true,

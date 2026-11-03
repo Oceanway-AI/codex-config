@@ -1,3 +1,4 @@
+import { OCEANWAY_EDITION } from "@/config/edition";
 import { memo, type ReactNode, type RefObject } from "react";
 import { useTranslation } from "react-i18next";
 import {
@@ -655,7 +656,7 @@ export const SessionReaderToolbar = memo(function SessionReaderToolbar({
               </span>
             </>
           )}
-          <SessionUsageSummary session={session} />
+          {!OCEANWAY_EDITION && <SessionUsageSummary session={session} />}
         </div>
 
         {!failed && (

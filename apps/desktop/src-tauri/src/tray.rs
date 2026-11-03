@@ -1326,10 +1326,7 @@ fn collect_app_snapshot(
         Vec::new()
     };
 
-    let quota = current_id.as_deref().and_then(|id| {
-        let provider = rows.get(id)?;
-        usage_view(&app_state.usage_cache, texts, app, provider, id)
-    });
+    let quota = None;
 
     let profiles = crate::services::profile::ProfileScope::for_app(app)
         .filter(|_| settings.show_profile_switcher && !profiles.is_empty())
@@ -2228,7 +2225,7 @@ fn row_provider_id<'a>(id: &'a str, app: &str) -> Option<&'a str> {
 }
 
 fn panel_rows(
-    usage_cache: &UsageCache,
+    _usage_cache: &UsageCache,
     texts: &TrayTexts,
     snapshot: &AppSnapshot,
     rows: &indexmap::IndexMap<String, Provider>,
@@ -2267,7 +2264,6 @@ fn panel_rows(
             }
             let provider = row_provider_id(&id, app).and_then(|provider_id| {
                 let provider = rows.get(provider_id)?;
-                let source = tray_usage_source(&snapshot.app, provider);
                 Some(PanelProvider {
                     name: provider.name.clone(),
                     hint: snapshot
@@ -2277,18 +2273,7 @@ fn panel_rows(
                         .and_then(|entry| entry.hint.clone()),
                     icon: provider.icon.clone(),
                     icon_color: provider.icon_color.clone(),
-                    quota: cached_usage_view(
-                        usage_cache,
-                        texts,
-                        &snapshot.app,
-                        provider_id,
-                        source.as_ref(),
-                    )
-                    .map(|view| {
-                        let credits =
-                            cached_reset_credits(usage_cache, &snapshot.app, source.as_ref());
-                        panel_quota(texts, &view, now, credits)
-                    }),
+                    quota: None,
                 })
             });
             let kind = if provider.is_some() {
@@ -2715,18 +2700,13 @@ pub fn handle_tray_icon_event(tray: &TrayIcon, event: TrayIconEvent) {
         }
     }
     match &event {
-        // 鼠标悬停/点击到托盘图标时，后台异步刷新用量缓存，
-        // 让用户下一次（或快速打开菜单的那一刻）看到较新的数字。
-        // refresh_all_usage_in_tray 内部有 10 秒防抖。
+        // 悬停或点击时刷新应用状态。
         TrayIconEvent::Enter { .. } | TrayIconEvent::Click { .. } => {
             let app = tray.app_handle().clone();
             // 悬停时菜单还没打开：问题区该出现 / 消失了就趁这时重建。
             if matches!(event, TrayIconEvent::Enter { .. }) {
                 refresh_tray_if_problems_changed(&app);
             }
-            tauri::async_runtime::spawn(async move {
-                refresh_all_usage_in_tray(&app).await;
-            });
         }
         _ => log::debug!("unhandled event {event:?}"),
     }
@@ -3127,7 +3107,7 @@ pub fn handle_tray_menu_event(app: &tauri::AppHandle, event_id: &str) {
     match event_id {
         "show_main" => show_main_window(app),
         "open_website" => {
-            if let Err(e) = app.opener().open_url("https://console.oceanway.tech", None::<String>) {
+            if let Err(e) = app.opener().open_url("https://oceanway.tech", None::<String>) {
                 log::error!("打开官方网站失败: {e}");
             }
         }

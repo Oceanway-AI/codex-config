@@ -102,33 +102,35 @@ export function GeneralSection({
               />
             }
           />
-          <SettingsRow
-            label={t("settings.general.quotaDisplay")}
-            help={{
-              title: t("settings.general.quotaDisplay"),
-              body: t("settings.general.quotaDisplayHelp"),
-            }}
-            control={
-              <SegmentedControl
-                size="sm"
-                aria-label={t("settings.general.quotaDisplay")}
-                value={settings.quotaDisplay ?? "left"}
-                onValueChange={(value) =>
-                  void onAutoSave({ quotaDisplay: value })
-                }
-                items={[
-                  {
-                    value: "left",
-                    label: t("settings.general.quotaDisplayLeft"),
-                  },
-                  {
-                    value: "used",
-                    label: t("settings.general.quotaDisplayUsed"),
-                  },
-                ]}
-              />
-            }
-          />
+          {!OCEANWAY_EDITION && (
+            <SettingsRow
+              label={t("settings.general.quotaDisplay")}
+              help={{
+                title: t("settings.general.quotaDisplay"),
+                body: t("settings.general.quotaDisplayHelp"),
+              }}
+              control={
+                <SegmentedControl
+                  size="sm"
+                  aria-label={t("settings.general.quotaDisplay")}
+                  value={settings.quotaDisplay ?? "left"}
+                  onValueChange={(value) =>
+                    void onAutoSave({ quotaDisplay: value })
+                  }
+                  items={[
+                    {
+                      value: "left",
+                      label: t("settings.general.quotaDisplayLeft"),
+                    },
+                    {
+                      value: "used",
+                      label: t("settings.general.quotaDisplayUsed"),
+                    },
+                  ]}
+                />
+              }
+            />
+          )}
         </SettingsCard>
       </SettingsBlock>
 
@@ -227,7 +229,9 @@ export function GeneralSection({
               label={t("settings.general.trayStyle")}
               help={{
                 title: t("settings.general.trayStyle"),
-                body: t("settings.general.trayStyleHelp"),
+                body: OCEANWAY_EDITION
+                  ? "选择点击托盘图标时显示的样式。面板可查看当前配置并切换；菜单使用系统原生样式。"
+                  : t("settings.general.trayStyleHelp"),
               }}
               control={
                 <SegmentedControl

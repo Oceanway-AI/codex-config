@@ -8,6 +8,8 @@
 
 新版本源码位于 `apps/desktop/`。沿用 CC Switch 的应用框架、组件和会话管理，提供 Oceanway Key 接入、模型选择与配置流程。需求见 [项目需求入口](docs/PROJECT_REQUIREMENTS.md)。
 
+2026-11-03 本次更新交接源码与验收记录，现有下载链接仍指向上一版安装包。技术接手视频接口 413 修复及后续构建，入口见 [开发交接](docs/DEVELOPMENT_HANDOFF.md)。
+
 ## 开发
 
 ```powershell
@@ -23,7 +25,7 @@ pnpm test:desktop
 pnpm build
 ```
 
-仅检查界面可运行 `pnpm preview:desktop` 并打开 `http://127.0.0.1:3012/fixture.html`。测试页面使用 `fixture-key`；模型目录来自 2026-11-02 实际 API 返回的脱敏快照：正式服务 36 个对话候选模型，以及用户指定图片测试服务的 11 个图片模型。预览合并两份目录用于界面测试；正式应用从当前 Key 实时获取模型。保存和重启动作使用模拟结果。
+仅检查界面可运行 `pnpm preview:desktop` 并打开 `http://127.0.0.1:3012/fixture.html`。测试页面使用 `fixture-key`；模型目录来自 2026-11-03 同一个 Console 测试 Key 返回的脱敏快照：36 个文本模型、8 个图片模型和 4 个视频模型。正式应用从当前 Key 实时获取模型。预览页面的保存和重启动作使用模拟结果。
 
 ## 来源
 

@@ -12,6 +12,7 @@ use std::{
 
 pub const ORIGIN: &str = "https://console.oceanway.tech";
 pub const API_BASE: &str = "https://console.oceanway.tech/v1";
+const WEBSITE: &str = "https://oceanway.tech";
 const PROVIDER_ID: &str = "oceanway";
 const APPS: &[(&str, &str)] = &[
     ("codex", "Codex"), ("claude-desktop", "Claude Desktop"), ("claude", "Claude Code"),
@@ -27,10 +28,16 @@ pub struct ConnectionSummary {
     base_url: &'static str,
     configured_apps: Vec<String>,
     default_image_model: Option<String>,
+    allowed_image_models: Vec<String>,
+    app_models: serde_json::Map<String, Value>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Model {
     pub id: String,
+    #[serde(default, rename = "supportedProtocols", skip_serializing_if = "Option::is_none")]
+    pub supported_protocols: Option<Vec<String>>,
+    #[serde(default, rename = "modelType", skip_serializing_if = "Option::is_none")]
+    pub model_type: Option<String>,
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -56,6 +63,18 @@ pub struct DetectedApp {
 pub struct AppSelection {
     app_id: String,
     model: String,
+    #[serde(default)]
+    models: Vec<String>,
+}
+
+impl AppSelection {
+    fn selected_models(&self) -> Vec<String> {
+        let mut selected = vec![self.model.clone()];
+        for model in &self.models {
+            if !selected.contains(model) { selected.push(model.clone()); }
+        }
+        selected
+    }
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -122,8 +141,7 @@ pub fn validate_origin(value: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Used by native switching and proxy routing as well as the new IPC layer.
-/// Existing non-Oceanway rows remain in the database, but cannot be activated.
+/// Validate configuration created or edited by the Oceanway setup flow.
 pub fn validate_provider(provider: &Provider) -> Result<(), String> {
     if provider.id != PROVIDER_ID || provider.category.as_deref() == Some("official") {
         return Err("请通过 Oceanway 配置页接入 API；原有供应商记录仍保留".into());
@@ -171,6 +189,15 @@ pub fn validate_provider(provider: &Provider) -> Result<(), String> {
     Ok(())
 }
 
+/// Existing connections may be restored using CC Switch's native adapters.
+/// Keep the Oceanway-owned entry pinned to its gateway when switching as well.
+pub fn validate_provider_switch(provider: &Provider) -> Result<(), String> {
+    if provider.id == PROVIDER_ID {
+        validate_provider(provider)?;
+    }
+    Ok(())
+}
+
 fn resolve_key(input: &str) -> Result<String, String> {
     if input.trim().is_empty() {
         crate::oceanway_images::read_api_key(&crate::config::get_app_config_dir())
@@ -207,7 +234,47 @@ async fn fetch_models(key: &str) -> Result<Vec<Model>, String> {
         .json()
         .await
         .map_err(|_| "Oceanway 返回的模型列表无效")?;
-    parse_models(&payload)
+    let mut models = parse_models(&payload)?;
+    let offering: Value = client
+        .get(format!("{ORIGIN}/api/platform/v1/public/offering"))
+        .send().await
+        .and_then(reqwest::Response::error_for_status)
+        .map_err(|_| "暂时无法读取模型兼容信息，请重试")?
+        .json().await.map_err(|_| "模型兼容信息无效，请重试")?;
+    attach_model_protocols(&mut models, &offering)?;
+    Ok(models)
+}
+
+fn attach_model_protocols(models: &mut [Model], offering: &Value) -> Result<(), String> {
+    let rows = offering.pointer("/data/models").and_then(Value::as_array)
+        .ok_or("模型兼容信息缺少 models")?;
+    for model in models {
+        // The authenticated catalog determines entitlement. Public metadata only
+        // describes how those already-authorized models can be invoked.
+        model.supported_protocols = Some(rows.iter()
+            .find(|row| row["model_name"].as_str() == Some(&model.id))
+            .and_then(|row| row["supported_protocols"].as_array())
+            .map(|values| values.iter().filter_map(Value::as_str).map(str::to_owned).collect())
+            .unwrap_or_default());
+        model.model_type = rows.iter().find(|row| row["model_name"].as_str() == Some(&model.id))
+            .and_then(|row| row["model_type"].as_str()).map(str::to_owned);
+    }
+    Ok(())
+}
+
+fn conversation_protocol(app: &str, default_model: &str) -> &'static str {
+    match app {
+        "codex" => "openai-responses",
+        "claude" | "claude-desktop" => "anthropic-messages",
+        "hermes" => {
+            let family = default_model.rsplit('/').next().unwrap_or(default_model).to_ascii_lowercase();
+            if family.starts_with("gpt-") || family.starts_with("o1") || family.starts_with("o3") || family.starts_with("o4") {
+                "openai-responses"
+            } else if family.starts_with("claude-") { "anthropic-messages" }
+            else { "openai-chat" }
+        },
+        _ => "openai-chat",
+    }
 }
 
 fn parse_models(payload: &Value) -> Result<Vec<Model>, String> {
@@ -222,7 +289,7 @@ fn parse_models(payload: &Value) -> Result<Vec<Model>, String> {
             !id.trim().is_empty() && id.len() <= 256 && !id.chars().any(char::is_control)
         }) {
             if seen.insert(id.to_owned()) {
-                models.push(Model { id: id.to_owned() });
+                models.push(Model { id: id.to_owned(), supported_protocols: None, model_type: None });
             }
         }
     }
@@ -244,14 +311,17 @@ pub async fn oceanway_get_connection(
         None
     };
     let mut configured_apps = Vec::new();
+    let mut app_models = serde_json::Map::new();
     for (id, _) in APPS {
-        if state
+        if let Some(provider) = state
             .db
             .get_provider_by_id(PROVIDER_ID, id)
             .map_err(|e| e.to_string())?
-            .is_some()
         {
             configured_apps.push((*id).to_owned());
+            if let Some(selection) = provider_model_selection(id, &provider) {
+                app_models.insert((*id).into(), selection);
+            }
         }
     }
     let configured = summary.as_ref().is_some_and(|s| s.key_configured);
@@ -260,7 +330,9 @@ pub async fn oceanway_get_connection(
         key_preview: configured.then(|| "已保存".into()),
         base_url: API_BASE,
         configured_apps,
-        default_image_model: summary.and_then(|s| s.default_image_model),
+        default_image_model: summary.as_ref().and_then(|s| s.default_image_model.clone()),
+        allowed_image_models: summary.map(|s| s.allowed_image_models).unwrap_or_default(),
+        app_models,
     })
 }
 
@@ -313,6 +385,7 @@ fn app_type(id: &str) -> Result<AppType, String> {
 
 fn provider_for(selection: &AppSelection, key: &str) -> Result<Provider, String> {
     let model = &selection.model;
+    let selected = selection.selected_models();
     let settings = match selection.app_id.as_str() {
         "codex" => {
             let mut doc = toml_edit::DocumentMut::new();
@@ -324,27 +397,62 @@ fn provider_for(selection: &AppSelection, key: &str) -> Result<Provider, String>
             doc["model_providers"]["custom"]["wire_api"] = toml_edit::value("responses");
             doc["model_providers"]["custom"]["requires_openai_auth"] = toml_edit::value(false);
             doc["model_providers"]["custom"]["experimental_bearer_token"] = toml_edit::value(key);
-            json!({"auth":{"OPENAI_API_KEY":key}, "config":doc.to_string()})
+            json!({"auth":{"OPENAI_API_KEY":key}, "config":doc.to_string(),
+                "modelCatalog":{"models":selected.iter().map(|id|json!({"model":id,"displayName":id})).collect::<Vec<_>>()}})
         }
         "claude" | "claude-desktop" => json!({"env":{"ANTHROPIC_BASE_URL":ORIGIN,"ANTHROPIC_AUTH_TOKEN":key,
-            "ANTHROPIC_MODEL":model,"ANTHROPIC_DEFAULT_OPUS_MODEL":model,"ANTHROPIC_DEFAULT_SONNET_MODEL":model,"ANTHROPIC_DEFAULT_HAIKU_MODEL":model}}),
-        "dsh" => json!({"name":"Oceanway","api":"openai-completions","options":{"baseURL":API_BASE,"apiKey":key},"models":{model:{"name":model}}}),
-        "hermes" => json!({"base_url":API_BASE,"api_key":key,"models":[{"id":model,"name":model}]}),
-        "kimi" => json!({"provider":{"type":"openai","base_url":API_BASE,"api_key":key},"models":{"oceanway":{"provider":PROVIDER_ID,"model":model,"max_context_size":128000}}}),
+            "ANTHROPIC_MODEL":model,"ANTHROPIC_DEFAULT_OPUS_MODEL":model,"ANTHROPIC_DEFAULT_SONNET_MODEL":model,"ANTHROPIC_DEFAULT_HAIKU_MODEL":model},
+            "modelPicker":{"replaceBuiltInOptions":true,"options":selected.iter().map(|id|json!({"model":id,"label":id,"description":"Oceanway"})).collect::<Vec<_>>()}}),
+        "dsh" => json!({"name":"Oceanway","api":"openai-completions","defaultModel":model,"options":{"baseURL":API_BASE,"apiKey":key},
+            "models":selected.iter().map(|id|(id.clone(),json!({"name":id}))).collect::<serde_json::Map<_,_>>()}),
+        "hermes" => {
+            let (mode, base) = match conversation_protocol("hermes", model) {
+                "openai-responses" => ("codex_responses", API_BASE),
+                "anthropic-messages" => ("anthropic_messages", ORIGIN),
+                _ => ("chat_completions", API_BASE),
+            };
+            json!({"base_url":base,"api_key":key,"api_mode":mode,"models":selected.iter().map(|id|json!({"id":id,"name":id})).collect::<Vec<_>>()})
+        },
+        "kimi" => json!({"provider":{"type":"openai","base_url":API_BASE,"api_key":key},
+            "models":selected.iter().enumerate().map(|(index,id)|
+                (if index==0 {PROVIDER_ID.into()} else {format!("{PROVIDER_ID}/{id}")},
+                json!({"provider":PROVIDER_ID,"model":id,"max_context_size":128000}))).collect::<serde_json::Map<_,_>>()}),
         _ => return Err("未支持的应用".into()),
     };
     let mut provider = Provider::with_id(
         PROVIDER_ID.into(),
         "Oceanway".into(),
         settings,
-        Some(ORIGIN.into()),
+        Some(WEBSITE.into()),
     );
     if selection.app_id=="claude-desktop" {
-        if !crate::claude_desktop_config::is_claude_safe_model_id(model) {return Err("Claude Desktop 请选择 Claude 系列模型".into());}
-        provider.meta=Some(serde_json::from_value(json!({"claudeDesktopModelRoutes":{model:{"model":model}}})).map_err(|e|e.to_string())?);
+        if selected.iter().any(|id| !crate::claude_desktop_config::is_claude_safe_model_id(id)) {return Err("Claude Desktop 请选择 Claude 系列模型".into());}
+        let routes=selected.iter().map(|id|(id.clone(),json!({"model":id}))).collect::<serde_json::Map<_,_>>();
+        provider.meta=Some(serde_json::from_value(json!({"claudeDesktopModelRoutes":routes})).map_err(|e|e.to_string())?);
     }
     validate_provider(&provider)?;
     Ok(provider)
+}
+
+fn provider_model_selection(app: &str, provider: &Provider) -> Option<Value> {
+    let settings = &provider.settings_config;
+    let models: Vec<String> = match app {
+        "codex" => settings.pointer("/modelCatalog/models")?.as_array()?.iter()
+            .filter_map(|row| row["model"].as_str().map(str::to_owned)).collect(),
+        "claude" | "claude-desktop" => settings.pointer("/modelPicker/options")?.as_array()?.iter()
+            .filter_map(|row| row["model"].as_str().map(str::to_owned)).collect(),
+        "dsh" => settings["models"].as_object()?.keys().cloned().collect(),
+        "hermes" => settings["models"].as_array()?.iter().filter_map(|row|row["id"].as_str().map(str::to_owned)).collect(),
+        "kimi" => settings["models"].as_object()?.values().filter_map(|row|row["model"].as_str().map(str::to_owned)).collect(),
+        _ => return None,
+    };
+    let model = if app == "codex" {
+        toml::from_str::<toml::Value>(settings["config"].as_str()?).ok()?["model"].as_str()?.to_owned()
+    } else if app.starts_with("claude") { settings.pointer("/env/ANTHROPIC_MODEL")?.as_str()?.to_owned() }
+    else if app == "kimi" { settings.pointer("/models/oceanway/model")?.as_str()?.to_owned() }
+    else if app == "dsh" { settings["defaultModel"].as_str().map(str::to_owned).unwrap_or_else(||models.first().cloned().unwrap_or_default()) }
+    else { models.first()?.clone() };
+    Some(json!({"model":model,"models":models}))
 }
 
 fn config_paths(id: &str) -> Result<Vec<PathBuf>, String> {
@@ -352,6 +460,7 @@ fn config_paths(id: &str) -> Result<Vec<PathBuf>, String> {
         "codex" => vec![
             crate::codex_config::get_codex_config_path(),
             crate::codex_config::get_codex_auth_path(),
+            crate::codex_config::get_codex_model_catalog_path(),
         ],
         "claude" => vec![
             crate::config::get_claude_settings_path(),
@@ -370,7 +479,7 @@ fn config_paths(id: &str) -> Result<Vec<PathBuf>, String> {
 const IMAGE_RULE_START: &str = "<!-- OCEANWAY:IMAGES:BEGIN -->";
 const IMAGE_RULE_END: &str = "<!-- OCEANWAY:IMAGES:END -->";
 pub(crate) fn merge_image_rule(original: &str) -> Result<String, String> {
-    let rule = format!("{IMAGE_RULE_START}\nWhen the user requests image generation or image editing, use the oceanway_images MCP tools: generate_images, then get_image_job until completion. Omit the model to use the configured Oceanway image model. For multiple images, submit one generate_images call with count equal to the total requested and prompts for distinct images; the service handles concurrency. Return completed image files as they become available while polling the same job until completion. For image references use ordered real HTTPS reference_urls, or reference_paths only when the selected model supports local inline files. Follow the tool capability errors; never invent uploaded URLs. Do not use built-in imagegen or an image CLI as a fallback. Do not automatically retry failed paid requests.\nFor video generation, use oceanway_images get_video_models, generate_video, then get_video_job until the video is saved. Preserve actual ordered image, video and audio reference URLs; never substitute descriptions for attachments. Local reference uploads and explicit first/last-frame controls are not yet available; explain this if requested. Return the saved video file. Do not repeat a paid submission after an uncertain result.\n{IMAGE_RULE_END}");
+    let rule = format!("{IMAGE_RULE_START}\nWhen the user requests image generation or image editing, use the oceanway_images MCP tools: generate_images, then get_image_job until completion. Omit the model to use the configured Oceanway image model. When the user wants to choose an image model, call get_image_models and pass any returned model ID. For multiple images, submit one generate_images call with count equal to the total requested and prompts for distinct images; the service handles concurrency. Return completed image files as they become available while polling the same job until completion. For image references use ordered real HTTPS reference_urls, or reference_paths only when the selected model supports local inline files. Follow the tool capability errors; never invent uploaded URLs. Do not use built-in imagegen or an image CLI as a fallback. Do not automatically retry failed paid requests.\nFor video generation, use oceanway_images get_video_models, generate_video, then get_video_job until the video is saved. Preserve actual ordered image, video and audio reference URLs; never substitute descriptions for attachments. Local reference uploads and explicit first/last-frame controls are not yet available; explain this if requested. Return the saved video file. Do not repeat a paid submission after an uncertain result.\n{IMAGE_RULE_END}");
     match (
         original.find(IMAGE_RULE_START),
         original.find(IMAGE_RULE_END),
@@ -619,8 +728,19 @@ fn validate_selection(request: &ApplyRequest, models: &[Model]) -> Result<(), St
         if !apps.insert(&selection.app_id) {
             return Err("应用重复".into());
         }
-        if !allowed.contains(selection.model.as_str()) {
-            return Err(format!("当前 Key 无权使用模型 {}", selection.model));
+        if !selection.models.is_empty() && !selection.models.contains(&selection.model) {
+            return Err("默认模型必须在已选模型中".into());
+        }
+        for model in selection.selected_models() {
+            if !allowed.contains(model.as_str()) {
+                return Err(format!("当前 Key 无权使用模型 {model}"));
+            }
+            let protocol = conversation_protocol(&selection.app_id, &selection.model);
+            if models.iter().find(|row| row.id == model)
+                .and_then(|row| row.supported_protocols.as_ref())
+                .is_some_and(|protocols| !protocols.iter().any(|value| value == protocol)) {
+                return Err(format!("模型 {model} 不支持此应用的当前连接方式，请重新选择兼容模型"));
+            }
         }
     }
     for model in request
@@ -670,6 +790,9 @@ fn save_and_switch_provider(
     if *app == AppType::Codex {
         crate::mode::operation::settle(&state.db, "codex")?;
         crate::codex_history_migration::recover_oceanway_codex_history()?;
+        let mut settings = crate::settings::get_settings();
+        settings.preserve_codex_official_auth_on_switch = true;
+        crate::settings::update_settings(settings)?;
     }
     let apply = || {
         if let Some(existing) = state.db.get_provider_by_id(PROVIDER_ID, app.as_str())? {
@@ -680,7 +803,16 @@ fn save_and_switch_provider(
         } else {
             ProviderService::add_without_switching(state, app.clone(), provider)?;
         }
-        ProviderService::switch(state, app.clone(), PROVIDER_ID).map(|_| ())
+        ProviderService::switch(state, app.clone(), PROVIDER_ID)?;
+        if *app == AppType::Codex {
+            // Enable the upstream shared history bucket only after the config
+            // and history have been applied. A failed preflight must not alter
+            // the route used by a later switch back to the official connection.
+            let mut settings = crate::settings::get_settings();
+            settings.unify_codex_session_history = true;
+            crate::settings::update_settings(settings)?;
+        }
+        Ok(())
     };
     if *app == AppType::Codex {
         crate::codex_history_migration::with_oceanway_codex_history(|| {
@@ -722,7 +854,7 @@ pub async fn oceanway_apply_config(
                 for app in previous.apps.enabled_apps() {
                     if APPS.iter().any(|(id, _)| *id == app.as_str())
                         && !backup_apps.iter().any(|selection| selection.app_id == app.as_str()) {
-                        backup_apps.push(AppSelection { app_id:app.as_str().into(), model:String::new() });
+                        backup_apps.push(AppSelection { app_id:app.as_str().into(), model:String::new(), models:vec![] });
                     }
                 }
             }
@@ -987,12 +1119,33 @@ mod tests {
             let selection = AppSelection {
                 app_id: (*id).into(),
                 model: if *id=="claude-desktop" {"claude-sonnet-fixture"}else{"fixture-model"}.into(),
+                models: vec![],
             };
             let mut provider = provider_for(&selection, "fixture-key").unwrap();
             assert!(validate_provider(&provider).is_ok());
             provider.id = "imported-third-party".into();
             assert!(validate_provider(&provider).is_err());
         }
+    }
+    #[test]
+    fn existing_connections_can_be_restored_without_relaxing_oceanway_validation() {
+        let selection = AppSelection {
+            app_id: "codex".into(),
+            model: "gpt-fixture".into(),
+            models: vec![],
+        };
+        let mut provider = provider_for(&selection, "fixture-key").unwrap();
+        assert!(validate_provider_switch(&provider).is_ok());
+        provider.settings_config = json!({"auth": {}, "config": ""});
+        assert!(validate_provider_switch(&provider).is_err());
+        provider.id = "saved-official".into();
+        provider.category = Some("official".into());
+        assert!(validate_provider_switch(&provider).is_ok());
+        assert!(validate_provider(&provider).is_err());
+        provider.id = "saved-other-provider".into();
+        provider.category = Some("custom".into());
+        assert!(validate_provider_switch(&provider).is_ok());
+        assert!(validate_provider(&provider).is_err());
     }
     #[test]
     fn permissions_are_checked_before_writing() {
@@ -1004,11 +1157,98 @@ mod tests {
             apps: vec![AppSelection {
                 app_id: "codex".into(),
                 model: "not-authorized".into(),
+                models: vec![],
             }],
             image_model: None,
             allowed_image_models: vec![],
         };
         assert!(validate_selection(&request, &models).is_err());
+    }
+
+    #[test]
+    fn oceanway_protocol_metadata_rejects_unusable_selections_before_writing() {
+        let mut models = parse_models(&json!({"data":[{"id":"gpt-6.1-sol"},{"id":"kimi-k3-1"},{"id":"claude-sonnet-5-5"},{"id":"unlisted"}]})).unwrap();
+        attach_model_protocols(&mut models,&json!({"data":{"models":[
+            {"model_name":"gpt-6.1-sol","supported_protocols":["openai-responses"]},
+            {"model_name":"kimi-k3-1","supported_protocols":["openai-chat","openai-responses"]},
+            {"model_name":"claude-sonnet-5-5","supported_protocols":["anthropic-messages"]},
+            {"model_name":"not-entitled","supported_protocols":["openai-responses"]}
+        ]}})).unwrap();
+        assert_eq!(models.len(),4);
+        let mut request:ApplyRequest=serde_json::from_value(json!({"apiKey":"fixture","apps":[{"appId":"codex","model":"gpt-6.1-sol","models":["gpt-6.1-sol","kimi-k3-1"]}]})).unwrap();
+        assert!(validate_selection(&request,&models).is_ok());
+        request.apps[0].models.push("claude-sonnet-5-5".into());
+        assert!(validate_selection(&request,&models).unwrap_err().contains("不支持"));
+        request.apps[0]=AppSelection{app_id:"kimi".into(),model:"gpt-6.1-sol".into(),models:vec![]};
+        assert!(validate_selection(&request,&models).is_err());
+        request.apps[0]=AppSelection{app_id:"hermes".into(),model:"gpt-6.1-sol".into(),models:vec!["gpt-6.1-sol".into(),"claude-sonnet-5-5".into()]};
+        assert!(validate_selection(&request,&models).is_err());
+        request.apps[0]=AppSelection{app_id:"codex".into(),model:"unlisted".into(),models:vec![]};
+        assert!(validate_selection(&request,&models).is_err());
+    }
+
+    #[test]
+    fn oceanway_hermes_uses_the_selected_models_protocol() {
+        for (model, mode, base) in [
+            ("gpt-6.1-sol", "codex_responses", API_BASE),
+            ("claude-sonnet-5-5", "anthropic_messages", ORIGIN),
+            ("kimi-k3-1", "chat_completions", API_BASE),
+        ] {
+            let provider = provider_for(&AppSelection { app_id:"hermes".into(), model:model.into(), models:vec![] }, "fixture-key").unwrap();
+            assert_eq!(provider.settings_config["api_mode"], mode);
+            assert_eq!(provider.settings_config["base_url"], base);
+        }
+    }
+
+    #[test]
+    fn oceanway_model_selection_roundtrips_every_agent_and_checks_every_model() {
+        for (id, _) in APPS {
+            let selection = AppSelection { app_id:(*id).into(),model:"claude-sonnet-fixture-b".into(),
+                models:vec!["claude-sonnet-fixture-a".into(),"claude-sonnet-fixture-b".into()] };
+            let provider = provider_for(&selection, "fixture-key").unwrap();
+            let saved = provider_model_selection(id, &provider).unwrap();
+            assert_eq!(saved["model"], "claude-sonnet-fixture-b", "{id}");
+            let models = saved["models"].as_array().unwrap();
+            assert_eq!(models.len(), 2, "{id}");
+            assert!(models.contains(&json!("claude-sonnet-fixture-a")), "{id}");
+            assert!(models.contains(&json!("claude-sonnet-fixture-b")), "{id}");
+        }
+        let mut request: ApplyRequest = serde_json::from_value(json!({"apiKey":"fixture", "apps":[{
+            "appId":"codex","model":"gpt-a","models":["gpt-a","not-permitted"]}]})).unwrap();
+        let allowed = vec![Model{id:"gpt-a".into(),supported_protocols:None,model_type:None}];
+        assert!(validate_selection(&request,&allowed).unwrap_err().contains("not-permitted"));
+        request.apps[0].models=vec!["gpt-a".into()];
+        assert!(validate_selection(&request,&allowed).is_ok());
+        request.apps[0].model="gpt-b".into();
+        assert!(validate_selection(&request,&allowed).unwrap_err().contains("默认模型"));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn oceanway_multiple_models_reach_codex_and_claude_native_pickers() {
+        let _fixture = FixtureHome::new();
+        let state = AppState::new(std::sync::Arc::new(crate::Database::memory().unwrap()));
+        for (id, names) in [("codex", ["gpt-fixture-a", "gpt-fixture-b"]), ("claude", ["claude-fixture-a", "claude-fixture-b"])] {
+            let selection=AppSelection{app_id:id.into(),model:names[1].into(),models:names.iter().map(|v|v.to_string()).collect()};
+            let provider=provider_for(&selection,"fixture-key").unwrap();
+            save_and_switch_provider(&state,&app_type(id).unwrap(),provider).unwrap();
+            if id=="codex" {
+                let config:toml::Value=toml::from_str(&std::fs::read_to_string(crate::codex_config::get_codex_config_path()).unwrap()).unwrap();
+                assert_eq!(config["model"].as_str(),Some(names[1]));
+                assert!(config["model_catalog_json"].as_str().is_some());
+                let catalog:Value=serde_json::from_slice(&std::fs::read(crate::codex_config::get_codex_model_catalog_path()).unwrap()).unwrap();
+                let rows=catalog["models"].as_array().unwrap();
+                assert_eq!(rows.len(),2);
+                for name in names { assert!(rows.iter().any(|row|row["slug"]==name)); }
+            } else {
+                let config:Value=serde_json::from_slice(&std::fs::read(crate::config::get_claude_settings_path()).unwrap()).unwrap();
+                assert_eq!(config["env"]["ANTHROPIC_MODEL"],names[1]);
+                assert_eq!(config["modelPicker"]["replaceBuiltInOptions"],true);
+                let rows=config["modelPicker"]["options"].as_array().unwrap();
+                assert_eq!(rows.len(),2);
+                for name in names {assert!(rows.iter().any(|row|row["model"]==name));}
+            }
+        }
     }
     #[test]
     fn image_rule_preserves_original_instructions_and_is_idempotent() {
@@ -1033,6 +1273,8 @@ mod tests {
         assert!(warning.unwrap().contains("当前 Key 无权使用"));
         let available = vec![Model {
             id: "image-fixture".into(),
+            supported_protocols: None,
+            model_type: None,
         }];
         assert!(
             retained_image_settings(None, &[], Some(&previous), &available)
@@ -1086,6 +1328,7 @@ mod tests {
             &[AppSelection {
                 app_id: "codex".into(),
                 model: "fixture".into(),
+                models: vec![],
             }],
         )
         .unwrap();
@@ -1345,10 +1588,12 @@ mod tests {
             AppSelection {
                 app_id: "codex".into(),
                 model: "gpt-fixture".into(),
+                models: vec![],
             },
             AppSelection {
                 app_id: "claude".into(),
                 model: "claude-fixture".into(),
+                models: vec![],
             },
         ];
         let backup = backup_configs(&crate::config::get_app_config_dir(), &selections).unwrap();
@@ -1398,6 +1643,7 @@ mod tests {
         let selection = AppSelection {
             app_id: "codex".into(),
             model: "gpt-original".into(),
+                models: vec![],
         };
         save_and_switch_provider(
             &state,
@@ -1415,6 +1661,7 @@ mod tests {
         let changed = AppSelection {
             app_id: "codex".into(),
             model: "gpt-changed".into(),
+                models: vec![],
         };
         assert!(save_and_switch_provider(
             &state,
@@ -1442,18 +1689,22 @@ mod tests {
         std::fs::create_dir_all(&codex).unwrap();
         let malformed = "model = [ incomplete";
         std::fs::write(codex.join("config.toml"), malformed).unwrap();
+        let mut settings = crate::settings::get_settings();
+        settings.unify_codex_session_history = false;
+        crate::settings::update_settings(settings).unwrap();
         let state = AppState::new(std::sync::Arc::new(crate::Database::memory().unwrap()));
         let selection = AppSelection {
             app_id: "codex".into(),
             model: "gpt-fixture".into(),
+                models: vec![],
         };
-        let configured = ProviderService::add_without_switching(
+        let configured = save_and_switch_provider(
             &state,
-            AppType::Codex,
+            &AppType::Codex,
             provider_for(&selection, "fixture-key").unwrap(),
-        )
-        .and_then(|_| ProviderService::switch(&state, AppType::Codex, PROVIDER_ID));
+        );
         assert!(configured.is_err());
+        assert!(!crate::settings::unify_codex_session_history());
         assert_eq!(
             std::fs::read_to_string(codex.join("config.toml")).unwrap(),
             malformed

@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { OCEANWAY_EDITION } from "@/config/edition";
 import { useQueries } from "@tanstack/react-query";
 import type { AppId } from "@/lib/api";
 import * as authApi from "@/lib/api/auth";
@@ -37,6 +38,7 @@ export function useSidebarStatus() {
     })),
   });
   const { data: todaySummary } = useUsageSummary(TODAY, undefined, {
+    enabled: !OCEANWAY_EDITION,
     refetchInterval: 60_000,
   });
 

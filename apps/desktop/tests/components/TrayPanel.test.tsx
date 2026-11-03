@@ -1,3 +1,5 @@
+// Retain upstream component coverage; Oceanway navigation is covered in OceanwayApp.
+vi.mock("@/config/edition", () => ({ OCEANWAY_EDITION: false }));
 import {
   act,
   fireEvent,

@@ -657,7 +657,9 @@ fn provider_requires_valid_app_owned_oceanway_config() {
     assert_eq!(provider.api_base, "https://console.oceanway.tech/v1");
     assert_eq!(provider.key, MOCK_KEY);
     assert_eq!(resolve_model(&provider, "").unwrap(), "fixture-image-v1");
-    assert!(resolve_model(&provider, "unavailable-model").is_err());
+    assert!(resolve_model_with_catalog(&provider, "unavailable-model", || Ok(vec![])).is_err());
+    assert_eq!(resolve_model_with_catalog(&provider, "another-image", || Ok(vec!["another-image".into()])).unwrap(), "another-image");
+    assert!(resolve_model_with_catalog(&provider, "another-image", || Err("catalog unavailable".into())).is_err());
     let public =
         serde_json::to_string(&super::super::read_provider_summary(&home.0).unwrap()).unwrap();
     assert!(!public.contains(MOCK_KEY));

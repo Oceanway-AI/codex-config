@@ -1,7 +1,13 @@
+const edition = vi.hoisted(() => ({ oceanway: false }));
+vi.mock("@/config/edition", () => ({
+  get OCEANWAY_EDITION() {
+    return edition.oceanway;
+  },
+}));
 import { QueryClientProvider } from "@tanstack/react-query";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Sidebar, type SidebarProps } from "@/components/shell/Sidebar";
 import type { Settings, VisibleApps } from "@/types";
 import { createTestQueryClient } from "../../utils/testQueryClient";
@@ -62,6 +68,9 @@ const renderSidebar = (
 };
 
 describe("sidebar Today label", () => {
+  beforeEach(() => {
+    edition.oceanway = false;
+  });
   it.each([
     [undefined, "nav.today:$47.20"],
     [["tokens"], "nav.today:120M"],
@@ -125,6 +134,9 @@ describe("sidebar Today label", () => {
 });
 
 describe("Oceanway simple navigation", () => {
+  beforeEach(() => {
+    edition.oceanway = true;
+  });
   const visibleApps = {
     codex: true,
     claude: true,
@@ -151,16 +163,12 @@ describe("Oceanway simple navigation", () => {
     expect(onSelectPage).toHaveBeenCalledWith("apps");
   });
 
-  it("opens extra apps and advanced tools with keyboard-operable disclosures", async () => {
+  it("shows all apps and opens advanced tools with the keyboard", async () => {
     const user = userEvent.setup();
     const onSelectApp = vi.fn();
     const onSelectPage = vi.fn();
     renderSidebar({}, { visibleApps, onSelectApp, onSelectPage });
-    const more = screen.getByRole("button", { name: "更多应用" });
-    expect(more).toHaveAttribute("aria-expanded", "false");
-    more.focus();
-    await user.keyboard("{Enter}");
-    expect(more).toHaveAttribute("aria-expanded", "true");
+    expect(screen.queryByRole("button", { name: "更多应用" })).toBeNull();
     await user.click(screen.getByRole("button", { name: "DeepSeek Harness" }));
     expect(onSelectApp).toHaveBeenCalledWith("dsh");
 
@@ -174,18 +182,13 @@ describe("Oceanway simple navigation", () => {
     expect(screen.queryByRole("button", { name: "MCP" })).toBeNull();
   });
 
-  it("keeps an active extra app visible even when its group is folded", async () => {
-    const user = userEvent.setup();
+  it("keeps every app visible while marking the active app", () => {
     renderSidebar({}, { visibleApps, view: "providers", activeApp: "dsh" });
-    expect(screen.getByRole("button", { name: "DeepSeek Harness" })).toHaveAttribute(
-      "aria-current",
-      "page",
-    );
-    expect(screen.queryByRole("button", { name: "Hermes" })).toBeNull();
-    await user.click(screen.getByRole("button", { name: "更多应用" }));
+    expect(
+      screen.getByRole("button", { name: "DeepSeek Harness" }),
+    ).toHaveAttribute("aria-current", "page");
     expect(screen.getByRole("button", { name: "Hermes" })).toBeVisible();
-    await user.click(screen.getByRole("button", { name: "更多应用" }));
-    expect(screen.getByRole("button", { name: "DeepSeek Harness" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "nav.usage" })).toBeNull();
   });
 
   it("keeps Skills selected when the discovery screen is active", async () => {
@@ -205,7 +208,6 @@ describe("Oceanway simple navigation", () => {
     expect(
       screen.getByRole("button", { name: "nav.expandSidebar" }),
     ).toBeVisible();
-    await user.click(screen.getByRole("button", { name: "更多应用" }));
     expect(screen.getByRole("button", { name: "Hermes" })).toBeVisible();
     await user.click(screen.getByRole("button", { name: "高级功能" }));
     await user.click(screen.getByRole("button", { name: "nav.prompts" }));

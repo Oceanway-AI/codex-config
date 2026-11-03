@@ -479,13 +479,7 @@ fn show_at(app: &AppHandle, window: &WebviewWindow, icon: (f64, f64, f64, f64)) 
         }
     });
 
-    // 额度在弹出时顺带刷新：在用的那家（内部 10 秒防抖），以及子面板里其余开了自动查询、
-    // 缓存里还没有或已过期的脚本供应商；查完经 `notify_changed` 更新面板。
-    let app = app.clone();
-    tauri::async_runtime::spawn(async move {
-        crate::tray::refresh_all_usage_in_tray(&app).await;
-        crate::tray::refresh_panel_provider_usage(&app).await;
-    });
+
 }
 
 /// 点托盘图标：开着就关，关着就在图标旁弹出。`rect` 是点击事件带的图标矩形。

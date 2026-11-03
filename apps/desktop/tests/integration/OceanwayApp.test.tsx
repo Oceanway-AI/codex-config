@@ -81,7 +81,6 @@ const mountApp = async () => {
 
 async function openApp(name: string) {
   const nav = within(document.querySelector("nav")!);
-  fireEvent.click(nav.getByRole("button", { name: "更多应用", hidden: true }));
   fireEvent.click(await nav.findByRole("button", { name, hidden: true }));
 }
 
@@ -102,13 +101,24 @@ describe("Oceanway application with real edition and MSW", () => {
         }),
       ),
       http.post(`${endpoint}/oceanway_detect_apps`, () =>
-        HttpResponse.json([
-          ["codex", "Codex"], ["claude-desktop", "Claude Desktop"],
-          ["claude", "Claude Code"], ["dsh", "DeepSeek Harness"],
-          ["hermes", "Hermes"], ["kimi", "Kimi Code Desktop"],
-        ].map(([appId, name]) => ({ appId, name, installed: false,
-          desktopInstalled: false, configExists: true, configurable: true,
-          installAvailable: true }))),
+        HttpResponse.json(
+          [
+            ["codex", "Codex"],
+            ["claude-desktop", "Claude Desktop"],
+            ["claude", "Claude Code"],
+            ["dsh", "DeepSeek Harness"],
+            ["hermes", "Hermes"],
+            ["kimi", "Kimi Code Desktop"],
+          ].map(([appId, name]) => ({
+            appId,
+            name,
+            installed: false,
+            desktopInstalled: false,
+            configExists: true,
+            configurable: true,
+            installAvailable: true,
+          })),
+        ),
       ),
       http.post(`${endpoint}/get_openclaw_env`, () =>
         HttpResponse.json({ vars: { EXISTING_FLAG: "on" } }),
@@ -125,8 +135,14 @@ describe("Oceanway application with real edition and MSW", () => {
 
   it("opens Oceanway connection by default and checks the entered key through its API", async () => {
     expect(OCEANWAY_EDITION).toBe(true);
+    localStorage.setItem("oceanway-last-view", "usage");
     const keys: unknown[] = [];
+    const links: unknown[] = [];
     server.use(
+      http.post(`${endpoint}/open_external`, async ({ request }) => {
+        links.push(await request.json());
+        return HttpResponse.json(null);
+      }),
       http.post(`${endpoint}/oceanway_check_key`, async ({ request }) => {
         keys.push(await request.json());
         return HttpResponse.json({
@@ -138,6 +154,31 @@ describe("Oceanway application with real edition and MSW", () => {
     );
     await mountApp();
     const key = await screen.findByLabelText("Oceanway API Key");
+    const nav = within(document.querySelector("nav")!);
+    expect(
+      nav.queryByRole("button", { name: "更多应用", hidden: true }),
+    ).toBeNull();
+    expect(
+      nav.queryByRole("button", { name: "nav.usage", hidden: true }),
+    ).toBeNull();
+    for (const name of [
+      "Codex",
+      "Claude Desktop",
+      "Claude Code",
+      "DeepSeek Harness",
+      "Hermes",
+      "Kimi Code Desktop",
+    ]) {
+      expect(
+        nav.getByRole("button", { name, hidden: true }),
+      ).toBeInTheDocument();
+    }
+    fireEvent.click(
+      nav.getByRole("button", { name: "登录 Oceanway 官网", hidden: true }),
+    );
+    await waitFor(() =>
+      expect(links).toEqual([{ url: "https://oceanway.tech" }]),
+    );
     await waitFor(() => expect(key).toBeEnabled());
     expect(
       screen.getByRole("heading", { name: "连接你的 AI 应用", hidden: true }),
@@ -162,7 +203,9 @@ describe("Oceanway application with real edition and MSW", () => {
     await mountApp();
     await screen.findByLabelText("Oceanway API Key");
     await openApp("Hermes");
-    expect(await screen.findByLabelText("Oceanway API Key")).toBeInTheDocument();
+    expect(
+      await screen.findByLabelText("Oceanway API Key"),
+    ).toBeInTheDocument();
     const tabs = within(
       await screen.findByRole("tablist", { name: "Hermes", hidden: true }),
     );
@@ -203,14 +246,29 @@ describe("Oceanway application with real edition and MSW", () => {
     await mountApp();
     await screen.findByLabelText("Oceanway API Key");
     const nav = within(document.querySelector("nav")!);
-    fireEvent.click(nav.getByRole("button", { name: "nav.apps", hidden: true }));
+    fireEvent.click(
+      nav.getByRole("button", { name: "nav.apps", hidden: true }),
+    );
     await screen.findByRole("heading", { name: "应用安装", hidden: true });
-    for (const name of ["Codex", "Claude Desktop", "Claude Code", "DeepSeek Harness", "Hermes", "Kimi Code Desktop"]) {
-      const region=within(screen.getByRole("region", { name, hidden: true }));
-      expect(region.getByRole("button", { name: "下载安装", hidden: true })).toBeEnabled();
+    for (const name of [
+      "Codex",
+      "Claude Desktop",
+      "Claude Code",
+      "DeepSeek Harness",
+      "Hermes",
+      "Kimi Code Desktop",
+    ]) {
+      const region = within(screen.getByRole("region", { name, hidden: true }));
+      expect(
+        region.getByRole("button", { name: "下载安装", hidden: true }),
+      ).toBeEnabled();
     }
-    expect(screen.queryByRole("region", { name: "OpenClaw", hidden: true })).toBeNull();
-    expect(screen.queryByRole("region", { name: "Gemini CLI", hidden: true })).toBeNull();
+    expect(
+      screen.queryByRole("region", { name: "OpenClaw", hidden: true }),
+    ).toBeNull();
+    expect(
+      screen.queryByRole("region", { name: "Gemini CLI", hidden: true }),
+    ).toBeNull();
     expect(localStorage.getItem("oceanway-last-view")).toBe("apps");
   });
 });

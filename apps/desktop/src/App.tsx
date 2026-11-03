@@ -43,7 +43,6 @@ import { hermesKeys, useOpenHermesWebUI } from "@/hooks/useHermes";
 import { hermesApi } from "@/lib/api/hermes";
 import type { ProviderEditorSave } from "@/lib/api/providers";
 import { useProxyStatus } from "@/hooks/useProxyStatus";
-import { useUsageCacheBridge } from "@/hooks/useUsageCacheBridge";
 import {
   useTrayAppPageSeen,
   useTrayNavigation,
@@ -297,8 +296,6 @@ function App() {
   const effectiveUsageProvider = useLastValidValue(usageProvider);
   const mainScrollRef = useRef<HTMLElement>(null);
   const providerScrollContainerRef = useRef<HTMLDivElement>(null);
-
-  useUsageCacheBridge();
 
   useLayoutEffect(() => {
     if (currentView !== "providers") return;
@@ -1332,7 +1329,7 @@ function App() {
         <DropdownMenuItem onSelect={() => openPage("sessions")}>
           {t("appPage.viewSessions")}
         </DropdownMenuItem>
-        {activeUsageApp && (
+        {!OCEANWAY_EDITION && activeUsageApp && (
           <DropdownMenuItem
             onSelect={() => {
               setUsageAppFilter(activeUsageApp);
@@ -1682,6 +1679,7 @@ function App() {
       case "connection":
         return <OceanwayConfigPanel />;
       case "usage":
+        if (OCEANWAY_EDITION) return <OceanwayConfigPanel />;
         return (
           <UsagePage
             initialAppType={usageAppFilter}
@@ -1877,7 +1875,7 @@ function App() {
         />
       )}
 
-      {effectiveUsageProvider && (
+      {!OCEANWAY_EDITION && effectiveUsageProvider && (
         <UsageScriptModal
           key={effectiveUsageProvider.id}
           provider={effectiveUsageProvider}

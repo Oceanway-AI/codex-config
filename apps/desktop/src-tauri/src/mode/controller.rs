@@ -1047,7 +1047,7 @@ pub async fn switch_route_locked(
     app: &AppType,
     target: &Provider,
 ) -> Result<RouteSwitchResult, String> {
-    crate::oceanway::validate_provider(target)?;
+    crate::oceanway::validate_provider_switch(target)?;
     let mode = current::mode_state(app);
     if !mode.is_proxy() {
         return Err(format!("{} 不在代理模式", app.as_str()));
@@ -1199,7 +1199,7 @@ pub async fn set_route(
 
 /// 代理模式下不能切到不支持代理的官方供应商（Codex 官方账号走客户端自己的登录，除外）。
 pub fn reject_unsupported_official(app: &AppType, provider: &Provider) -> Result<(), String> {
-    crate::oceanway::validate_provider(provider)?;
+    crate::oceanway::validate_provider_switch(provider)?;
     if provider.category.as_deref() == Some("official")
         && !crate::services::provider::official_provider_supports_proxy_takeover(app, provider)
     {

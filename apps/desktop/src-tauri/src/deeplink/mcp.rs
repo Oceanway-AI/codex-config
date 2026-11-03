@@ -153,6 +153,7 @@ pub fn import_mcp_from_deeplink(
 /// Parse apps string into McpApps struct
 pub(crate) fn parse_mcp_apps(apps_str: &str) -> Result<McpApps, AppError> {
     let mut apps = McpApps {
+        claude_desktop: false,
         agy: false,
         claude: false,
         codex: false,
@@ -169,6 +170,7 @@ pub(crate) fn parse_mcp_apps(apps_str: &str) -> Result<McpApps, AppError> {
 
     for app in apps_str.split(',') {
         match app.trim() {
+            "claude-desktop" | "claude_desktop" => apps.claude_desktop = true,
             "claude" => apps.claude = true,
             "codex" => apps.codex = true,
             "gemini" => apps.gemini = true,

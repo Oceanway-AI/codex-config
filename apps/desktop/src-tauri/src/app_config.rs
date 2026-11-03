@@ -7,6 +7,8 @@ use crate::services::skill::SkillStore;
 /// MCP 服务器应用状态（标记应用到哪些客户端）
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct McpApps {
+    #[serde(default, rename = "claude-desktop", alias = "claude_desktop")]
+    pub claude_desktop: bool,
     #[serde(default)]
     pub mcode: bool,
     #[serde(default)]
@@ -49,7 +51,7 @@ impl McpApps {
             AppType::Dsh => self.dsh,
             AppType::Pi => self.pi,
             AppType::Omp => self.omp,
-            AppType::ClaudeDesktop => false,
+            AppType::ClaudeDesktop => self.claude_desktop,
             AppType::Agy => self.agy,
         }
     }
@@ -68,7 +70,7 @@ impl McpApps {
             AppType::Kimi => self.kimi = enabled,
             AppType::Dsh => self.dsh = enabled,
             AppType::Pi => self.pi = enabled,
-            AppType::ClaudeDesktop => {}
+            AppType::ClaudeDesktop => self.claude_desktop = enabled,
             AppType::Agy => self.agy = enabled,
             AppType::Omp => self.omp = enabled,
         }
@@ -77,6 +79,9 @@ impl McpApps {
     /// 获取所有启用的应用列表
     pub fn enabled_apps(&self) -> Vec<AppType> {
         let mut apps = Vec::new();
+        if self.claude_desktop {
+            apps.push(AppType::ClaudeDesktop);
+        }
         if self.claude {
             apps.push(AppType::Claude);
         }
@@ -119,6 +124,7 @@ impl McpApps {
     /// 检查是否所有应用都未启用
     pub fn is_empty(&self) -> bool {
         !self.claude
+            && !self.claude_desktop
             && !self.codex
             && !self.gemini
             && !self.grokbuild

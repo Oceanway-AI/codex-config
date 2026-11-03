@@ -41,7 +41,8 @@ export function useAgentInstaller() {
     job,
     busy: !!job && active(job.stage),
     start: startInstall,
-    check: () => action("oceanway_check_install", "checking", "正在检测安装结果…"),
+    check: () =>
+      action("oceanway_check_install", "checking", "正在检测安装结果…"),
   };
 }
 async function startInstall(appId: string) {

@@ -13,7 +13,7 @@ import threading
 import time
 
 
-TOOLS = {"generate_images", "get_image_job", "cancel_image_job", "retry_image_job", "get_video_models", "generate_video", "get_video_job"}
+TOOLS = {"generate_images", "get_image_job", "cancel_image_job", "retry_image_job", "get_video_models", "generate_video", "get_video_job", "get_image_models"}
 FIXTURE_KEY = "oceanway-packaged-smoke-not-a-real-key"
 
 
