@@ -24,6 +24,7 @@ async fn installed_stdio_process_discovers_and_generates_at_the_saved_custom_end
             let Ok((mut stream, _)) = listener.accept() else {
                 std::thread::sleep(Duration::from_millis(5)); continue;
             };
+            stream.set_nonblocking(false).unwrap();
             stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
             let mut header = Vec::new();
             while !header.ends_with(b"\r\n\r\n") {
