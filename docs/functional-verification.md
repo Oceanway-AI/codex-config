@@ -1,6 +1,6 @@
 # Oceanway Config 功能核验
 
-更新：2026-11-03。工作包：WP-CODEXCONFIG-001。开发分支：`codex/oceanway-config-rebuild`。本页描述当前源码及本轮验证；本轮修改尚未发布安装包。
+更新：2026-11-03。工作包：WP-CODEXCONFIG-001。开发分支：`codex/oceanway-config-rebuild`。源码 `3d60b9f3670466de87b3f2774158b6a1e880ea7c` 的三平台图片版安装包已发布到 [oceanway-preview](https://github.com/Oceanway-AI/codex-config/releases/tag/oceanway-preview)。
 
 ## 当前用户可见功能
 
@@ -15,9 +15,25 @@
 | 高级功能 | 沿用 CC Switch 的 MCP、Skills、提示词管理 |
 | 设置 | 外观、语言、应用目录、网络、配置备份、导出和日志 |
 
-## 本轮真实接入结果
+## 本轮 Windows 安装版验收
 
-测试使用独立的 Windows/WSL HOME 和用户指定的 Console 测试 Key。Windows 当前用户的 Codex、Claude 配置与登录文件用 SHA256 核对。原生配置由生产 writer 生成；Windows 媒体进程临时桥接到已编译的 Linux 应用本体，以适应本机缺少 MSVC 的环境。
+[构建 41613224876](https://github.com/Oceanway-AI/codex-config/actions/runs/41613224876) 的 Windows x64、macOS Apple Silicon、macOS Intel 与发布任务全部成功，下载后的三个包均匹配发布的 SHA256。Mac 完成构建和包内 MCP 检查，尚未实机操作验收。
+
+Windows 使用下载的 NSIS 安装器实际安装，在全新独立 HOME 中从 GUI 粘贴 Console Key，选择 7 个 GPT 对话模型和 8 个图片模型后点击一键配置。应用自动保存 API 身份并注册图片 MCP，没有手工补登录文件。原生模型目录包含所选 7 个 GPT。
+
+首次欢迎与 Windows 设置按客户端引导完成；设置检查曾短暂失败，点击重试后输入框恢复。桌面新会话真实回复“Oceanway 连接成功”。随后只用自然语言要求两张图片，Agent 自动调用 `oceanway_images.generate_images`，一次提交 `count=2`，查询同一任务后在原会话返回两张 1024×1024 PNG。图片预览与系统另存为均实测。
+
+再次一键配置时首次遇到 Windows 原子文件替换错误 `os error 1175`，返回调整后重试成功，根因尚未确认。重新配置前后原会话正文 SHA256 一致；重开桌面后聊天和图片仍可见，原会话正确返回先前暗号“蓝鲸731”。本轮是 Oceanway 重配，前轮跨供应商往返结果见下文。
+
+新站使用的简明 Word 手册为 6 页、14 张真实截图，覆盖安装、Key、模型多选、配置、首次引导、对话和生图。WPS 原生打开与导出、OOXML 检查、全部页面视觉检查通过。15 页详细稿保留在本地，不作为默认用户手册。
+
+本轮证据位于 `.artifacts/images-only-build-20261103/`：`final-desktop-acceptance.json`、`final-gui-config-result.json`、`final-model-catalog-result.json`、`final-history-reconfigure.json`、`final-ui-image-download.json`、`qa/final-delivery-audit.json`、`qa/quickstart/` 和 `delivery/`。
+
+独立测试进程、HOME、工作目录和本轮临时安装已清理。当前用户 Codex/Claude 的四个配置及身份文件 SHA256 均未改变；99 个保留文本文件未检出测试 Key。`old-plugin-temp` 仅剩空测试目录，其删除被自动审批以 `blocked by policy` 拦截，未绕过，仍保留。
+
+## 前轮源码真实接入结果
+
+前轮测试使用独立的 Windows/WSL HOME 和用户指定的 Console 测试 Key。Windows 当前用户的 Codex、Claude 配置与登录文件用 SHA256 核对。原生配置由生产 writer 生成；前轮 Windows 媒体进程临时桥接到已编译的 Linux 应用本体，以适应本机缺少 MSVC 的环境。本轮安装包使用随包的 Windows 原生 MCP。
 
 | 应用 | 文本 | 模型与图片工具 | 历史 |
 | --- | --- | --- | --- |
@@ -52,14 +68,14 @@ Windows 重新应用配置时，Claude、Kimi、DeepSeek 共 8 个历史文件�
 
 | 检查 | 结果 |
 | --- | --- |
-| Oceanway 原生定向回归 | 140 项通过，3 项手动验收忽略 |
+| 前轮 Oceanway 原生定向回归 | 140 项通过，3 项手动验收忽略 |
 | 图片模块与独立 stdio | 当前 98 项模块测试、5 项 stdio 测试通过；工具列表严格为 5 个图片工具 |
 | 模型选择前端回归 | 当前 26 项通过；Key 含其他能力时，文本与图片配置仍可完成 |
 | TypeScript 与 renderer build | 通过 |
 | Linux 完整应用本体编译 | 通过 |
-| Windows/Mac 新安装包 | 本轮未构建发布 |
+| Windows/Mac 新安装包 | 三平台构建、包内 MCP 检查和发布成功；Windows 实际安装及桌面验收通过上述流程 |
 
-本地证据目录为 `.artifacts/install-acceptance-20261103/`：
+前轮源码证据目录为 `.artifacts/install-acceptance-20261103/`：
 
 - `provider-history-roundtrip.json`：6 次原生供应商切换。
 - `history-switch-preservation.json`、`history-after-switch.json`：Codex 旧会话保留和真实续聊。
@@ -68,8 +84,8 @@ Windows 重新应用配置时，Claude、Kimi、DeepSeek 共 8 个历史文件�
 - `native-desktop-session-results.json`、`native-session-evidence/`：Kimi、DeepSeek 原生旧会话中的模型切换与完整图片目录。
 - `claude-native-mcp.json`、`hermes-native-mcp.json`、`dsh-sdk-mcp-result.json`：图片目录发现。
 - `native-app-media-results.json`：自然语言批量图片生成。
-- `cleanup-windows-result.json`、`cleanup-wsl-result.json`、`final-cleanup-audit.json`：本轮隔离环境清理、凭据检查与当前用户配置哈希。
+- `cleanup-windows-result.json`、`cleanup-wsl-result.json`、`final-cleanup-audit.json`：前轮隔离环境清理、凭据检查与当前用户配置哈希。
 
-本轮测试进程、独立 HOME、临时运行依赖及 WSL 验收目录已清理；脱敏证据与两张生成图片保留。当前用户的四个 Codex/Claude 配置和登录文件 SHA256 与测试前一致，189 个保留文本文件未检出测试 Key。
+前轮测试进程、独立 HOME、临时运行依赖及 WSL 验收目录已清理；脱敏证据与两张生成图片保留。前轮当前用户的四个 Codex/Claude 配置和登录文件 SHA256 与测试前一致，189 个保留文本文件未检出测试 Key。
 
 国内下载已有电信、联通、移动节点的分段读取证据；本机公司/校园 Wi-Fi 直连仍有握手超时，不能据分段读取判定所有地区完整下载已通过。最新全功能、全目标平台安装验收仍未完成，工作包保持 doing。

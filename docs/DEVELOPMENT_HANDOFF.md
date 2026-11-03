@@ -23,6 +23,10 @@
 
 ## 验证与后续验收
 
+最新 Windows 安装包已实际安装，从空白独立 HOME 经 GUI 保存 Key、7 个 GPT 和 8 个图片模型，正常完成 Codex 首次引导。桌面真实文本回复、自然语言一次生成两张图、图片预览下载、重配后历史与旧会话续聊通过。新用户 API 身份由 CC Switch guarded 写入事务初始化，覆盖新用户、重复配置与 Key 轮换，并保留原官方身份。
+
+重配首次出现 `os error 1175` 文件替换失败，GUI 重试成功，原因未确认。首次 Windows 设置检查也曾需要点击重试。具体记录见功能核验；不要将这些情况记为已修复。
+
 独立环境已验证 Codex 文本与第二模型切换、一次提交两张真实图片、六次供应商往返后的旧会话可见性和正文哈希；Claude Code 重配后可续聊；Kimi、DeepSeek 在旧会话中完成原生模型切换和全部图片模型查询。具体版本、测试方式和证据见功能核验。
 
 Claude Desktop 与 Hermes 桌面完整图片调用仍需目标环境验收。Hermes CLI 曾在隔离测试目录补充 Python MCP 依赖后查询成功，发行安装环境仍需核对。干净系统安装、升级、卸载及国内网络完整下载按工作包继续验收。
@@ -30,6 +34,10 @@ Claude Desktop 与 Hermes 桌面完整图片调用仍需目标环境验收。Her
 真实测试使用独立 HOME，保留脱敏记录，结束后清理所属进程、配置和临时运行依赖。用户现用 Agent 的配置与历史不得用于测试写入。
 
 ## 构建与交付
+
+源码 `3d60b9f3670466de87b3f2774158b6a1e880ea7c` 已通过 [41613224876](https://github.com/Oceanway-AI/codex-config/actions/runs/41613224876) 的三个平台构建与发布任务，产物在 [oceanway-preview](https://github.com/Oceanway-AI/codex-config/releases/tag/oceanway-preview)。Windows 已完成安装版桌面测试；Mac 目前仅完成 CI 构建与包内 MCP 检查。
+
+本地 `.artifacts/images-only-build-20261103/delivery/` 保存已校验的三个安装包与 `Oceanway_Config_简明操作手册_20261103.docx`。简明手册 6 页、14 张真实操作截图，WPS 原生检查和逐页视觉检查通过。完整验收写入文档仓 PROC-02-029。测试环境已清理，自动审批拦截的 `old-plugin-temp` 空目录保留。
 
 [build.yml](../.github/workflows/build.yml) 覆盖 Windows x64、macOS Apple Silicon 与 macOS Intel，执行前端与原生回归、安装包构建和包内 MCP 检查。开发分支推送会触发；也可手动运行：
 
