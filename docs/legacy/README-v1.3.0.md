@@ -5,7 +5,7 @@
 
 > 需求、设计、决策以文档站为准：https://docs.oceanway.site/docs/06_开发/07_内部工具（本仓只保留运行与开发说明；决策见 https://docs.oceanway.site/docs/02_决策/ADR-0000_决策索引）。
 
-> Oceanway Config 重构开发入口：[项目需求与工作分支](docs/PROJECT_REQUIREMENTS.md)。下文描述现有版本；新应用的目标行为以关联 PRD/FS/WP 为准。
+> Oceanway Config 需求与图片 MCP 设计：[需求与功能说明](../PROJECT_REQUIREMENTS.md)。本页记录 1.3.0 旧版。
 
 `codex-config` is a lightweight OceanWay AI desktop helper for configuring Codex. It is built with Tauri and Rust, with a small HTML/CSS/JavaScript interface.
 

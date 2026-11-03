@@ -6,7 +6,9 @@
 
 以上是本开发分支最近一次完整构建成功的测试版，构建成功后自动更新。[查看版本、提交与安装说明](https://github.com/Oceanway-AI/codex-config/releases/tag/oceanway-preview) · [查看最新构建状态](https://github.com/Oceanway-AI/codex-config/actions/workflows/build.yml?query=branch%3Acodex%2Foceanway-config-rebuild)。Windows 下载后双击安装；macOS 解压后将应用放入“应用程序”。
 
-新版本源码位于 `apps/desktop/`。沿用 CC Switch 的应用框架、组件和会话管理，提供 Oceanway Key 接入、模型选择与配置流程。需求见 [项目需求入口](docs/PROJECT_REQUIREMENTS.md)。
+新版本源码位于 `apps/desktop/`。沿用 CC Switch 的应用框架、组件和会话管理，提供 Oceanway Key 接入、模型选择与配置流程。
+
+**[Oceanway Config 需求与功能说明](docs/PROJECT_REQUIREMENTS.md)**：本项目唯一需求文档，包含全部功能、[图片 MCP 设计](docs/PROJECT_REQUIREMENTS.md#image-mcp)和验收要求。
 
 当前版本提供文本模型接入和图片 MCP，支持多模型选择、批量生图及历史保留。构建流程、验证结果与后续维护见 [开发交接](docs/DEVELOPMENT_HANDOFF.md)。
 

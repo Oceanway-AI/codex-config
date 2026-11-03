@@ -25,7 +25,52 @@
 
 用户指定的自定义站点 `https://model.ocean-way.top` 实际返回 49 个模型，其中 36 个文本、9 个图片、4 个视频。Windows 应用从 GUI 保存该地址与 Key 后，独立 Codex 进程真实完成文本对话。随后发现图片兼容错误：同步图片响应同时带有 `X-Task-ID`，旧 MCP 把该编号当成待查询任务，而站点没有对应查询路由，返回 HTTP 404。使用同一地址与 Key 直接请求标准图片接口，40.86 秒返回一张 1024×1024 PNG，证明此次问题不是该图片渠道无法生成。
 
-修复后优先保存响应内的图片；自定义地址使用标准 Images 请求，默认 Console 继续按公开能力请求异步任务。回归覆盖同步图片带任务头、正文含任务编号、Gemini 内联图片及无效图片；已有异步恢复测试继续检查不会重复生成。成品在 Codex 中的复测及发布结果登记至 PROC-02-030。
+修复后优先保存响应内的图片；自定义地址按模型元数据选择 OpenAI Images 或 Gemini，默认 Console 继续按公开能力请求异步任务。回归覆盖同步图片带任务头、正文含任务编号、Gemini 内联图片及无效图片；已有异步恢复测试继续检查不会重复生成。成品在 Codex 中的复测及发布结果登记至 PROC-02-030。
+
+## 本地参考图与自定义图片协议（2026-11-03）
+
+用户明确授权使用当前 Codex 的服务凭据作为对照。独立 Codex 0.166.0 app-server 接收真实 `localImage` 附件，由自然语言调用源码编译的 Oceanway MCP；参考图为本地橙色帆船，要求改为紫帆并增加绿色星星。两种模型均正确返回图片，原附件 SHA256 不变，MCP 接收的参考文件哈希一致。
+
+| 服务与模型 | 实际结果 |
+| --- | --- |
+| 当前服务 `uumi.lol` / `gpt-image-2-fix` | 一次生成调用，69.63 秒返回 1 张 PNG；multipart 直接发送本地图 |
+| 当前服务 `uumi.lol` / `gpt-image-2.5-flare-fix` | 一次生成调用，77.30 秒返回 1 张 PNG；multipart 直接发送本地图 |
+| `model.ocean-way.top` / `gemini-3.1-flash-image-preview` | 真实本地附件，一次批量调用，85.76 秒完成 2 张并回传两张图片 |
+| Console / 同一 Gemini 型号 | 本地附件第一张成功；第二张返回账户素材存储已满，整批未通过 |
+| Console 及转接它的 New API / GPT 图片系列 | 原生本地文件编辑与内联参考请求返回 HTTP 400，仍待 Console 兼容修复 |
+| Console / `grok-imagine-image`、`grok-imagine-image-2.0` | 两款分别测试 xAI JSON 本地 Base64 编辑、multipart 文件编辑、生成接口内联参考，六次均返回 HTTP 400，无任务 ID 和图片 |
+| `model.ocean-way.top` / `gpt-image-2` 与 `grok-imagine-image` | 修复渠道请求体透传后，HTTPS 参考图分别生成成功，视觉核对确认保留原图内容 |
+
+当前服务的图片模型名带 `-fix`，与 Console 的模型别名不同；结果证明这两条实际端点支持原生本地图编辑。Console 的公开接口只允许已公布的生成路径、其 GPT 参考校验只接收 HTTPS 链接，因此不能把该限制归因于图片模型本身，也无需将新增图床作为通用前提。平台修复位置与具体错误见文档仓 PROC-02-030。
+
+New API 图片渠道 7 已开启 `pass_through_body_enabled`，保存前后仅 `setting` 字段变化，解决 `reference_images` 转发时丢失。Console 接口拒绝和素材存储报错仍待平台技术调整后复测。
+
+图片模块现有 108 项、独立 stdio 6 项通过。新增回归包括 Gemini 原生字节输入与路径前缀、模型别名、鉴权失败不提交、复杂图片缩略图、多图预览，以及 OpenAI 混用本地图和链接时提交前报错而不遗漏参考图。该结果是源码模块与独立 Codex 进程验收；这些后续改动尚未构建安装包。
+
+真实证据保存在 `.artifacts/concurrent-download-baseurl-20261103/`：`codex-local-attachment-current-gpt-image-2-fix-result.json`、`codex-local-attachment-current-gpt-image-2.5-flare-fix-result.json`、`current-provider-local-image-comparison.jpg`、`codex-local-attachment-newapi-result.json`、`codex-local-attachment-console-result.json`、`newapi-image-channel-setting-change.json` 和 `custom-image-fix-tests.log`。所有出图按原请求计数，部分成功单独记录。
+
+Grok 补测使用实际本地 PNG 原字节，原图哈希不变，未改当前 Agent 配置。实时目录只声明 `reference_images` / `url-array`；文件编辑返回 `Use the published Media generation endpoint`，两种内联请求返回 `Media parameters do not match the published capability`。结果保存于 `grok-local-verification/catalog.json`、`grok-local-verification/results.json`，图片 MCP 设计统一见 [需求与功能说明](PROJECT_REQUIREMENTS.md#image-mcp)。该结论限定于当前 Console 接口，不表示 Grok 模型本身不具备本地图编辑能力。
+
+## 全模型 MCP 检查与平台调整（2026-11-03）
+
+重新核对 Console 图片、任务文档与实时公开能力目录，使用源码编译的独立 MCP 进程测试全部 8 款授权图片模型。每款文生图、本地参考图各一次，最多两个任务并行；任务回执始终查询原任务，不重新提交生成。
+
+| 模型 | 文生图 | 本地参考图 |
+| --- | --- | --- |
+| gemini-3-pro-image-preview | 返回图片 | 素材存储已满 |
+| gemini-3.1-flash-image-preview | 素材存储已满 | 素材存储已满 |
+| gemini-nano-banana-2.1 | 素材存储已满 | 返回图片 |
+| gpt-image-2 | 返回图片 | 公开能力仅声明链接参考，MCP 未提交生成 |
+| gpt-image-2.5-flare | 返回图片 | 同上 |
+| gpt-image-2.5-sunburst | 返回图片 | 同上 |
+| grok-imagine-image | 返回图片 | 同上 |
+| grok-imagine-image-2.0 | 返回图片 | 同上 |
+
+16 项中 7 项取得真实图片文件与 MCP 预览，原参考图哈希保持不变；9 项未通过。逐图视觉核对确认六张文生图均为帆船，Nano Banana 的本地图结果保留原船形、橙色船体和白底，将帆改为紫色并添加绿色星星。另对 GPT 三款、Grok 两款发送显式 `async:true` 的本地图 data URI 原生 API 对照，五次均返回参数校验 HTTP 400，未返回任务 ID 或图片。
+
+用户随后转达平台技术说明：API 参考图直接随请求传递，无需先存入 Console 素材库；同步结果直接返回，异步结果可以暂存供查询。服务端正在调整，配置程序保持现有接入方式。素材存储错误的账户归属尚未确认，增加测试账户配额不作为解决前提。
+
+待平台修复上线后再进行 Console / New API 的全模型复测；本轮 New API 全量矩阵尚未开始。当前源码回归为 110 项图片模块测试、6 项 stdio 测试通过，未构建新安装包。证据为 `.artifacts/concurrent-download-baseurl-20261103/all-model-mcp-acceptance/`，图片 MCP 设计见 [需求与功能说明](PROJECT_REQUIREMENTS.md#image-mcp)。
 
 ## 上轮 Windows 安装版验收
 
