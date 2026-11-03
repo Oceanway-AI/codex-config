@@ -62,6 +62,15 @@ pub(super) fn catalog_image_model(row: &serde_json::Value) -> bool {
     if let Some(kind) = row.get("modelType").or_else(|| row.get("model_type")).and_then(|v|v.as_str()) {
         return kind == "image";
     }
+    // New API allows arbitrary model aliases. Its endpoint metadata identifies
+    // image models even when their names contain no familiar image-family tag.
+    if row["supported_endpoint_types"].as_array().is_some_and(|types|
+        types.iter().any(|kind|kind.as_str()==Some("image-generation")))
+        || row.get("supportedProtocols").or_else(||row.get("supported_protocols"))
+            .and_then(|types|types.as_array()).is_some_and(|types|
+                types.iter().any(|kind|kind.as_str()==Some("openai-images"))) {
+        return true;
+    }
     let Some(id) = row["id"].as_str() else { return false; };
     let id = id.to_ascii_lowercase();
     ["gpt-image", "dall-e", "imagen", "flux", "stable-diffusion", "nano-banana"].iter().any(|part|id.contains(part))
@@ -311,6 +320,15 @@ mod catalog_tests {
     use serde_json::json;
 
     #[test]
+    fn new_api_image_aliases_use_endpoint_metadata_without_misclassifying_text() {
+        assert!(catalog_image_model(&json!({"id":"oceanway-drawing","supported_endpoint_types":["openai","image-generation"]})));
+        assert!(catalog_image_model(&json!({"id":"studio-v2","supported_protocols":["openai-images"]})));
+        assert!(catalog_image_model(&json!({"id":"studio-v3","supportedProtocols":["openai-images"]})));
+        assert!(!catalog_image_model(&json!({"id":"chat-alias","supported_endpoint_types":["openai","gemini"]})));
+        assert!(!catalog_image_model(&json!({"id":"video-image","model_type":"video","supported_endpoint_types":["image-generation"]})));
+    }
+
+    #[test]
     fn saved_address_roundtrips_and_old_records_keep_the_console_default() {
         let home = std::env::temp_dir().join(format!("oceanway-provider-{}-{}", std::process::id(), SEQUENCE.fetch_add(1, Ordering::Relaxed)));
         fs::create_dir(&home).unwrap();
@@ -350,6 +368,7 @@ mod catalog_tests {
                     assert!(header.contains("authorization: bearer catalog-fixture-secret"));
                     json!({"data":[{"id":"saved-image"},{"id":"new-image"},
                         {"id":"custom-picture","model_type":"image"},
+                        {"id":"drawing-alias","supported_endpoint_types":["image-generation","openai"]},
                         {"id":"gpt-6"},{"id":"video-image-model","model_type":"video"}]})
                 }.to_string();
                 write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",body.len(),body).unwrap();
@@ -363,7 +382,7 @@ mod catalog_tests {
         let before = fs::read(home.join(RECORD_NAME)).unwrap();
         let result = image_models(&home).unwrap();
         worker.join().unwrap();
-        assert_eq!(result,json!({"default_model":"saved-image","models":["custom-picture","new-image","saved-image"]}));
+        assert_eq!(result,json!({"default_model":"saved-image","models":["custom-picture","drawing-alias","new-image","saved-image"]}));
         assert!(!result.to_string().contains("catalog-fixture-secret"));
         assert_eq!(fs::read(home.join(RECORD_NAME)).unwrap(),before);
         fs::remove_file(home.join(RECORD_NAME)).unwrap(); fs::remove_dir(home).unwrap();

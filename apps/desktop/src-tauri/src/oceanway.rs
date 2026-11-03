@@ -295,7 +295,8 @@ fn parse_models(payload: &Value) -> Result<Vec<Model>, String> {
                 models.push(Model { id: id.to_owned(),
                     supported_protocols: item.get("supportedProtocols").or_else(|| item.get("supported_protocols"))
                         .and_then(Value::as_array).map(|rows|rows.iter().filter_map(Value::as_str).map(str::to_owned).collect()),
-                    model_type: item.get("modelType").or_else(|| item.get("model_type")).and_then(Value::as_str).map(str::to_owned) });
+                    model_type: item.get("modelType").or_else(|| item.get("model_type")).and_then(Value::as_str).map(str::to_owned)
+                        .or_else(||crate::oceanway_images::catalog_image_model(item).then(||"image".into())) });
             }
         }
     }
@@ -1180,15 +1181,17 @@ mod tests {
             let body = json!({"data":[
                 {"id":"gpt-custom","model_type":"text","supported_protocols":["openai-responses"]},
                 {"id":"my-picture","modelType":"image"},
+                {"id":"z-drawing-alias","supported_endpoint_types":["openai","image-generation"]},
                 {"id":"gpt-custom"}]}).to_string();
             write!(stream,"HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
         });
         let result = oceanway_check_key("custom-model-test-key".into(), Some(base.clone())).await.unwrap();
         worker.join().unwrap();
         assert_eq!(result.base_url, base.trim_end_matches('/'));
-        assert_eq!(result.models.len(), 2);
+        assert_eq!(result.models.len(), 3);
         assert_eq!(result.models[0].supported_protocols.as_ref().unwrap(), &["openai-responses"]);
         assert_eq!(result.models[1].model_type.as_deref(), Some("image"));
+        assert_eq!(result.models[2].model_type.as_deref(), Some("image"));
     }
 
     #[test]

@@ -11,7 +11,7 @@ async fn installed_stdio_process_discovers_and_generates_at_the_saved_custom_end
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let base = format!("http://{}/custom/v1",listener.local_addr().unwrap());
-    oceanway_images::configure_at(&home,&base,"custom-stdio-key",Some("gpt-image-fixture"),&["gpt-image-fixture".into()]).unwrap();
+    oceanway_images::configure_at(&home,&base,"custom-stdio-key",Some("studio-drawing-v2"),&["studio-drawing-v2".into()]).unwrap();
     let stop = Arc::new(AtomicBool::new(false));
     let server_stop = stop.clone();
     let server = std::thread::spawn(move || {
@@ -33,17 +33,18 @@ async fn installed_stdio_process_discovers_and_generates_at_the_saved_custom_end
             assert!(header.contains("authorization: bearer custom-stdio-key"));
             let request = header.lines().next().unwrap().to_owned();
             let response = if request.starts_with("get /custom/v1/models ") {
-                json!({"data":[{"id":"gpt-image-fixture"},{"id":"other-picture","model_type":"image"},{"id":"gpt-text"}]})
+                json!({"data":[{"id":"gpt-image-fixture"},{"id":"studio-drawing-v2","supported_endpoint_types":["openai","image-generation"]},{"id":"other-picture","model_type":"image"},{"id":"gpt-text"}]})
             } else {
                 assert!(request.starts_with("post /custom/v1/images/generations "),"{request}");
                 let size: usize = header.lines().find_map(|line|line.strip_prefix("content-length: ")).unwrap().parse().unwrap();
                 let mut body = vec![0;size]; stream.read_exact(&mut body).unwrap();
                 let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
-                assert_eq!(body["model"],"gpt-image-fixture");
+                assert_eq!(body["model"],"studio-drawing-v2");
+                assert!(body.get("async").is_none());
                 json!({"data":[{"b64_json":encoded}]})
             }.to_string();
             paths.push(request);
-            write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",response.len()).unwrap();
+            write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nX-Task-ID: completed-tracking-id\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",response.len()).unwrap();
         }
         paths
     });
@@ -54,7 +55,7 @@ async fn installed_stdio_process_discovers_and_generates_at_the_saved_custom_end
     let mut client = tokio::time::timeout(Duration::from_secs(10),().serve(TokioChildProcess::new(command).unwrap())).await.unwrap().unwrap();
     let catalog = client.call_tool(CallToolRequestParams::new("get_image_models")).await.unwrap();
     assert_ne!(catalog.is_error,Some(true));
-    assert_eq!(catalog.structured_content.unwrap()["models"],json!(["gpt-image-fixture","other-picture"]));
+    assert_eq!(catalog.structured_content.unwrap()["models"],json!(["gpt-image-fixture","other-picture","studio-drawing-v2"]));
     let generated = client.call_tool(CallToolRequestParams::new("generate_images").with_arguments(
         json!({"workspace_directory":home,"prompt":"two small test pictures","count":2}).as_object().unwrap().clone())).await.unwrap();
     assert_ne!(generated.is_error,Some(true));

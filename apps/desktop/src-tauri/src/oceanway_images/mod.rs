@@ -14,6 +14,10 @@ pub use image_api::{
 };
 pub use provider::{configure, configure_at, normalize_api_base, read_api_key, read_provider_summary, ProviderSummary, API_BASE};
 
+pub(crate) fn catalog_image_model(row: &serde_json::Value) -> bool {
+    provider::catalog_image_model(row)
+}
+
 use std::path::PathBuf;
 
 #[derive(Clone, serde::Serialize)]
