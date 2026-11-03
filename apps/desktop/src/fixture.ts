@@ -1,6 +1,7 @@
 // Explicit local renderer fixture. Not included in the production build inputs.
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 import liveModelCatalog from "./test-fixtures/oceanway-model-catalog.json";
+import { OCEANWAY_API_BASE } from "./config/oceanway";
 if (!import.meta.env.DEV) throw new Error("Fixture is for development only");
 // Explicit UI samples only; no local application/version detection is performed.
 // ?empty=1 previews a new computer; ?desktop=only previews Codex GUI without CLI.
@@ -26,6 +27,7 @@ const apps = [
   ["kimi", "Kimi Code Desktop"],
 ];
 let configured = false;
+let savedBaseUrl = OCEANWAY_API_BASE;
 let configuredApps: string[] = [];
 let savedImageModel: string | null = null;
 localStorage.setItem("oceanway-last-view", "connection");
@@ -36,7 +38,7 @@ mockIPC(async (command, args: any) => {
     return {
       configured,
       keyPreview: configured ? "fixture…key" : null,
-      baseUrl: "https://console.oceanway.tech/v1",
+      baseUrl: savedBaseUrl,
       configuredApps,
       defaultImageModel: savedImageModel,
     };
@@ -102,8 +104,19 @@ mockIPC(async (command, args: any) => {
     if (!configured && args.apiKey !== "fixture-key")
       throw new Error("界面测试请填写 fixture-key，不使用真实 Key。");
     // Sanitized catalog from the same Console Key used for native acceptance.
+    const base = new URL((args.baseUrl ?? savedBaseUrl).trim());
+    if (
+      !["https:", "http:"].includes(base.protocol) ||
+      base.username ||
+      base.password ||
+      base.search ||
+      base.hash
+    )
+      throw new Error("请输入有效的 HTTP 或 HTTPS 服务地址。");
+    if (base.pathname === "/") base.pathname = "/v1";
     return {
       ...liveModelCatalog,
+      baseUrl: base.toString().replace(/\/+$/, ""),
       models: liveModelCatalog.models.filter(
         (model) => query.get("images") !== "0" || model.modelType !== "image",
       ),
@@ -111,6 +124,7 @@ mockIPC(async (command, args: any) => {
   }
   if (command === "oceanway_apply_config") {
     configured = true;
+    savedBaseUrl = args.request.baseUrl ?? savedBaseUrl;
     configuredApps = args.request.apps.map((a: any) => a.appId);
     savedImageModel = args.request.imageModel ?? savedImageModel;
     return {

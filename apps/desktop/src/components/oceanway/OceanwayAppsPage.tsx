@@ -26,7 +26,6 @@ export function OceanwayAppsPage() {
   const installer = useAgentInstaller();
   const [apps, setApps] = useState<DetectedApp[]>([]);
   const [detecting, setDetecting] = useState(false);
-  const [pending, setPending] = useState<string>();
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const failure = (e: unknown) =>
@@ -35,11 +34,11 @@ export function OceanwayAppsPage() {
     setDetecting(true);
     setError("");
     try {
-      if (
-        installer.job &&
-        ["ready", "awaiting_install"].includes(installer.job.stage)
-      )
-        await installer.check();
+      await Promise.all(
+        Object.values(installer.jobs)
+          .filter((job) => ["ready", "awaiting_install"].includes(job.stage))
+          .map((job) => installer.check(job.appId)),
+      );
       setApps(await oceanwayApi.detectApps());
     } catch (e) {
       failure(e);
@@ -51,18 +50,15 @@ export function OceanwayAppsPage() {
     void detect();
   }, []);
   useEffect(() => {
-    if (installer.job?.stage === "installed") void detect();
-  }, [installer.job?.stage]);
+    if (installer.installed) void detect();
+  }, [installer.installed]);
   async function download(app: DownloadApp) {
-    setPending(app);
     setError("");
     setMessage("");
     try {
       await installer.start(app);
     } catch (e) {
       failure(e);
-    } finally {
-      setPending(undefined);
     }
   }
   return (
@@ -147,20 +143,19 @@ export function OceanwayAppsPage() {
                     </div>
                     <Button
                       disabled={
-                        !!pending ||
-                        installer.busy ||
+                        installer.isBusy(id) ||
                         !!installed ||
                         app?.installAvailable === false
                       }
                       onClick={() => void download(id as DownloadApp)}
                     >
-                      {pending === id ? (
+                      {installer.isBusy(id) ? (
                         <Loader2 className="h-4 w-4 animate-spin" />
                       ) : (
                         <Download className="h-4 w-4" />
                       )}
-                      {pending === id
-                        ? "正在准备…"
+                      {installer.isBusy(id)
+                        ? "正在处理…"
                         : installed
                           ? "已安装"
                           : app?.installAvailable === false

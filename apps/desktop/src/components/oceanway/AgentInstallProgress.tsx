@@ -12,11 +12,11 @@ export interface InstallStatus {
   message: string;
   actionError?: string | null;
 }
-let current: InstallStatus | undefined;
-let generation = 0;
+let current: Record<string, InstallStatus> = {};
+const generations: Record<string, number> = {};
 const listeners = new Set<() => void>();
 const notify = (job: InstallStatus) => {
-  current = job;
+  current = { ...current, [job.appId]: job };
   listeners.forEach((listener) => listener());
 };
 const active = (stage: string) =>
@@ -36,18 +36,23 @@ const subscribe = (listener: () => void) => {
 };
 
 export function useAgentInstaller() {
-  const job = useSyncExternalStore(subscribe, () => current);
+  const jobs = useSyncExternalStore(subscribe, () => current);
   return {
-    job,
-    busy: !!job && active(job.stage),
+    jobs,
+    isBusy: (appId: string) => !!jobs[appId] && active(jobs[appId].stage),
+    installed: Object.values(jobs)
+      .filter((job) => job.stage === "installed")
+      .map((job) => job.id)
+      .sort()
+      .join(","),
     start: startInstall,
-    check: () =>
-      action("oceanway_check_install", "checking", "正在检测安装结果…"),
+    check: (appId: string) =>
+      action(appId, "oceanway_check_install", "checking", "正在检测安装结果…"),
   };
 }
 async function startInstall(appId: string) {
-  if (current && active(current.stage)) return;
-  ++generation;
+  if (current[appId] && active(current[appId].stage)) return;
+  const token = (generations[appId] = (generations[appId] ?? 0) + 1);
   notify({
     id: "starting",
     appId,
@@ -61,40 +66,49 @@ async function startInstall(appId: string) {
       appId,
     });
     notify(job);
-    void poll(job.id, generation);
+    void poll(appId, job.id, token);
   } catch (e) {
-    notify({ ...current!, stage: "failed", message: String(e) });
+    notify({ ...current[appId], stage: "failed", message: String(e) });
     throw e;
   }
 }
-async function action(command: string, stage: string, message: string) {
-  if (!current || active(current.stage)) return;
-  const previous = current;
-  ++generation;
+async function action(
+  appId: string,
+  command: string,
+  stage: string,
+  message: string,
+) {
+  const previous = current[appId];
+  if (!previous || active(previous.stage)) return;
+  const token = (generations[appId] = (generations[appId] ?? 0) + 1);
   notify({ ...previous, stage, message, actionError: null });
   try {
     const job = await invoke<InstallStatus>(command, { id: previous.id });
     notify(job);
-    void poll(job.id, generation);
+    void poll(appId, job.id, token);
   } catch (e) {
     notify({ ...previous, actionError: String(e) });
   }
 }
-async function poll(id: string, token: number) {
+async function poll(appId: string, id: string, token: number) {
   let failures = 0;
-  while (token === generation && current?.id === id && active(current.stage)) {
+  while (
+    token === generations[appId] &&
+    current[appId]?.id === id &&
+    active(current[appId].stage)
+  ) {
     await new Promise((resolve) => setTimeout(resolve, 1000));
-    if (token !== generation || current?.id !== id) return;
+    if (token !== generations[appId] || current[appId]?.id !== id) return;
     try {
       const job = await invoke<InstallStatus>("oceanway_get_install", { id });
-      if (token !== generation) return;
+      if (token !== generations[appId]) return;
       notify(job);
       failures = 0;
     } catch (e) {
-      if (token !== generation) return;
+      if (token !== generations[appId]) return;
       if (++failures >= 3) {
         notify({
-          ...current,
+          ...current[appId],
           stage: "failed",
           message: `无法读取安装状态，请重新检测应用。${String(e)}`,
         });
@@ -102,15 +116,16 @@ async function poll(id: string, token: number) {
     }
   }
 }
-export function AgentInstallProgress({ appId }: { appId?: string }) {
-  const { job } = useAgentInstaller();
-  if (!job || (appId && appId !== job.appId)) return null;
+export function AgentInstallProgress({ appId }: { appId: string }) {
+  const { jobs } = useAgentInstaller();
+  const job = jobs[appId];
+  if (!job) return null;
   const percent = job.total
     ? Math.min(100, Math.round((job.downloaded * 100) / job.total))
     : 0;
-  const cancelable = ["preparing", "downloading", "verifying"].includes(
-    job.stage,
-  );
+  const cancelable =
+    job.id !== "starting" &&
+    ["preparing", "downloading", "verifying"].includes(job.stage);
   const ready = ["ready", "awaiting_install"].includes(job.stage);
   return (
     <div className="rounded-panel border border-border bg-subtle p-4">
@@ -155,6 +170,7 @@ export function AgentInstallProgress({ appId }: { appId?: string }) {
           <Button
             onClick={() =>
               void action(
+                appId,
                 "oceanway_open_installer",
                 "opening",
                 "正在打开安装包…",
@@ -171,6 +187,7 @@ export function AgentInstallProgress({ appId }: { appId?: string }) {
             variant="quiet"
             onClick={() =>
               void action(
+                appId,
                 "oceanway_check_install",
                 "checking",
                 "正在检测安装结果…",
@@ -198,7 +215,7 @@ export function AgentInstallProgress({ appId }: { appId?: string }) {
           className="mt-2"
           onClick={() => {
             void invoke("oceanway_cancel_install", { id: job.id }).catch((e) =>
-              notify({ ...job, actionError: String(e) }),
+              notify({ ...current[appId], actionError: String(e) }),
             );
           }}
         >

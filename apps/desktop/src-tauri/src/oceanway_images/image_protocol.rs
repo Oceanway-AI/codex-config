@@ -7,7 +7,7 @@ struct Prepared { path: String, query_base: String, body: Value }
 pub(super) fn submit(input: &Input, index: usize, started: Instant,
     guard: impl FnOnce() -> Result<SavedProvider,Failure>) -> Result<(Value,Option<String>,SavedProvider,String),Failure> {
     let is_console = Url::parse(&input.provider.api_base).ok()
-        .is_some_and(|url|url.host_str()==Some("console.oceanway.tech"));
+        .is_some_and(|url|super::super::provider::is_oceanway_endpoint(&url));
     if !is_console {
         let mut submitted = None;
         let (body,id) = post_image_at_with_guard(input,index,started,|| {

@@ -26,6 +26,8 @@ pub struct ProviderSummary {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct DiskRecord {
     version: u32,
+    #[serde(default = "default_api_base")]
+    base_url: String,
     api_key: String,
     default_model: Option<String>,
     allowed_models: Vec<String>,
@@ -42,15 +44,28 @@ pub(super) struct ProviderRecord {
     pub revision: String,
 }
 
+fn default_api_base() -> String { API_BASE.into() }
+
+pub fn normalize_api_base(value: &str) -> Result<String, String> {
+    let value = value.trim().trim_end_matches('/');
+    super::validate_base_url(value)?;
+    let mut url = Url::parse(value).map_err(|_| "无效的服务地址")?;
+    if url.path().trim_matches('/').is_empty() { url.set_path("/v1"); }
+    Ok(url.to_string().trim_end_matches('/').into())
+}
+
 pub(super) fn is_oceanway_endpoint(url: &Url) -> bool {
-    url.scheme() == "https"
-        && url.host_str() == Some("console.oceanway.tech")
-        && url.port_or_known_default() == Some(443)
-        && url.path().trim_end_matches('/') == "/v1"
-        && url.username().is_empty()
-        && url.password().is_none()
-        && url.query().is_none()
-        && url.fragment().is_none()
+    normalize_api_base(url.as_str()).is_ok_and(|base| base == API_BASE)
+}
+
+pub(super) fn catalog_image_model(row: &serde_json::Value) -> bool {
+    if let Some(kind) = row.get("modelType").or_else(|| row.get("model_type")).and_then(|v|v.as_str()) {
+        return kind == "image";
+    }
+    let Some(id) = row["id"].as_str() else { return false; };
+    let id = id.to_ascii_lowercase();
+    ["gpt-image", "dall-e", "imagen", "flux", "stable-diffusion", "nano-banana"].iter().any(|part|id.contains(part))
+        || id.split(['-', '_', '/']).any(|part| part == "image")
 }
 
 fn valid_model(model: &str) -> bool {
@@ -65,6 +80,7 @@ fn valid_model(model: &str) -> bool {
 }
 
 fn validate(record: &DiskRecord) -> Result<(), String> {
+    normalize_api_base(&record.base_url)?;
     if record.version != 1
         || record.api_key.trim().is_empty()
         || record.api_key.len() > 16 * 1024
@@ -131,11 +147,22 @@ pub fn configure(
     default_model: Option<&str>,
     allowed_models: &[String],
 ) -> Result<ProviderSummary, String> {
+    configure_at(home, API_BASE, api_key, default_model, allowed_models)
+}
+
+pub fn configure_at(
+    home: &Path,
+    base_url: &str,
+    api_key: &str,
+    default_model: Option<&str>,
+    allowed_models: &[String],
+) -> Result<ProviderSummary, String> {
     let mut models = allowed_models.to_vec();
     models.sort();
     models.dedup();
     let record = DiskRecord {
         version: 1,
+        base_url: normalize_api_base(base_url)?,
         api_key: api_key.trim().into(),
         default_model: default_model
             .filter(|model| !model.is_empty())
@@ -152,7 +179,7 @@ pub fn configure(
 
 fn summary(record: &DiskRecord) -> ProviderSummary {
     ProviderSummary {
-        endpoint: API_BASE.into(),
+        endpoint: record.base_url.clone(),
         key_configured: true,
         default_image_model: record.default_model.clone(),
         allowed_image_models: record.allowed_models.clone(),
@@ -232,6 +259,7 @@ pub(super) fn image_models(home: &Path) -> Result<serde_json::Value, String> {
 }
 
 pub(super) fn fetch_image_models(base: &str, key: &str) -> Result<Vec<String>, String> {
+    let base = normalize_api_base(base)?;
     let client = reqwest::blocking::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(10))
         .timeout(std::time::Duration::from_secs(25))
@@ -249,7 +277,14 @@ pub(super) fn fetch_image_models(base: &str, key: &str) -> Result<Vec<String>, S
     };
     let available = read(client.get(format!("{base}/models")).bearer_auth(key)
         .send().map_err(|_| "Could not load models available to this Key. Please retry.")?)?;
-    let mut origin = Url::parse(base).map_err(|_| "Invalid Oceanway endpoint.")?;
+    let mut origin = Url::parse(&base).map_err(|_| "Invalid Oceanway endpoint.")?;
+    if !is_oceanway_endpoint(&origin) {
+        let rows = available["data"].as_array().ok_or("Invalid model list.")?;
+        let mut models: Vec<_> = rows.iter().filter(|row|catalog_image_model(row))
+            .filter_map(|row|row["id"].as_str().filter(|id| valid_model(id)).map(str::to_owned)).collect();
+        models.sort(); models.dedup();
+        return Ok(models);
+    }
     origin.set_path("/api/platform/v1/public/offering");
     let offering = read(client.get(origin).send()
         .map_err(|_| "Could not load Oceanway image capabilities. Please retry.")?)?;
@@ -276,12 +311,33 @@ mod catalog_tests {
     use serde_json::json;
 
     #[test]
+    fn saved_address_roundtrips_and_old_records_keep_the_console_default() {
+        let home = std::env::temp_dir().join(format!("oceanway-provider-{}-{}", std::process::id(), SEQUENCE.fetch_add(1, Ordering::Relaxed)));
+        fs::create_dir(&home).unwrap();
+        let home = fs::canonicalize(home).unwrap();
+        let summary = configure_at(&home, " https://example.com:8443/custom/v1/ ", "test-key", Some("gpt-image-1"), &["gpt-image-1".into()]).unwrap();
+        assert_eq!(summary.endpoint,"https://example.com:8443/custom/v1");
+        assert_eq!(read_record(&home).unwrap().api_base,summary.endpoint);
+        assert_eq!(read_provider_summary(&home).unwrap().endpoint,summary.endpoint);
+        let mut record: serde_json::Value = serde_json::from_slice(&fs::read(home.join(RECORD_NAME)).unwrap()).unwrap();
+        record.as_object_mut().unwrap().remove("baseUrl");
+        fs::write(home.join(RECORD_NAME),serde_json::to_vec(&record).unwrap()).unwrap();
+        assert_eq!(read_record(&home).unwrap().api_base,API_BASE);
+        assert_eq!(read_provider_summary(&home).unwrap().endpoint,API_BASE);
+        for invalid in ["", "file:///tmp/test", "https://example.com?key=secret"] {
+            assert!(configure_at(&home,invalid,"test-key",None,&[]).is_err());
+            assert_eq!(read_record(&home).unwrap().api_base,API_BASE);
+        }
+        fs::remove_file(home.join(RECORD_NAME)).unwrap(); fs::remove_dir(home).unwrap();
+    }
+
+    #[test]
     fn discovery_reads_the_full_authenticated_catalog_without_changing_saved_preferences() {
         use std::net::TcpListener;
         let server = TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}/v1", server.local_addr().unwrap());
         let worker = std::thread::spawn(move || {
-            for index in 0..2 {
+            for _ in 0..1 {
                 let (mut stream, _) = server.accept().unwrap();
                 stream.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
                 let mut header = Vec::new();
@@ -289,17 +345,12 @@ mod catalog_tests {
                     let mut byte = [0]; stream.read_exact(&mut byte).unwrap(); header.push(byte[0]);
                 }
                 let header = String::from_utf8(header).unwrap().to_lowercase();
-                let body = if index == 0 {
-                    assert!(header.starts_with("get /v1/models "));
+                let body = {
+                    assert!(header.starts_with("get /custom/api/v1/models "));
                     assert!(header.contains("authorization: bearer catalog-fixture-secret"));
-                    json!({"data":[{"id":"saved-image"},{"id":"new-image"}]})
-                } else {
-                    assert!(header.starts_with("get /api/platform/v1/public/offering "));
-                    assert!(!header.contains("authorization:"));
-                    json!({"data":{"models":[
-                        {"model_name":"saved-image","model_type":"image","invocation_status":"available"},
-                        {"model_name":"new-image","model_type":"image","invocation_status":"available"},
-                        {"model_name":"not-entitled","model_type":"image","invocation_status":"available"}]}})
+                    json!({"data":[{"id":"saved-image"},{"id":"new-image"},
+                        {"id":"custom-picture","model_type":"image"},
+                        {"id":"gpt-6"},{"id":"video-image-model","model_type":"video"}]})
                 }.to_string();
                 write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",body.len(),body).unwrap();
             }
@@ -307,11 +358,12 @@ mod catalog_tests {
         let home = std::env::temp_dir().join(format!("oceanway-catalog-{}-{}", std::process::id(), SEQUENCE.fetch_add(1, Ordering::Relaxed)));
         fs::create_dir(&home).unwrap();
         let home = fs::canonicalize(home).unwrap();
-        fixture(&home,&base,"catalog-fixture-secret","saved-image");
+        let base = base.replace("/v1", "/custom/api/v1");
+        configure_at(&home,&base,"catalog-fixture-secret",Some("saved-image"),&["saved-image".into()]).unwrap();
         let before = fs::read(home.join(RECORD_NAME)).unwrap();
         let result = image_models(&home).unwrap();
         worker.join().unwrap();
-        assert_eq!(result,json!({"default_model":"saved-image","models":["new-image","saved-image"]}));
+        assert_eq!(result,json!({"default_model":"saved-image","models":["custom-picture","new-image","saved-image"]}));
         assert!(!result.to_string().contains("catalog-fixture-secret"));
         assert_eq!(fs::read(home.join(RECORD_NAME)).unwrap(),before);
         fs::remove_file(home.join(RECORD_NAME)).unwrap(); fs::remove_dir(home).unwrap();
@@ -343,7 +395,7 @@ pub fn read_api_key(home: &Path) -> Result<String, String> {
 
 pub(super) fn read_record(home: &Path) -> Result<ProviderRecord, String> {
     let (record, bytes) = load(home)?;
-    let api_base = API_BASE.to_owned();
+    let api_base = normalize_api_base(&record.base_url)?;
     #[cfg(test)]
     let api_base = record.fixture_base.unwrap_or(api_base);
     Ok(ProviderRecord {
@@ -359,6 +411,7 @@ pub(super) fn read_record(home: &Path) -> Result<ProviderRecord, String> {
 pub(super) fn fixture(home: &Path, base: &str, key: &str, model: &str) {
     let record = DiskRecord {
         version: 1,
+        base_url: base.into(),
         api_key: key.into(),
         default_model: Some(model.into()),
         allowed_models: vec![model.into()],

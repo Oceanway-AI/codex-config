@@ -188,7 +188,12 @@ describe("Oceanway application with real edition and MSW", () => {
       screen.getByRole("button", { name: "连接并继续", hidden: true }),
     );
     expect(await screen.findByText("Oceanway 已连接")).toBeInTheDocument();
-    expect(keys).toEqual([{ apiKey: "test-oceanway-key" }]);
+    expect(keys).toEqual([
+      {
+        apiKey: "test-oceanway-key",
+        baseUrl: "https://console.oceanway.tech/v1",
+      },
+    ]);
     expect(localStorage.getItem("oceanway-last-view")).toBe("connection");
   }, 15_000);
 

@@ -7,15 +7,23 @@
 | 入口 | 功能 |
 | --- | --- |
 | 登录 Oceanway 官网 | 打开 https://oceanway.tech，登录后进入 Console 查看调用情况 |
-| 连接 Oceanway | 使用同一个 API Key 获取实时文本和图片目录 |
+| 连接 Oceanway | 默认 Console，支持自定义服务地址；使用保存的地址与 Key 获取实时文本和图片目录 |
 | 六款应用 | Codex、Claude Desktop、Claude Code、DeepSeek Harness、Hermes、Kimi Code Desktop 全部直接展示 |
 | 模型选择 | 多选兼容对话模型、设置默认模型；所选模型写入对应 Agent 配置 |
-| 下载安装 | 从 Oceanway 下载完整包，显示进度，校验后由用户打开安装包，再检测安装结果；状态显示在对应 Agent 区域 |
+| 下载安装 | 不同应用可同时从 Oceanway 下载完整包，独立进度、取消和重试；校验后由用户打开安装包，再检测安装结果 |
 | 会话 | 从本机 Agent 读取历史，搜索、阅读、复制、导出；删除需用户确认 |
 | 高级功能 | 沿用 CC Switch 的 MCP、Skills、提示词管理 |
 | 设置 | 外观、语言、应用目录、网络、配置备份、导出和日志 |
 
-## 本轮 Windows 安装版验收
+## 并行下载与自定义地址回归（2026-11-03）
+
+全量前端 280 个文件、3565 项通过；TypeScript 与渲染器构建通过。WSL 原生 Oceanway 服务 142 项、独立图片模块 100 项、MCP 子进程 6 项、Codex 配置投影 9 项通过。真实软件下载测试仍按既有规则只在一次性运行器执行。
+
+本地 HTTP 测试确认两个原生下载任务同时接收字节，取消一个后另一个继续并校验完成。前端使用实际任务控制器验证独立进度、取消、打开安装包与页面切换。自定义地址覆盖模型查询、六款 Agent 配置、Codex 空白身份与 Key 轮换、图片 MCP 保存读回及旧记录兼容。独立 MCP 进程使用本地兼容 API 查询全部图片模型并生成两张实际 PNG。
+
+默认 Console 真实模型查询仍返回 36 个文本与 8 个图片模型；额外 4 个视频模型继续不进入配置流程，本轮没有提交付费生成。现用 Codex/Claude 四个配置文件 SHA256 未变。完整证据在 `.artifacts/concurrent-download-baseurl-20261103/`，文档仓记录为 PROC-02-030。更新安装包通过开发分支构建发布，状态以 Release 对应源码与运行记录为准。
+
+## 上轮 Windows 安装版验收
 
 [构建 41613224876](https://github.com/Oceanway-AI/codex-config/actions/runs/41613224876) 的 Windows x64、macOS Apple Silicon、macOS Intel 与发布任务全部成功，下载后的三个包均匹配发布的 SHA256。Mac 完成构建和包内 MCP 检查，尚未实机操作验收。
 

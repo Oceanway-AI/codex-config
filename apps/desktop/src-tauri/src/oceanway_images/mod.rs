@@ -12,7 +12,7 @@ pub use image_api::{
     ImageCapabilities, ImageItem, ImageJob, ImageJobs, ImageOutput, ImageSubmissionGuard,
     ImageTestRequest,
 };
-pub use provider::{configure, read_api_key, read_provider_summary, ProviderSummary, API_BASE};
+pub use provider::{configure, configure_at, normalize_api_base, read_api_key, read_provider_summary, ProviderSummary, API_BASE};
 
 use std::path::PathBuf;
 

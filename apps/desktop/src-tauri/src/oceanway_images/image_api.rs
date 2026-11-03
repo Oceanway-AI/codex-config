@@ -38,6 +38,7 @@ const TIMEOUT: Duration = Duration::from_secs(240);
 const LEASE: Duration = Duration::from_secs(120);
 const PREVIEW_BUDGET: usize = 96 * 1024;
 const MAX_PREVIEWS: usize = 2;
+#[cfg(test)]
 const LOCAL_FIXTURE_KEY: &str = "oceanway-local-fixture";
 const BILLING_NOTICE: &str = "Each attempt sends n=1; batch support is unverified. No automatic retry. \
     Timeout, cancellation, or an unusable response does not prove that billing did not occur. \
@@ -1018,11 +1019,12 @@ fn validate_submission_provider(input: &Input, provider: &SavedProvider) -> Resu
             "Image submission owner changed; no POST was sent.",
         ));
     }
-    if checked_provider_transport(&input.provider)? != checked_provider_transport(provider)? {
+    if input.provider.api_base != provider.api_base
+        || checked_provider_transport(&input.provider)? != checked_provider_transport(provider)? {
         return Err(Failure {
             stop_job: true,
             ..Failure::not_sent(
-                "Image provider transport changed during preflight; no POST was sent. \
+                "Image provider endpoint changed during preflight; no POST was sent. \
                 Review the saved provider and explicitly retry.",
             )
         });
@@ -1529,66 +1531,34 @@ fn validate_request(mut request: ImageTestRequest) -> Result<ImageTestRequest, S
 }
 
 fn normalize_api_base(base: &str) -> Result<String, String> {
-    let base = base.trim().trim_end_matches('/');
-    super::validate_base_url(base)
-        .map_err(|_| "Saved provider base URL is invalid.".to_string())?;
-    let url = Url::parse(base).map_err(|_| "Saved provider base URL is invalid.".to_string())?;
-    Ok(if url.path().trim_matches('/').is_empty() {
-        format!("{base}/v1")
-    } else {
-        base.into()
-    })
+    super::provider::normalize_api_base(base)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ProviderTransport {
     Https,
-    LoopbackHttp,
+    Http,
 }
 
 fn provider_transport(base: &str, key: &str) -> Result<ProviderTransport, String> {
     super::validate_base_url(base)
         .map_err(|_| "Saved provider base URL is invalid.".to_string())?;
+    if key.is_empty() || key.len() > 16 * 1024
+        || key.chars().any(|ch| ch.is_whitespace() || ch.is_control()) {
+        return Err("Save a valid API key before continuing.".into());
+    }
     let url = Url::parse(base).map_err(|_| "Saved provider base URL is invalid.".to_string())?;
-    if url.scheme() == "https" {
-        if super::provider::is_oceanway_endpoint(&url) {
-            return Ok(ProviderTransport::Https);
-        }
-        #[cfg(test)]
-        if url
-            .host_str()
-            .is_some_and(|host| host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback()))
-            && key == LOCAL_FIXTURE_KEY
-        {
-            return Ok(ProviderTransport::Https);
-        }
-        return Err("Image requests are restricted to the Oceanway API endpoint.".into());
+    match url.scheme() {
+        "https" => Ok(ProviderTransport::Https),
+        "http" => Ok(ProviderTransport::Http),
+        _ => Err("Saved provider base URL must use HTTP or HTTPS.".into()),
     }
-    // Numeric hosts never invoke DNS. IpAddr::is_loopback excludes mapped IPv6,
-    // private networks and wildcard listeners; no localhost/domain exception.
-    let loopback = url
-        .host_str()
-        .and_then(|host| {
-            host.trim_start_matches('[')
-                .trim_end_matches(']')
-                .parse::<IpAddr>()
-                .ok()
-        })
-        .is_some_and(|ip| ip.is_loopback());
-    if cfg!(test) && url.scheme() == "http" && loopback && key == LOCAL_FIXTURE_KEY {
-        return Ok(ProviderTransport::LoopbackHttp);
-    }
-    Err(
-        "Image providers require HTTPS. HTTP fixtures require a numeric loopback address \
-        and the reserved local fixture credential."
-            .into(),
-    )
 }
 
 fn checked_provider_transport(provider: &SavedProvider) -> Result<ProviderTransport, Failure> {
     #[cfg(test)]
     if provider.local_mock {
-        return Ok(ProviderTransport::LoopbackHttp);
+        return Ok(ProviderTransport::Http);
     }
     provider_transport(&provider.api_base, &provider.key).map_err(|message| Failure {
         stop_job: true,
@@ -1642,13 +1612,11 @@ fn resolve_model_with_catalog(
     {
         // Users may choose any currently entitled image model in their Agent,
         // including models added after Oceanway Config was last saved.
-        if provider.api_base == super::provider::API_BASE
-            && catalog()?.contains(&model)
-        {
+        if catalog()?.contains(&model) {
             return Ok(model);
         }
         return Err(
-            "This image model is not available to this Oceanway account. Call get_image_models to choose an available model.".into(),
+            "This image model is not available to the configured API Key. Call get_image_models to choose an available model.".into(),
         );
     }
     Ok(model)
@@ -2137,7 +2105,7 @@ fn post_image_at_with_guard(
             .ok_or_else(|| Failure::not_sent("Missing prompt for the requested image slot."))?
     };
     let editing = !input.references.is_empty();
-    if editing && Url::parse(&input.provider.api_base).ok().and_then(|url| url.host_str().map(str::to_owned)).as_deref() == Some("console.oceanway.tech") {
+    if editing && Url::parse(&input.provider.api_base).ok().is_some_and(|url| super::provider::is_oceanway_endpoint(&url)) {
         return Err(Failure::not_sent("Local reference upload is pending platform support. Supply the original image's HTTPS URL in reference_urls."));
     }
     let endpoint = format!(

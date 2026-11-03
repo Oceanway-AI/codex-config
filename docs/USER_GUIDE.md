@@ -8,13 +8,15 @@ Oceanway Config 基于 CC Switch，帮助你把 Oceanway API 配到本机的 Cod
 
 左侧栏“登录 Oceanway 官网”会打开 https://oceanway.tech。登录后可进入 Console 管理 API Key、查看调用情况。
 
-在“连接 Oceanway”中粘贴 API Key，点击“连接并继续”。服务地址已配好，无需填写。
+在“连接 Oceanway”中粘贴 API Key，点击“连接并继续”。服务地址默认是 `https://console.oceanway.tech/v1`，也可以自己修改，或点击“恢复默认”。
 
-连接成功后，应用会读取这个 Key 可用的模型，并收起 Key 输入框。需要换 Key 时点击“更换 Key”，重新连接。
+连接成功后，应用会读取这个 Key 可用的模型，并显示实际服务地址。需要调整时点击“更换 Key 或地址”，重新连接。保存后，Agent 和图片工具使用这组地址与 Key。
 
 ## 2. 选择应用
 
 首页显示全部六款应用。未安装时点击“下载安装”，程序从 Oceanway 服务器下载完整包，显示进度并校验。下载完成后点击“打开安装包”，按系统向导装好，再点击“检测安装结果”。Claude Code 下载完成后点击“安装 Claude Code”。安装进度只显示在对应 Agent 区域。左下角“应用”可查看六款应用的安装状态。
+
+多个应用可以同时下载，不用等前一个结束。每个应用都能单独取消、重试或打开安装包；切换页面后，下载继续。
 
 Mac 打开 DMG 后将应用拖入“应用程序”，或按 PKG 向导安装；Claude Code 装入默认用户目录。当前 Hermes 没有 Mac Intel 包，对应系统会显示不可安装；Windows Hermes 需要 Windows 11 22H2 或更新版本。
 

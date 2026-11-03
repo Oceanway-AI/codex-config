@@ -22,7 +22,6 @@ pub struct InstallStatus {
 }
 struct Job { status: InstallStatus, cancel: Arc<AtomicBool>, package: Option<(Package, PathBuf)> }
 static JOBS: OnceLock<Mutex<HashMap<String, Job>>> = OnceLock::new();
-static INSTALL_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 fn jobs() -> &'static Mutex<HashMap<String, Job>> { JOBS.get_or_init(Default::default) }
 fn busy(stage: &str) -> bool { matches!(stage,"preparing"|"downloading"|"verifying"|"opening"|"installing"|"checking") }
 fn update(id:&str, stage:&str, downloaded:u64, total:u64, message:&str) {
@@ -56,22 +55,28 @@ fn select_package(manifest:Manifest, app:&str, platform:&str, arch:&str) -> Resu
 
 #[tauri::command]
 pub async fn oceanway_start_install(app_id:String) -> Result<InstallStatus,String> {
-    if !APPS.contains(&app_id.as_str()) {return Err("不支持的应用".into());}
+    let (status, cancel) = register_download(&app_id)?;
+    if let Some(cancel) = cancel {
+        let id = status.id.clone();
+        tauri::async_runtime::spawn(async move {
+            if let Err(e)=download(&id,&app_id,cancel.clone()).await {
+                update(&id,if cancel.load(Ordering::Relaxed){"cancelled"}else{"failed"},0,0,&e);
+            }
+        });
+    }
+    Ok(status)
+}
+
+fn register_download(app_id:&str) -> Result<(InstallStatus,Option<Arc<AtomicBool>>),String> {
+    if !APPS.contains(&app_id) {return Err("不支持的应用".into());}
     let mut guard=jobs().lock().map_err(|_|"安装状态不可用")?;
-    if let Some(job)=guard.values().find(|j|busy(&j.status.stage)) {return Ok(job.status.clone());}
-    if let Some(job)=guard.values().find(|j|j.status.app_id==app_id && matches!(j.status.stage.as_str(),"ready"|"awaiting_install")) {return Ok(job.status.clone());}
+    if let Some(job)=guard.values().find(|j|j.status.app_id==app_id && (busy(&j.status.stage) || matches!(j.status.stage.as_str(),"ready"|"awaiting_install"))) {return Ok((job.status.clone(),None));}
     guard.retain(|_,j|j.status.app_id!=app_id);
     let id=uuid::Uuid::new_v4().to_string();
-    let status=InstallStatus{id:id.clone(),app_id:app_id.clone(),stage:"preparing".into(),downloaded:0,total:0,message:"正在检查系统和安装包…".into(),action_error:None};
+    let status=InstallStatus{id:id.clone(),app_id:app_id.into(),stage:"preparing".into(),downloaded:0,total:0,message:"正在检查系统和安装包…".into(),action_error:None};
     let cancel=Arc::new(AtomicBool::new(false));
     guard.insert(id.clone(),Job{status:status.clone(),cancel:cancel.clone(),package:None});
-    tauri::async_runtime::spawn(async move {
-        let _lock=INSTALL_LOCK.lock().await;
-        if let Err(e)=download(&id,&app_id,cancel.clone()).await {
-            update(&id,if cancel.load(Ordering::Relaxed){"cancelled"}else{"failed"},0,0,&e);
-        }
-    });
-    Ok(status)
+    Ok((status,Some(cancel)))
 }
 #[tauri::command]
 pub fn oceanway_get_install(id:String) -> Result<InstallStatus,String> {
@@ -142,31 +147,34 @@ fn mark_ready(id:&str,package:Package,path:PathBuf,cancel:&AtomicBool)->Result<(
 }
 async fn download(id:&str, app:&str, cancel:Arc<AtomicBool>)->Result<(),String> {
     if installed(app).await? {update(id,"installed",0,0,"应用已安装，可以继续配置");return Ok(());}
+    download_package(id, app, cancel, &cache_root(), BASE, std::env::consts::OS, std::env::consts::ARCH).await
+}
+
+async fn download_package(id:&str, app:&str, cancel:Arc<AtomicBool>, root:&Path, base:&str, platform:&str, arch:&str)->Result<(),String> {
     check_cancel(&cancel)?;
-    let root=cache_root();
-    let cached_root=root.clone();let cached_app=app.to_string();
+    let cached_root=root.to_path_buf();let cached_app=app.to_string();
     if let Some((package,path))=tauri::async_runtime::spawn_blocking(move || cached_package(&cached_root,&cached_app)).await.map_err(|e|e.to_string())? {
         check_system(&package)?;
         return mark_ready(id,package,path,&cancel);
     }
     let client=reqwest::Client::builder().connect_timeout(Duration::from_secs(15)).timeout(Duration::from_secs(1800))
         .redirect(reqwest::redirect::Policy::none()).build().map_err(|e|e.to_string())?;
-    let response=tokio::time::timeout(Duration::from_secs(25),client.get(format!("{BASE}manifest.json")).send()).await
+    let response=tokio::time::timeout(Duration::from_secs(25),client.get(format!("{base}manifest.json")).send()).await
         .map_err(|_|"下载服务响应超时，请重试")?.map_err(|_|"无法连接 Oceanway 下载服务，请检查网络后重试")?.error_for_status().map_err(|e|format!("无法读取安装包信息：{e}"))?;
     if response.content_length().unwrap_or(0)>256*1024 {return Err("安装清单异常".into());}
     let bytes=tokio::time::timeout(Duration::from_secs(25),response.bytes()).await.map_err(|_|"安装清单读取超时")?.map_err(|e|e.to_string())?;
     if bytes.len()>256*1024 {return Err("安装清单异常".into());}
     let manifest=serde_json::from_slice(&bytes).map_err(|_|"安装清单格式无效")?;
-    let package=select_package(manifest,app,std::env::consts::OS,std::env::consts::ARCH)?;
+    let package=select_package(manifest,app,platform,arch)?;
     check_system(&package)?;
     check_cancel(&cancel)?;
-    let path=package_path(&root,&package);
+    let path=package_path(root,&package);
     let parent=path.parent().ok_or("安装包目录无效")?;
     std::fs::create_dir_all(parent).map_err(|e|format!("无法创建下载目录：{e}"))?;
     // Partial/cancelled downloads disappear; only verified files are persisted.
     let mut file=tempfile::NamedTempFile::new_in(parent).map_err(|e|e.to_string())?;
     update(id,"downloading",0,package.size,"正在连接 Oceanway 下载服务…");
-    let mut response=tokio::time::timeout(Duration::from_secs(25),client.get(format!("{BASE}{}",package.filename)).send()).await
+    let mut response=tokio::time::timeout(Duration::from_secs(25),client.get(format!("{base}{}",package.filename)).send()).await
         .map_err(|_|"安装包下载响应超时，请重试")?.map_err(|_|"安装包下载连接失败，请重试")?
         .error_for_status().map_err(|e|format!("安装包下载失败：{e}"))?;
     let mut count=0; let mut digest=Sha256::new();
@@ -196,8 +204,8 @@ async fn download(id:&str, app:&str, cancel:Arc<AtomicBool>)->Result<(),String> 
 pub async fn oceanway_open_installer(id:String)->Result<InstallStatus,String> {
     let (package,path,previous)={
         let mut guard=jobs().lock().map_err(|_|"安装状态不可用")?;
-        if guard.values().any(|j|busy(&j.status.stage)) {return Err("请等待当前操作完成".into());}
         let job=guard.get_mut(&id).ok_or("安装任务不存在，请重新下载")?;
+        if busy(&job.status.stage) {return Err("请等待此应用的当前操作完成".into());}
         if !matches!(job.status.stage.as_str(),"ready"|"awaiting_install") {return Err("请先下载完整安装包".into());}
         let (package,path)=job.package.clone().ok_or("安装包不存在，请重新下载")?;
         let previous=job.status.stage.clone();
@@ -311,6 +319,87 @@ fn path_with_bin(old:&str,bin:&str,separator:char)->String {
 mod tests {
     use super::*;
     #[tokio::test]
+    #[serial_test::serial(oceanway_download_jobs)]
+    async fn downloads_overlap_and_cancelling_one_does_not_stop_the_other() {
+        use std::net::TcpListener;
+        let root = tempfile::tempdir().unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let base = format!("http://{}/", listener.local_addr().unwrap());
+        let releases = Arc::new([AtomicBool::new(false), AtomicBool::new(false)]);
+        let server_releases = releases.clone();
+        let server = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            let mut clients = Vec::new();
+            while clients.len() < 4 && std::time::Instant::now() < deadline {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    std::thread::sleep(Duration::from_millis(5)); continue;
+                };
+                let releases = server_releases.clone();
+                clients.push(std::thread::spawn(move || {
+                    stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                    let mut header = Vec::new();
+                    while !header.ends_with(b"\r\n\r\n") {
+                        let mut byte = [0]; stream.read_exact(&mut byte).unwrap(); header.push(byte[0]);
+                    }
+                    let header = String::from_utf8(header).unwrap();
+                    if header.starts_with("GET /manifest.json ") {
+                        let packages: Vec<_> = ["hermes", "kimi"].iter().map(|app| {
+                            let mut p = package("x64"); p.app = (*app).into();
+                            p.filename = format!("{app}.dmg"); p.size = 4;
+                            p.sha256 = format!("{:x}", Sha256::digest(b"test")); p
+                        }).collect();
+                        let body = serde_json::json!({"packages":packages}).to_string();
+                        write!(stream,"HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
+                    } else {
+                        let index = if header.starts_with("GET /hermes.dmg ") {0} else {
+                            assert!(header.starts_with("GET /kimi.dmg ")); 1
+                        };
+                        stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\nte").unwrap();
+                        while !releases[index].load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                        let _ = stream.write_all(b"st");
+                    }
+                }));
+            }
+            assert_eq!(clients.len(), 4, "both downloads must reach the server independently");
+            for client in clients { client.join().unwrap(); }
+        });
+        let (first, first_cancel) = register_download("hermes").unwrap();
+        let (second, second_cancel) = register_download("kimi").unwrap();
+        assert_ne!(first.id, second.id);
+        let duplicate = register_download("hermes").unwrap();
+        assert_eq!(duplicate.0.id, first.id); assert!(duplicate.1.is_none());
+        let spawn_download = |status: InstallStatus, cancel: Arc<AtomicBool>| {
+            let base = base.clone(); let root = root.path().to_path_buf();
+            tokio::spawn(async move { download_package(&status.id, &status.app_id, cancel, &root, &base, "macos", "x64").await })
+        };
+        let first_task = spawn_download(first.clone(), first_cancel.unwrap());
+        let second_task = spawn_download(second.clone(), second_cancel.unwrap());
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let first = oceanway_get_install(first.id.clone()).unwrap();
+                let second = oceanway_get_install(second.id.clone()).unwrap();
+                if first.downloaded == 2 && second.downloaded == 2 { break; }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }).await.expect("both downloads must advance before either completes");
+        oceanway_cancel_install(first.id.clone()).unwrap();
+        releases[0].store(true, Ordering::SeqCst);
+        assert!(first_task.await.unwrap().unwrap_err().contains("取消"));
+        assert_eq!(oceanway_get_install(second.id.clone()).unwrap().stage, "downloading");
+        releases[1].store(true, Ordering::SeqCst);
+        second_task.await.unwrap().unwrap();
+        let completed = oceanway_get_install(second.id.clone()).unwrap();
+        assert_eq!(completed.stage, "ready"); assert_eq!(completed.downloaded, 4);
+        let package = jobs().lock().unwrap().get(&second.id).unwrap().package.clone().unwrap();
+        verify_file(&package.0, &package.1).unwrap();
+        assert!(!root.path().join("hermes/package.json").exists());
+        server.join().unwrap();
+        let mut guard = jobs().lock().unwrap(); guard.remove(&first.id); guard.remove(&second.id);
+    }
+    #[tokio::test]
     #[ignore = "Downloads real software; run only on a disposable GitHub runner"]
     async fn download_on_disposable_runner() {
         assert_eq!(std::env::var("GITHUB_ACTIONS").as_deref(), Ok("true"));
@@ -366,8 +455,12 @@ mod tests {
         assert!(mark_ready(&id,package("x64"),path,&AtomicBool::new(true)).is_err());
         jobs().lock().unwrap().remove(&id);
     }
-    #[tokio::test] async fn deleted_or_replaced_packages_cannot_be_opened() {
+    #[tokio::test]
+    #[serial_test::serial(oceanway_download_jobs)]
+    async fn deleted_or_replaced_packages_cannot_be_opened() {
         let (_temp,p,path)=fixture();let id=ready_job(p,path.clone());
+        let (other, _) = register_download("hermes").unwrap();
+        update(&other.id,"downloading",1,100,"另一个应用正在下载");
         std::fs::write(&path,b"evil").unwrap();
         oceanway_open_installer(id.clone()).await.unwrap();
         for _ in 0..100 {
@@ -377,6 +470,7 @@ mod tests {
         }
         assert_eq!(oceanway_get_install(id.clone()).unwrap().stage,"failed");
         jobs().lock().unwrap().remove(&id);
+        jobs().lock().unwrap().remove(&other.id);
         std::fs::remove_file(&path).unwrap();assert!(verify_file(&package("x64"),&path).is_err());
     }
     #[test] fn cache_survives_new_jobs_but_rejects_corruption() {

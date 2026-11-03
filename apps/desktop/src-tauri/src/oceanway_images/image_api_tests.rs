@@ -670,6 +670,10 @@ fn omitted_model_uses_saved_image_selection_and_rejects_unavailable_models_befor
     let _serial = WORKER_TEST.lock().unwrap();
     let home = TempHome::new();
     let mock = Mock::new(|_, captured| {
+        if captured.method == "GET" {
+            assert_eq!(captured.path,"/v1/models");
+            return Reply::json(json!({"data":[{"id":"customer-selected-image-model"}]}));
+        }
         let body: Value = serde_json::from_slice(&captured.body).unwrap();
         assert_eq!(body["model"], "customer-selected-image-model");
         Reply::json(success())
@@ -682,13 +686,13 @@ fn omitted_model_uses_saved_image_selection_and_rejects_unavailable_models_befor
     );
     let service = ImageJobs::with_home(&home.0).unwrap();
     assert!(service.start(request(1), None, false).is_err());
-    assert_eq!(mock.count(), 0);
+    assert_eq!(mock.count(), 1, "unavailable selection only reads the current catalog");
     let mut selected = request(1);
     selected.model.clear();
     let job = service.start(selected, None, false).unwrap();
     assert_eq!(job.model, "customer-selected-image-model");
     assert_eq!(finished(&service, &job.id).completed, 1);
-    assert_eq!(mock.count(), 1);
+    assert_eq!(mock.count(), 2);
 }
 
 #[test]
@@ -712,7 +716,11 @@ fn optional_image_configuration_never_guesses_a_model_or_touches_chat_history() 
 #[test]
 fn removed_image_model_stops_the_queue_before_any_billable_request() {
     let home = TempHome::new();
-    let mock = Mock::new(|_, _| panic!("removed image models must not POST"));
+    let mock = Mock::new(|_, request| {
+        assert_eq!(request.method,"GET","removed image models must not POST");
+        assert_eq!(request.path,"/v1/models");
+        Reply::json(json!({"data":[]}))
+    });
     let (id, input) = input(&home, &mock, 3);
     let service = ImageJobs::default();
     record_without_workers(&service, id.clone(), input, false);
@@ -737,7 +745,7 @@ fn removed_image_model_stops_the_queue_before_any_billable_request() {
     finish_item(job, 1, Err(failure), 1);
     assert_eq!(job.snapshot().cancelled, 3);
     assert!(job.claim().is_none());
-    assert_eq!(mock.count(), 0);
+    assert_eq!(mock.count(), 1, "only the catalog was requested");
 }
 
 #[test]
@@ -2845,45 +2853,31 @@ fn save_local_fixture_provider(home: &Path, base: &str, key: &str) {
 }
 
 #[test]
-fn fixture_transport_accepts_only_numeric_loopback_http_with_the_exact_reserved_key() {
+fn provider_transport_accepts_user_selected_http_and_https_endpoints() {
     for base in [
         "http://127.0.0.1:41000/v1",
         "http://127.8.9.10:41000/custom",
         "http://[::1]:41000/v1",
         "http://[0:0:0:0:0:0:0:1]:41000/v1",
-        // The URL parser canonicalizes these numeric forms to 127.0.0.1.
-        "http://2130706433:41000/v1",
-        "http://0x7f000001:41000/v1",
+        "http://localhost:41000/custom/v1",
+        "http://192.168.1.2:8080/v1",
     ] {
         assert!(
             matches!(
-                provider_transport(base, LOCAL_FIXTURE_KEY),
-                Ok(ProviderTransport::LoopbackHttp)
+                provider_transport(base, MOCK_KEY),
+                Ok(ProviderTransport::Http)
             ),
             "{base}"
         );
         for key in [
             "",
-            MOCK_KEY,
-            "oceanway-local-fixture-extra",
-            " oceanway-local-fixture ",
+            "invalid key",
+            "key\r\nheader:value",
         ] {
             assert!(provider_transport(base, key).is_err(), "{base}");
         }
     }
     for base in [
-        "http://example.invalid/v1",
-        "http://localhost:41000/v1",
-        "http://x.localhost/v1",
-        "http://127.0.0.1.example.invalid/v1",
-        "http://0.0.0.0/v1",
-        "http://8.8.8.8/v1",
-        "http://10.0.0.1/v1",
-        "http://169.254.169.254/v1",
-        "http://192.168.1.1/v1",
-        "http://[::]/v1",
-        "http://[::ffff:127.0.0.1]/v1",
-        "http://[fc00::1]/v1",
         "http://user:secret@127.0.0.1/v1",
         "http://127.0.0.1/v1?key=secret",
         "http://127.0.0.1/v1#fragment",
@@ -2894,20 +2888,17 @@ fn fixture_transport_accepts_only_numeric_loopback_http_with_the_exact_reserved_
             "{base}"
         );
     }
-    assert!(provider_transport("https://example.invalid/custom", MOCK_KEY).is_err());
-    assert!(provider_transport("https://ocean-way.top/v1", MOCK_KEY).is_err());
-    assert!(matches!(
-        provider_transport("https://console.oceanway.tech/v1", MOCK_KEY),
-        Ok(ProviderTransport::Https)
-    ));
+    for base in ["https://example.invalid/custom", "https://example.invalid:8443/api/v1", "https://console.oceanway.tech/v1"] {
+        assert!(matches!(provider_transport(base, MOCK_KEY), Ok(ProviderTransport::Https)));
+    }
 }
 
 #[test]
-fn saved_http_fixture_rejects_arbitrary_auth_keys_before_start_or_client_creation() {
+fn saved_provider_rejects_malformed_keys_before_start_or_client_creation() {
     let home = TempHome::new();
-    let mock = Mock::new(|_, _| panic!("non-fixture credentials must never reach HTTP"));
+    let mock = Mock::new(|_, _| panic!("invalid credentials must never reach HTTP"));
     let service = ImageJobs::new(&home.0).unwrap();
-    for key in ["", MOCK_KEY, "oceanway-local-fixture-extra"] {
+    for key in ["", "invalid key", "key\r\nheader:value"] {
         save_local_fixture_provider(&home.0, &mock.base, key);
         assert!(load_provider_in_home(&home.0).is_err());
         assert!(service.start(request(1), None, false).is_err());
@@ -2920,6 +2911,36 @@ fn saved_http_fixture_rejects_arbitrary_auth_keys_before_start_or_client_creatio
     assert!(lock(&service.shared).unwrap().jobs.is_empty());
     assert!(!service.has_active_requests());
     assert_eq!(mock.count(), 0);
+}
+
+#[test]
+fn custom_saved_endpoint_generates_images_with_its_own_key_and_path() {
+    let _serial = WORKER_TEST.lock().unwrap();
+    let home = TempHome::new();
+    let mock = Mock::new(|_, request| {
+        assert_eq!(request.path, "/custom/api/v1/images/generations");
+        assert_eq!(request.headers["authorization"], "Bearer custom-test-key");
+        let body: Value = serde_json::from_slice(&request.body).unwrap();
+        assert_eq!(body["model"], "fixture-image-v1");
+        Reply::json(success())
+    });
+    let base = format!("http://{}/custom/api/v1/", mock.address);
+    super::super::provider::configure_at(&home.0, &base, "custom-test-key",
+        Some("fixture-image-v1"), &["fixture-image-v1".into()]).unwrap();
+    let provider = load_provider_in_home(&home.0).unwrap();
+    assert!(!provider.local_mock);
+    assert_eq!(provider.api_base, base.trim_end_matches('/'));
+    assert_eq!(resolve_model_with_catalog(&provider, "new-image", || Ok(vec!["new-image".into()])).unwrap(), "new-image");
+    let service = ImageJobs::new(&home.0).unwrap();
+    let mut request = request(2);
+    request.model = "fixture-image-v1".into();
+    let submitted = service.start(request, None, false).unwrap();
+    let done = finished(&service, &submitted.id);
+    assert_eq!(done.completed, 2, "{:?}", done.status);
+    assert_eq!(mock.count(), 2);
+    for item in done.items.iter().filter(|item| item.status == "succeeded") {
+        assert!(Path::new(item.path.as_ref().unwrap()).is_file());
+    }
 }
 
 #[test]
@@ -3013,8 +3034,8 @@ fn production_fixture_auth_metadata_partial_retry_and_ordered_edits_share_the_re
 }
 
 #[test]
-fn production_fixture_preflight_transport_or_key_changes_are_not_sent_and_stop_the_queue() {
-    for change in ["key", "to_https", "to_http"] {
+fn production_fixture_preflight_endpoint_changes_or_invalid_keys_stop_the_queue() {
+    for change in ["invalid_key", "path", "to_https", "to_http"] {
         for after_persistence in [false, true] {
             let home = TempHome::new();
             let mock = Mock::new(|_, _| panic!("changed fixture preflight must never POST"));
@@ -3048,13 +3069,16 @@ fn production_fixture_preflight_transport_or_key_changes_are_not_sent_and_stop_t
                             .unwrap();
                             assert_eq!(manifest["job"]["items"][0]["postStarted"], true);
                         }
-                        let base = if change == "to_https" {
+                        let changed_path = format!("{}/changed",mock.base);
+                        let base = if change == "path" {
+                            &changed_path
+                        } else if change == "to_https" {
                             &https_base
                         } else {
                             &mock.base
                         };
-                        let key = if change == "key" {
-                            "different-nonsecret-fixture-key"
+                        let key = if change == "invalid_key" {
+                            "invalid fixture key"
                         } else {
                             LOCAL_FIXTURE_KEY
                         };

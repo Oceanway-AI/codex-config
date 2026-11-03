@@ -31,6 +31,7 @@ export interface DetectedApp {
 }
 export interface ApplyRequest {
   apiKey: string;
+  baseUrl: string;
   apps: { appId: string; model: string; models?: string[] }[];
   imageModel?: string;
   allowedImageModels?: string[];
@@ -55,8 +56,8 @@ export interface LaunchResult {
 
 export const oceanwayApi = {
   connection: () => invoke<ConnectionSummary>("oceanway_get_connection"),
-  checkKey: (apiKey: string) =>
-    invoke<ModelCatalog>("oceanway_check_key", { apiKey }),
+  checkKey: (apiKey: string, baseUrl: string) =>
+    invoke<ModelCatalog>("oceanway_check_key", { apiKey, baseUrl }),
   detectApps: () => invoke<DetectedApp[]>("oceanway_detect_apps"),
   apply: (request: ApplyRequest) =>
     invoke<ApplyResult>("oceanway_apply_config", { request }),

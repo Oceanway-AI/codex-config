@@ -283,7 +283,7 @@ fn handle_deeplink_url(
     _focus_main_window: bool,
     _source: &str,
 ) -> bool {
-    // Oceanway provisions its own API only. Provider imports via URL are disabled.
+    // Connection settings are entered in the setup form. Provider URL imports are disabled.
     false
 }
 

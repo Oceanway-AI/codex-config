@@ -7,12 +7,13 @@
 所有接口返回 `Result<_, String>`，错误消息不回显 API Key 或服务端响应正文。
 
 - `configure(home, api_key, default_model: Option<&str>, allowed_models: &[String]) -> ProviderSummary`：同步保存一份应用自有凭据和图片模型配置。`home` 必须是 Oceanway 应用数据目录；允许没有图片模型，此时生成操作返回明确提示。
+- `configure_at(home, base_url, api_key, default_model, allowed_models)`：保存用户选定的服务地址；默认使用 Console，旧记录缺少地址字段时也使用 Console。
 - `read_provider_summary(home) -> ProviderSummary`：仅返回 endpoint、keyConfigured、defaultImageModel、allowedImageModels，不返回 Key。
 - `read_api_key(home) -> String`：仅供 Rust 后端给 Agent 写配置，不可注册为 IPC command。
 - `ImageJobs::with_home(home)`：初始化并读取本服务拥有的图片任务记录，不发网络请求，不启动生成。
 - `ImageJobs::{start,status,cancel,retry,capabilities,result_path}`：普通同步 Rust API；Tauri 应在 blocking task 中包装。
 - `mcp_server_spec(home) -> serde_json::Value`：返回当前安装程序的 stdio 配置，供 CC Switch 的 `McpService` 安装；配置无 Key。
-- `mcp_stdio::check(executable, home)`：异步握手和四个工具发现；子进程自动设置 `OCEANWAY_MCP_CHECK_ONLY=1`，只验证目录，不恢复、改写或取消已有图片任务，并拒绝全部 `tools/call`。
+- `mcp_stdio::check(executable, home)`：异步握手和五个工具发现；子进程自动设置 `OCEANWAY_MCP_CHECK_ONLY=1`，只验证目录，不恢复、改写或取消已有图片任务，并拒绝全部 `tools/call`。
 - `run_stdio_if_requested() -> Option<Result<(), String>>`：在 Tauri/窗口/单实例逻辑之前调用；`Some` 表示已处理 `--image-mcp-stdio`，调用者应依据结果退出。
 
 MCP 环境变量只有 `OCEANWAY_CONFIG_HOME`，指向同一应用数据目录；不使用 `CODEX_HOME`、Claude 配置路径或聊天数据库。标准输出仅用于 MCP 协议。
@@ -21,9 +22,9 @@ Linux AppImage 使用持久化的 AppImage 文件作为启动入口，避免记�
 
 ## 行为边界
 
-- 生产图片请求固定为 `https://console.oceanway.tech/v1/images/generations` 或 `/images/edits`；生产配置不接受任意端点。
-- `ImageTestRequest.model` 可省略/留空；提交时使用保存的图片模型，明确指定时必须在保存的可用图片模型列表中。
-- 四个工具为 `generate_images`、`get_image_job`、`cancel_image_job`、`retry_image_job`；所有 Agent 共用同一服务，图片模型独立于对话模型。
+- 默认地址为 `https://console.oceanway.tech/v1`，按平台公开能力调用 OpenAI/Gemini 图片接口。用户可自定义 HTTP/HTTPS 服务地址；自定义服务使用该地址下的 `/images/generations` 与 `/images/edits`，模型查询使用 `/models`。
+- `ImageTestRequest.model` 可省略/留空；提交时使用保存的图片模型，指定其他模型时查询当前服务的可用图片清单。
+- 五个工具为 `get_image_models`、`generate_images`、`get_image_job`、`cancel_image_job`、`retry_image_job`；所有 Agent 共用同一服务，图片模型独立于对话模型。
 - 每次请求 `n=1`、进程级并发最多 2；取消停止尚未开始的任务，已经开始的请求完成后保留结果；不自动重试。
 - 多张图片应由 Agent 一次提交 `count` 和可选的逐张 `prompts`；空闲 worker 自动取下一张，已完成图片可先读取和展示，不必等待最慢的一张。工具说明明确要求整批提交，避免 Agent 逐张调用后才等待下一张。
 - `get_image_job` 首次遇到本次 MCP 会话尚未返回的已完成图片时立即返回；已经回传过的图片不会造成重复快速轮询，无新结果时继续等待进度变化或超时。

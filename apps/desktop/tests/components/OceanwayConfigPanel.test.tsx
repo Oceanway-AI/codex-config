@@ -10,8 +10,10 @@ const installAction = vi.hoisted(() => vi.fn());
 vi.mock("@/components/oceanway/AgentInstallProgress", () => ({
   useAgentInstaller: () => ({
     start: installAction,
-    job: undefined,
-    busy: false,
+    jobs: {},
+    isBusy: () => false,
+    installed: "",
+    check: vi.fn(),
   }),
   AgentInstallProgress: () => null,
 }));
@@ -77,7 +79,9 @@ async function connect(user: ReturnType<typeof userEvent.setup>) {
   await user.click(screen.getByRole("button", { name: "连接并继续" }));
   await screen.findByText("Oceanway 已连接");
   await waitFor(() =>
-    expect(screen.getByRole("button", { name: "更换 Key" })).toBeEnabled(),
+    expect(
+      screen.getByRole("button", { name: "更换 Key 或地址" }),
+    ).toBeEnabled(),
   );
 }
 async function expandModel(
@@ -126,6 +130,67 @@ beforeEach(() => {
 });
 
 describe("Oceanway guided configuration", () => {
+  it("defaults to Console and uses the edited service address for checking and saving", async () => {
+    const user = userEvent.setup();
+    const page = mount("codex");
+    const address = await screen.findByLabelText("服务地址（Base URL）");
+    await waitFor(() => expect(address).toBeEnabled());
+    expect(address).toHaveValue("https://console.oceanway.tech/v1");
+    await connect(user);
+    await user.click(screen.getByRole("button", { name: "更换 Key 或地址" }));
+    const edited = screen.getByLabelText("服务地址（Base URL）");
+    await user.clear(edited);
+    await user.type(edited, "https://example.com:8443/custom/v1/");
+    expect(screen.queryByRole("button", { name: "一键配置" })).toBeNull();
+    vi.mocked(oceanwayApi.checkKey).mockResolvedValueOnce({
+      models,
+      baseUrl: "https://example.com:8443/custom/v1",
+      checkedAt: "2026-11-03",
+    });
+    await user.click(screen.getByRole("button", { name: "连接并继续" }));
+    expect(await screen.findByText("服务已连接")).toBeVisible();
+    expect(oceanwayApi.checkKey).toHaveBeenLastCalledWith(
+      "fixture-key",
+      "https://example.com:8443/custom/v1/",
+    );
+    vi.mocked(oceanwayApi.connection).mockResolvedValue({
+      configured: true,
+      keyPreview: "已保存",
+      baseUrl: "https://example.com:8443/custom/v1",
+      configuredApps: ["codex"],
+      defaultImageModel: "gpt-image-1",
+    });
+    await user.click(screen.getByRole("button", { name: "一键配置" }));
+    await waitFor(() =>
+      expect(oceanwayApi.apply).toHaveBeenCalledWith(
+        expect.objectContaining({
+          baseUrl: "https://example.com:8443/custom/v1",
+          apiKey: "fixture-key",
+          imageModel: "gpt-image-1",
+        }),
+      ),
+    );
+    await screen.findByRole("heading", { name: "配置结果" });
+    page.unmount();
+    mount("codex");
+    await waitFor(() =>
+      expect(screen.getByLabelText("服务地址（Base URL）")).toHaveValue(
+        "https://example.com:8443/custom/v1",
+      ),
+    );
+    await user.click(screen.getByRole("button", { name: "恢复默认" }));
+    expect(screen.getByLabelText("服务地址（Base URL）")).toHaveValue(
+      "https://console.oceanway.tech/v1",
+    );
+    await user.click(screen.getAllByRole("button", { name: "重新检测" })[0]);
+    await waitFor(() =>
+      expect(screen.getByLabelText("服务地址（Base URL）")).toBeEnabled(),
+    );
+    expect(screen.getByLabelText("服务地址（Base URL）")).toHaveValue(
+      "https://console.oceanway.tech/v1",
+    );
+  });
+
   it("completes text and image setup when the account also has video models", async () => {
     vi.mocked(oceanwayApi.checkKey).mockResolvedValueOnce({
       models: [...models, { id: "seedance-2.0", modelType: "video" }],
@@ -133,7 +198,14 @@ describe("Oceanway guided configuration", () => {
       checkedAt: "2026-11-03",
     });
     vi.mocked(oceanwayApi.apply).mockResolvedValueOnce({
-      results: [{ appId: "codex", ok: true, message: "配置已保存", imageConfigured: true }],
+      results: [
+        {
+          appId: "codex",
+          ok: true,
+          message: "配置已保存",
+          imageConfigured: true,
+        },
+      ],
       restartRequired: true,
       backupPath: "fixture/backups",
       imagesConfigured: true,
@@ -143,7 +215,9 @@ describe("Oceanway guided configuration", () => {
     await connect(user);
     expect(screen.queryByText(/视频也会自动配好/)).toBeNull();
     await user.click(screen.getByRole("button", { name: "一键配置" }));
-    expect(await screen.findByRole("heading", { name: "准备好了，开始使用吧" })).toBeVisible();
+    expect(
+      await screen.findByRole("heading", { name: "准备好了，开始使用吧" }),
+    ).toBeVisible();
     expect(screen.getByText(/生图已配好/)).toBeVisible();
     expect(screen.queryByText(/视频已配好/)).toBeNull();
   });
@@ -397,7 +471,7 @@ describe("Oceanway guided configuration", () => {
       within(result).queryByRole("button", { name: "打开 Claude Code" }),
     ).toBeNull();
     await user.click(screen.getByRole("button", { name: "返回调整" }));
-    await user.click(screen.getByRole("button", { name: "更换 Key" }));
+    await user.click(screen.getByRole("button", { name: "更换 Key 或地址" }));
     expect(
       screen.getByLabelText("Oceanway API Key", { selector: "input" }),
     ).toHaveValue("");
@@ -408,7 +482,7 @@ describe("Oceanway guided configuration", () => {
     const user = userEvent.setup();
     mount();
     await connect(user);
-    await user.click(screen.getByRole("button", { name: "更换 Key" }));
+    await user.click(screen.getByRole("button", { name: "更换 Key 或地址" }));
     await user.type(
       screen.getByLabelText("Oceanway API Key", { selector: "input" }),
       "-changed",
@@ -639,8 +713,8 @@ describe("Oceanway guided configuration", () => {
     );
     await user.click(install);
     expect(
-      screen.getByRole("button", { name: "正在准备 Codex" }),
-    ).toBeDisabled();
+      screen.getByRole("button", { name: "下载安装 Claude Code" }),
+    ).toBeEnabled();
     expect(installAction).toHaveBeenCalledTimes(1);
     finish();
     await waitFor(() => expect(install).toBeEnabled());

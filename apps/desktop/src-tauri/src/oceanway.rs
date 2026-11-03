@@ -25,7 +25,7 @@ static APPLY_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 pub struct ConnectionSummary {
     configured: bool,
     key_preview: Option<String>,
-    base_url: &'static str,
+    base_url: String,
     configured_apps: Vec<String>,
     default_image_model: Option<String>,
     allowed_image_models: Vec<String>,
@@ -42,7 +42,7 @@ pub struct Model {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelCatalog {
-    base_url: &'static str,
+    base_url: String,
     models: Vec<Model>,
     checked_at: String,
 }
@@ -80,6 +80,8 @@ impl AppSelection {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ApplyRequest {
     api_key: String,
+    #[serde(default)]
+    base_url: Option<String>,
     apps: Vec<AppSelection>,
     image_model: Option<String>,
     #[serde(default)]
@@ -124,20 +126,23 @@ fn validate_key(value: &str) -> Result<&str, String> {
 }
 
 pub fn validate_origin(value: &str) -> Result<(), String> {
-    let url = reqwest::Url::parse(value).map_err(|_| "无效的 API 地址")?;
-    if url.scheme() != "https"
-        || url.host_str() != Some("console.oceanway.tech")
-        || url.port().is_some()
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.query().is_some()
-        || url.fragment().is_some()
-        || !matches!(url.path().trim_end_matches('/'), "" | "/v1")
-    {
-        return Err("Oceanway Config 只能接入 https://console.oceanway.tech".into());
-    }
-    Ok(())
+    crate::oceanway_images::normalize_api_base(value).map(|_| ())
+        .map_err(|_| "请输入有效的 HTTP 或 HTTPS 服务地址，不要包含账号、查询参数或片段".into())
 }
+
+fn resolve_base(input: Option<&str>) -> Result<String, String> {
+    if let Some(value) = input {
+        validate_origin(value)?;
+        return crate::oceanway_images::normalize_api_base(value);
+    }
+    let home = crate::config::get_app_config_dir();
+    if home.join("image-provider.json").exists() {
+        return Ok(crate::oceanway_images::read_provider_summary(&home)?.endpoint);
+    }
+    Ok(API_BASE.into())
+}
+
+fn anthropic_base(base: &str) -> &str { base.strip_suffix("/v1").unwrap_or(base) }
 
 /// Validate configuration created or edited by the Oceanway setup flow.
 pub fn validate_provider(provider: &Provider) -> Result<(), String> {
@@ -188,7 +193,7 @@ pub fn validate_provider(provider: &Provider) -> Result<(), String> {
 }
 
 /// Existing connections may be restored using CC Switch's native adapters.
-/// Keep the Oceanway-owned entry pinned to its gateway when switching as well.
+/// Validate the user-selected endpoint when restoring the managed entry.
 pub fn validate_provider_switch(provider: &Provider) -> Result<(), String> {
     if provider.id == PROVIDER_ID {
         validate_provider(provider)?;
@@ -204,20 +209,19 @@ fn resolve_key(input: &str) -> Result<String, String> {
     }
 }
 
-async fn fetch_models(key: &str) -> Result<Vec<Model>, String> {
-    // Refuse redirects so a compromised/misconfigured gateway cannot receive a
-    // customer key at another origin. No caller-controlled endpoint exists.
+async fn fetch_models(key: &str, base: &str) -> Result<Vec<Model>, String> {
+    // Send credentials only to the endpoint explicitly selected by the user.
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(25))
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|_| "无法初始化 API 连接")?;
     let response = client
-        .get(format!("{API_BASE}/models"))
+        .get(format!("{base}/models"))
         .bearer_auth(key)
         .send()
         .await
-        .map_err(|_| "无法连接 Oceanway，请检查网络后重试")?;
+        .map_err(|_| "无法连接服务地址，请检查地址和网络后重试")?;
     let status = response.status();
     if !status.is_success() {
         return Err(format!("Oceanway Key 检查失败（HTTP {}）", status.as_u16()));
@@ -233,6 +237,7 @@ async fn fetch_models(key: &str) -> Result<Vec<Model>, String> {
         .await
         .map_err(|_| "Oceanway 返回的模型列表无效")?;
     let mut models = parse_models(&payload)?;
+    if base != API_BASE { return Ok(models); }
     let offering: Value = client
         .get(format!("{ORIGIN}/api/platform/v1/public/offering"))
         .send().await
@@ -287,7 +292,10 @@ fn parse_models(payload: &Value) -> Result<Vec<Model>, String> {
             !id.trim().is_empty() && id.len() <= 256 && !id.chars().any(char::is_control)
         }) {
             if seen.insert(id.to_owned()) {
-                models.push(Model { id: id.to_owned(), supported_protocols: None, model_type: None });
+                models.push(Model { id: id.to_owned(),
+                    supported_protocols: item.get("supportedProtocols").or_else(|| item.get("supported_protocols"))
+                        .and_then(Value::as_array).map(|rows|rows.iter().filter_map(Value::as_str).map(str::to_owned).collect()),
+                    model_type: item.get("modelType").or_else(|| item.get("model_type")).and_then(Value::as_str).map(str::to_owned) });
             }
         }
     }
@@ -326,7 +334,7 @@ pub async fn oceanway_get_connection(
     Ok(ConnectionSummary {
         configured,
         key_preview: configured.then(|| "已保存".into()),
-        base_url: API_BASE,
+        base_url: summary.as_ref().map(|s|s.endpoint.clone()).unwrap_or_else(||API_BASE.into()),
         configured_apps,
         default_image_model: summary.as_ref().and_then(|s| s.default_image_model.clone()),
         allowed_image_models: summary.map(|s| s.allowed_image_models).unwrap_or_default(),
@@ -335,11 +343,12 @@ pub async fn oceanway_get_connection(
 }
 
 #[tauri::command]
-pub async fn oceanway_check_key(api_key: String) -> Result<ModelCatalog, String> {
+pub async fn oceanway_check_key(api_key: String, base_url: Option<String>) -> Result<ModelCatalog, String> {
+    let base = resolve_base(base_url.as_deref())?;
     let key = resolve_key(&api_key)?;
-    let models = fetch_models(&key).await?;
+    let models = fetch_models(&key, &base).await?;
     Ok(ModelCatalog {
-        base_url: API_BASE,
+        base_url: base,
         models,
         checked_at: chrono::Utc::now().to_rfc3339(),
     })
@@ -381,7 +390,15 @@ fn app_type(id: &str) -> Result<AppType, String> {
     }
 }
 
+#[cfg(test)]
 fn provider_for(selection: &AppSelection, key: &str) -> Result<Provider, String> {
+    provider_for_base(selection, key, API_BASE)
+}
+
+fn provider_for_base(selection: &AppSelection, key: &str, base: &str) -> Result<Provider, String> {
+    let base = crate::oceanway_images::normalize_api_base(base)?;
+    let base = base.as_str();
+    let anthropic = anthropic_base(base);
     let model = &selection.model;
     let selected = selection.selected_models();
     let settings = match selection.app_id.as_str() {
@@ -391,27 +408,27 @@ fn provider_for(selection: &AppSelection, key: &str) -> Result<Provider, String>
             doc["model_provider"] = toml_edit::value("custom");
             doc["features"]["image_generation"] = toml_edit::value(false);
             doc["model_providers"]["custom"]["name"] = toml_edit::value("Oceanway");
-            doc["model_providers"]["custom"]["base_url"] = toml_edit::value(API_BASE);
+            doc["model_providers"]["custom"]["base_url"] = toml_edit::value(base);
             doc["model_providers"]["custom"]["wire_api"] = toml_edit::value("responses");
             doc["model_providers"]["custom"]["requires_openai_auth"] = toml_edit::value(false);
             doc["model_providers"]["custom"]["experimental_bearer_token"] = toml_edit::value(key);
             json!({"auth":{"OPENAI_API_KEY":key}, "config":doc.to_string(),
                 "modelCatalog":{"models":selected.iter().map(|id|json!({"model":id,"displayName":id})).collect::<Vec<_>>()}})
         }
-        "claude" | "claude-desktop" => json!({"env":{"ANTHROPIC_BASE_URL":ORIGIN,"ANTHROPIC_AUTH_TOKEN":key,
+        "claude" | "claude-desktop" => json!({"env":{"ANTHROPIC_BASE_URL":anthropic,"ANTHROPIC_AUTH_TOKEN":key,
             "ANTHROPIC_MODEL":model,"ANTHROPIC_DEFAULT_OPUS_MODEL":model,"ANTHROPIC_DEFAULT_SONNET_MODEL":model,"ANTHROPIC_DEFAULT_HAIKU_MODEL":model},
             "modelPicker":{"replaceBuiltInOptions":true,"options":selected.iter().map(|id|json!({"model":id,"label":id,"description":"Oceanway"})).collect::<Vec<_>>()}}),
-        "dsh" => json!({"name":"Oceanway","api":"openai-completions","defaultModel":model,"options":{"baseURL":API_BASE,"apiKey":key},
+        "dsh" => json!({"name":"Oceanway","api":"openai-completions","defaultModel":model,"options":{"baseURL":base,"apiKey":key},
             "models":selected.iter().map(|id|(id.clone(),json!({"name":id}))).collect::<serde_json::Map<_,_>>()}),
         "hermes" => {
             let (mode, base) = match conversation_protocol("hermes", model) {
-                "openai-responses" => ("codex_responses", API_BASE),
-                "anthropic-messages" => ("anthropic_messages", ORIGIN),
-                _ => ("chat_completions", API_BASE),
+                "openai-responses" => ("codex_responses", base),
+                "anthropic-messages" => ("anthropic_messages", anthropic),
+                _ => ("chat_completions", base),
             };
             json!({"base_url":base,"api_key":key,"api_mode":mode,"models":selected.iter().map(|id|json!({"id":id,"name":id})).collect::<Vec<_>>()})
         },
-        "kimi" => json!({"provider":{"type":"openai","base_url":API_BASE,"api_key":key},
+        "kimi" => json!({"provider":{"type":"openai","base_url":base,"api_key":key},
             "models":selected.iter().enumerate().map(|(index,id)|
                 (if index==0 {PROVIDER_ID.into()} else {format!("{PROVIDER_ID}/{id}")},
                 json!({"provider":PROVIDER_ID,"model":id,"max_context_size":128000}))).collect::<serde_json::Map<_,_>>()}),
@@ -836,8 +853,9 @@ pub async fn oceanway_apply_config(
     request: ApplyRequest,
 ) -> Result<ApplyResult, String> {
     let _guard = APPLY_LOCK.lock().await;
+    let base = resolve_base(request.base_url.as_deref())?;
     let key = resolve_key(&request.api_key)?;
-    let models = fetch_models(&key).await?;
+    let models = fetch_models(&key, &base).await?;
     validate_selection(&request, &models)?;
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -873,7 +891,7 @@ pub async fn oceanway_apply_config(
         for selection in request.apps {
             let outcome = (|| -> Result<(), String> {
                 let app = app_type(&selection.app_id)?;
-                let provider = provider_for(&selection, &key)?;
+                let provider = provider_for_base(&selection, &key, &base)?;
                 save_and_switch_provider(&state, &app, provider).map_err(|e| e.to_string())?;
                 if app == AppType::OpenCode {
                     crate::opencode_config::set_default_model(&format!(
@@ -911,7 +929,7 @@ pub async fn oceanway_apply_config(
             if !results.iter().any(|r| r.ok) {
                 return Ok(());
             }
-            crate::oceanway_images::configure(&home, &key, effective_image_model.as_deref(), &image_models)?;
+            crate::oceanway_images::configure_at(&home, &base, &key, effective_image_model.as_deref(), &image_models)?;
             if images_requested && !mcp_apps.is_empty() {
                 let spec = crate::oceanway_images::mcp_server_spec(&home)?;
                 if let Some(previous) = &previous_mcp {
@@ -1094,20 +1112,23 @@ mod tests {
         assert_eq!(app_installation_state("codex", None), (false, false));
     }
     #[test]
-    fn origin_rejects_other_hosts_and_url_tricks() {
+    fn service_addresses_accept_custom_hosts_and_reject_malformed_urls() {
         for url in [
-            "http://console.oceanway.tech/v1",
-            "https://console.oceanway.tech.evil.test/v1",
             "https://console.oceanway.tech@evil.test/v1",
-            "https://console.oceanway.tech:8443/v1",
             "https://console.oceanway.tech/v1?token=x",
+            "https://example.com/v1#fragment",
+            "https://example.com/a b",
+            "file:///tmp/api", "",
         ] {
             assert!(validate_origin(url).is_err(), "{url}");
         }
-        assert!(validate_origin(API_BASE).is_ok());
+        for url in [API_BASE,"https://example.com:8443/custom/v1", "http://localhost:8080/v1"] {
+            assert!(validate_origin(url).is_ok());
+        }
+        assert_eq!(resolve_base(Some(" https://example.com/ ")).unwrap(), "https://example.com/v1");
     }
     #[test]
-    fn built_providers_are_oceanway_only() {
+    fn setup_manages_its_own_provider_entry() {
         for (id, _) in APPS {
             let selection = AppSelection {
                 app_id: (*id).into(),
@@ -1121,7 +1142,7 @@ mod tests {
         }
     }
     #[test]
-    fn existing_connections_can_be_restored_without_relaxing_oceanway_validation() {
+    fn existing_connections_can_be_restored_with_their_own_endpoint() {
         let selection = AppSelection {
             app_id: "codex".into(),
             model: "gpt-fixture".into(),
@@ -1140,6 +1161,62 @@ mod tests {
         assert!(validate_provider_switch(&provider).is_ok());
         assert!(validate_provider(&provider).is_err());
     }
+
+    #[tokio::test]
+    async fn custom_model_discovery_uses_the_selected_path_and_keeps_model_metadata() {
+        use std::io::{Read, Write};
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}/custom/api/v1/", server.local_addr().unwrap());
+        let worker = std::thread::spawn(move || {
+            let (mut stream, _) = server.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut header = Vec::new();
+            while !header.ends_with(b"\r\n\r\n") {
+                let mut byte = [0]; stream.read_exact(&mut byte).unwrap(); header.push(byte[0]);
+            }
+            let header = String::from_utf8(header).unwrap().to_lowercase();
+            assert!(header.starts_with("get /custom/api/v1/models "));
+            assert!(header.contains("authorization: bearer custom-model-test-key"));
+            let body = json!({"data":[
+                {"id":"gpt-custom","model_type":"text","supported_protocols":["openai-responses"]},
+                {"id":"my-picture","modelType":"image"},
+                {"id":"gpt-custom"}]}).to_string();
+            write!(stream,"HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
+        });
+        let result = oceanway_check_key("custom-model-test-key".into(), Some(base.clone())).await.unwrap();
+        worker.join().unwrap();
+        assert_eq!(result.base_url, base.trim_end_matches('/'));
+        assert_eq!(result.models.len(), 2);
+        assert_eq!(result.models[0].supported_protocols.as_ref().unwrap(), &["openai-responses"]);
+        assert_eq!(result.models[1].model_type.as_deref(), Some("image"));
+    }
+
+    #[test]
+    fn custom_address_reaches_every_agent_adapter() {
+        let base = "https://example.com:8443/custom/v1";
+        let anthropic = "https://example.com:8443/custom";
+        for (id, _) in APPS {
+            let selection = AppSelection { app_id:(*id).into(), model:if id.starts_with("claude") {
+                "claude-sonnet-fixture".into() } else {"gpt-fixture".into()}, models:vec![] };
+            let provider = provider_for_base(&selection,"custom-test-key",base).unwrap();
+            assert!(validate_provider(&provider).is_ok());
+            let value = &provider.settings_config;
+            let actual = match *id {
+                "codex" => {
+                    let config: toml::Value = toml::from_str(value["config"].as_str().unwrap()).unwrap();
+                    config["model_providers"]["custom"]["base_url"].as_str().unwrap().to_owned()
+                },
+                "claude" | "claude-desktop" => value["env"]["ANTHROPIC_BASE_URL"].as_str().unwrap().into(),
+                "dsh" => value["options"]["baseURL"].as_str().unwrap().into(),
+                "hermes" => value["base_url"].as_str().unwrap().into(),
+                "kimi" => value["provider"]["base_url"].as_str().unwrap().into(),
+                _ => unreachable!(),
+            };
+            assert_eq!(actual, if id.starts_with("claude") {anthropic} else {base}, "{id}");
+        }
+        let claude = AppSelection {app_id:"hermes".into(), model:"claude-sonnet-fixture".into(), models:vec![]};
+        assert_eq!(provider_for_base(&claude,"custom-test-key",base).unwrap().settings_config["base_url"],anthropic);
+    }
     #[test]
     fn permissions_are_checked_before_writing() {
         let models =
@@ -1147,6 +1224,7 @@ mod tests {
         assert_eq!(models.len(), 1);
         let request = ApplyRequest {
             api_key: "fixture".into(),
+            base_url: None,
             apps: vec![AppSelection {
                 app_id: "codex".into(),
                 model: "not-authorized".into(),
@@ -1552,6 +1630,7 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn oceanway_codex_fresh_desktop_has_api_identity_and_keeps_it_on_reconfigure() {
+        for base in [API_BASE, "https://example.com:8443/custom/v1"] {
         let fixture = FixtureHome::new();
         let codex = fixture.directory.path().join(".codex");
         let state = AppState::new(std::sync::Arc::new(crate::Database::memory().unwrap()));
@@ -1560,7 +1639,7 @@ mod tests {
         };
         for key in ["fixture-key", "fixture-key", "rotated-fixture-key"] {
             save_and_switch_provider(
-                &state, &AppType::Codex, provider_for(&selection, key).unwrap(),
+                &state, &AppType::Codex, provider_for_base(&selection, key, base).unwrap(),
             ).unwrap();
             let auth: Value = crate::config::read_json_file(&codex.join("auth.json")).unwrap();
             assert_eq!(auth["auth_mode"], "apikey");
@@ -1568,8 +1647,9 @@ mod tests {
             let config: toml::Value = toml::from_str(
                 &std::fs::read_to_string(codex.join("config.toml")).unwrap(),
             ).unwrap();
-            assert_eq!(config["model_providers"]["custom"]["base_url"].as_str(), Some(API_BASE));
+            assert_eq!(config["model_providers"]["custom"]["base_url"].as_str(), Some(base));
             assert_eq!(config["model_providers"]["custom"]["experimental_bearer_token"].as_str(), Some(key));
+        }
         }
     }
 

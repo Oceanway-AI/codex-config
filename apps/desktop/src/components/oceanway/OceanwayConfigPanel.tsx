@@ -35,6 +35,7 @@ import {
   type ApplyResult,
 } from "@/lib/api/oceanway";
 import type { AppId } from "@/lib/api";
+import { OCEANWAY_API_BASE } from "@/config/oceanway";
 import { ModelSelection } from "./ModelSelection";
 import {
   compatibleConversationModels,
@@ -75,10 +76,11 @@ export function OceanwayConfigPanel({
 }) {
   const queryClient = useQueryClient();
   const installer = useAgentInstaller();
-  const [installingApp, setInstallingApp] = useState<string>();
   const [connection, setConnection] = useState<ConnectionSummary>();
   const [apps, setApps] = useState<DetectedApp[]>([]);
   const [key, setKey] = useState("");
+  const [baseUrl, setBaseUrl] = useState(OCEANWAY_API_BASE);
+  const addressEdited = useRef(false);
   const [showKey, setShowKey] = useState(false);
   const [editingKey, setEditingKey] = useState(false);
   const [editingModels, setEditingModels] = useState<Record<string, boolean>>(
@@ -94,9 +96,9 @@ export function OceanwayConfigPanel({
   >({});
   const [imageModel, setImageModel] = useState("");
   const [selectedImages, setSelectedImages] = useState<string[]>([]);
-  const [busy, setBusy] = useState<
-    "load" | "check" | "save" | "launch" | "install" | null
-  >("load");
+  const [busy, setBusy] = useState<"load" | "check" | "save" | "launch" | null>(
+    "load",
+  );
   const [error, setError] = useState("");
   const [result, setResult] = useState<ApplyResult>();
   const [launchMessage, setLaunchMessage] = useState("");
@@ -118,21 +120,21 @@ export function OceanwayConfigPanel({
   const appName = (id: string) => apps.find((a) => a.appId === id)?.name ?? id;
   const resultComplete =
     result?.results.length &&
-    result.results.every(
-      (r) =>
-        r.ok && (!imageModel || r.imageConfigured),
-    );
+    result.results.every((r) => r.ok && (!imageModel || r.imageConfigured));
 
   async function refresh() {
     setBusy("load");
     setError("");
     try {
-      if (
-        installer.job &&
-        (!appId || installer.job.appId === appId) &&
-        ["ready", "awaiting_install"].includes(installer.job.stage)
-      )
-        await installer.check();
+      await Promise.all(
+        Object.values(installer.jobs)
+          .filter(
+            (job) =>
+              (!appId || job.appId === appId) &&
+              ["ready", "awaiting_install"].includes(job.stage),
+          )
+          .map((job) => installer.check(job.appId)),
+      );
       const [summary, detected] = await Promise.all([
         oceanwayApi.connection(),
         oceanwayApi.detectApps(),
@@ -148,6 +150,7 @@ export function OceanwayConfigPanel({
         )
         .map((a) => a.appId);
       setConnection(summary);
+      if (!addressEdited.current) setBaseUrl(summary.baseUrl);
       setApps(detected);
       setSelected((previous) => [
         ...new Set([
@@ -205,8 +208,8 @@ export function OceanwayConfigPanel({
   }, [appId]);
 
   useEffect(() => {
-    if (installer.job?.stage === "installed") void refresh();
-  }, [installer.job?.stage]);
+    if (installer.installed) void refresh();
+  }, [installer.installed]);
 
   function changeKey(value: string) {
     generation.current++;
@@ -230,11 +233,14 @@ export function OceanwayConfigPanel({
     setResult(undefined);
     setLaunchMessage("");
     try {
-      const data = await oceanwayApi.checkKey(key.trim());
+      const data = await oceanwayApi.checkKey(key.trim(), baseUrl.trim());
       if (current !== generation.current) return;
       setCatalog(data);
+      setBaseUrl(data.baseUrl);
+      const sameConnection =
+        !key.trim() && data.baseUrl === connection?.baseUrl;
       const selectionFor = (id: string) => {
-        const saved = !key.trim() ? connection?.appModels?.[id] : undefined;
+        const saved = sameConnection ? connection?.appModels?.[id] : undefined;
         let choices = compatibleConversationModels(
           id,
           data.models,
@@ -268,13 +274,14 @@ export function OceanwayConfigPanel({
       setOtherModels({});
       setEditingModels({});
       const images = imageModels(data.models);
-      const savedImages = !key.trim()
+      const savedImages = sameConnection
         ? connection?.allowedImageModels?.filter((id) => images.includes(id))
         : undefined;
       const chosenImages = savedImages?.length ? savedImages : images;
       setSelectedImages(chosenImages);
       setImageModel(
-        connection?.defaultImageModel &&
+        sameConnection &&
+          connection?.defaultImageModel &&
           chosenImages.includes(connection.defaultImageModel)
           ? connection.defaultImageModel
           : recommendedImageModel(chosenImages),
@@ -299,6 +306,7 @@ export function OceanwayConfigPanel({
     try {
       const response = await oceanwayApi.apply({
         apiKey: key.trim(),
+        baseUrl: catalog!.baseUrl,
         apps: selected.map((id) => ({
           appId: id,
           model: models[id],
@@ -337,15 +345,10 @@ export function OceanwayConfigPanel({
   async function install(id: string) {
     setError("");
     setDownloadMessage("");
-    setInstallingApp(id);
-    setBusy("install");
     try {
       await installer.start(id);
     } catch (e) {
       setError(errorText(e));
-    } finally {
-      setInstallingApp(undefined);
-      setBusy(null);
     }
   }
 
@@ -494,10 +497,15 @@ export function OceanwayConfigPanel({
                     <CheckCircle2 className="h-5 w-5 text-success-text" />
                     <div className="min-w-0 flex-1">
                       <h3 className="text-body font-semibold">
-                        Oceanway 已连接
+                        {catalog.baseUrl === OCEANWAY_API_BASE
+                          ? "Oceanway 已连接"
+                          : "服务已连接"}
                       </h3>
                       <p role="status" className="mt-1 text-caption text-fg-3">
                         {catalog.models.length} 个可用模型，已为你选好默认模型
+                      </p>
+                      <p className="mt-1 break-all text-caption text-fg-3">
+                        {catalog.baseUrl}
                       </p>
                     </div>
                     <Button
@@ -506,7 +514,7 @@ export function OceanwayConfigPanel({
                       disabled={!!busy}
                       onClick={() => setEditingKey(true)}
                     >
-                      更换 Key
+                      更换 Key 或地址
                     </Button>
                   </div>
                 ) : (
@@ -527,7 +535,7 @@ export function OceanwayConfigPanel({
                       id="oceanway-key-hint"
                       className="mt-1 text-caption text-fg-3"
                     >
-                      粘贴从 Oceanway 获取的 Key，服务地址已为你填好。
+                      粘贴 API Key，默认使用 Oceanway，也可以修改服务地址。
                     </p>
                     <div className="mt-3 flex flex-col gap-2 sm:flex-row">
                       <div className="relative min-w-0 flex-1">
@@ -576,6 +584,41 @@ export function OceanwayConfigPanel({
                         )}
                         {busy === "check" ? "正在连接…" : "连接并继续"}
                       </Button>
+                    </div>
+                    <div className="mt-4">
+                      <label
+                        htmlFor="oceanway-base-url"
+                        className="text-caption font-medium"
+                      >
+                        服务地址（Base URL）
+                      </label>
+                      <div className="mt-2 flex gap-2">
+                        <Input
+                          id="oceanway-base-url"
+                          value={baseUrl}
+                          disabled={!!busy}
+                          autoComplete="off"
+                          spellCheck={false}
+                          placeholder={OCEANWAY_API_BASE}
+                          onChange={(e) => {
+                            addressEdited.current = true;
+                            setBaseUrl(e.target.value);
+                            changeKey(key);
+                          }}
+                        />
+                        <Button
+                          type="button"
+                          variant="quiet"
+                          disabled={!!busy || baseUrl === OCEANWAY_API_BASE}
+                          onClick={() => {
+                            addressEdited.current = true;
+                            setBaseUrl(OCEANWAY_API_BASE);
+                            changeKey(key);
+                          }}
+                        >
+                          恢复默认
+                        </Button>
+                      </div>
                     </div>
                     {catalog && (
                       <Button
@@ -695,18 +738,18 @@ export function OceanwayConfigPanel({
                                 size="regular"
                                 disabled={
                                   !!busy ||
-                                  installer.busy ||
+                                  installer.isBusy(app.appId) ||
                                   app.installAvailable === false
                                 }
                                 onClick={() => void install(app.appId)}
                               >
-                                {installingApp === app.appId ? (
+                                {installer.isBusy(app.appId) ? (
                                   <Loader2 className="h-3.5 w-3.5 animate-spin" />
                                 ) : (
                                   <Download className="h-3.5 w-3.5" />
                                 )}
-                                {installingApp === app.appId
-                                  ? "正在准备"
+                                {installer.isBusy(app.appId)
+                                  ? "正在处理"
                                   : app.installAvailable === false
                                     ? "当前系统暂无安装包"
                                     : "下载安装"}{" "}

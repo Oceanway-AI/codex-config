@@ -6,7 +6,13 @@ import { oceanwayApi } from "@/lib/api/oceanway";
 const start = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/api/oceanway", () => ({ oceanwayApi: { detectApps: vi.fn() } }));
 vi.mock("@/components/oceanway/AgentInstallProgress", () => ({
-  useAgentInstaller: () => ({ start, busy: false }),
+  useAgentInstaller: () => ({
+    start,
+    jobs: {},
+    isBusy: () => false,
+    installed: "",
+    check: vi.fn(),
+  }),
   AgentInstallProgress: () => null,
 }));
 vi.mock("@/components/shell/AppGlyph", async (original) => ({

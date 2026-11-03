@@ -1119,9 +1119,15 @@ fn is_oceanway_desktop_api_login(auth: &Value, config: &str) -> bool {
     let Some(route) = doc.get("model_providers").and_then(|v| v.get(provider)) else {
         return false;
     };
-    route.get("base_url").and_then(Item::as_str) == Some(crate::oceanway::API_BASE)
+    is_oceanway_route(route)
         && extract_codex_auth_api_key(auth).as_deref()
             == route.get("experimental_bearer_token").and_then(Item::as_str)
+}
+
+fn is_oceanway_route(route: &Item) -> bool {
+    route.get("name").and_then(Item::as_str) == Some("Oceanway")
+        && route.get("base_url").and_then(Item::as_str)
+            .is_some_and(|base| crate::oceanway::validate_origin(base).is_ok())
 }
 
 /// 执行一次 Codex 写入：拿写锁，决定 `auth.json` 的去向，和 `config.toml`、模型目录、
@@ -1206,8 +1212,9 @@ pub(crate) fn run_with_edits(
                 )))
     {
         if let RouteWrite::Custom(table) = &planned.config.route {
-            if table.get("base_url").and_then(Item::as_str)
-                == Some(crate::oceanway::API_BASE)
+            if table.get("name").and_then(Item::as_str) == Some("Oceanway")
+                && table.get("base_url").and_then(Item::as_str)
+                    .is_some_and(|base| crate::oceanway::validate_origin(base).is_ok())
             {
                 if let Some(key) = table
                     .get("experimental_bearer_token")

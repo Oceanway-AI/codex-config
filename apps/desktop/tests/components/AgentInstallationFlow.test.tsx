@@ -30,7 +30,7 @@ const detected = (installed: boolean) => [
 ];
 const button = () =>
   within(screen.getByRole("region", { name: "Codex" })).getByRole("button", {
-    name: "下载安装",
+    name: /^(下载安装|正在处理…)$/,
   });
 async function tick(seconds = 1) {
   await act(async () => {
