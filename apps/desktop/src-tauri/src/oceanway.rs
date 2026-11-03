@@ -1551,6 +1551,47 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
+    fn oceanway_codex_fresh_desktop_has_api_identity_and_keeps_it_on_reconfigure() {
+        let fixture = FixtureHome::new();
+        let codex = fixture.directory.path().join(".codex");
+        let state = AppState::new(std::sync::Arc::new(crate::Database::memory().unwrap()));
+        let selection = AppSelection {
+            app_id: "codex".into(), model: "gpt-fixture".into(), models: vec![],
+        };
+        for key in ["fixture-key", "fixture-key", "rotated-fixture-key"] {
+            save_and_switch_provider(
+                &state, &AppType::Codex, provider_for(&selection, key).unwrap(),
+            ).unwrap();
+            let auth: Value = crate::config::read_json_file(&codex.join("auth.json")).unwrap();
+            assert_eq!(auth["auth_mode"], "apikey");
+            assert_eq!(auth["OPENAI_API_KEY"], key);
+            let config: toml::Value = toml::from_str(
+                &std::fs::read_to_string(codex.join("config.toml")).unwrap(),
+            ).unwrap();
+            assert_eq!(config["model_providers"]["custom"]["base_url"].as_str(), Some(API_BASE));
+            assert_eq!(config["model_providers"]["custom"]["experimental_bearer_token"].as_str(), Some(key));
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn oceanway_codex_keeps_explicit_non_file_auth_storage() {
+        let fixture = FixtureHome::new();
+        let codex = fixture.directory.path().join(".codex");
+        std::fs::create_dir_all(&codex).unwrap();
+        std::fs::write(codex.join("config.toml"), "cli_auth_credentials_store = \"ephemeral\"\n").unwrap();
+        let state = AppState::new(std::sync::Arc::new(crate::Database::memory().unwrap()));
+        let selection = AppSelection {
+            app_id: "codex".into(), model: "gpt-fixture".into(), models: vec![],
+        };
+        save_and_switch_provider(
+            &state, &AppType::Codex, provider_for(&selection, "fixture-key").unwrap(),
+        ).unwrap();
+        assert!(!codex.join("auth.json").exists());
+    }
+
+    #[test]
+    #[serial_test::serial]
     fn codex_claude_configuration_preserves_history_and_old_login_fixture() {
         let fixture = FixtureHome::new();
         let root = fixture.directory.path();

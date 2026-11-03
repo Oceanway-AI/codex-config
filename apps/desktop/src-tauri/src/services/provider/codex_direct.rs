@@ -1106,6 +1106,24 @@ fn guarded(pre: Option<&[u8]>, then: WholeFile) -> Guarded {
     }
 }
 
+fn is_oceanway_desktop_api_login(auth: &Value, config: &str) -> bool {
+    if !crate::codex_config::codex_live_auth_is_stale_third_party_residue(auth) {
+        return false;
+    }
+    let Ok(doc) = config.parse::<toml_edit::DocumentMut>() else {
+        return false;
+    };
+    let Some(provider) = doc.get("model_provider").and_then(Item::as_str) else {
+        return false;
+    };
+    let Some(route) = doc.get("model_providers").and_then(|v| v.get(provider)) else {
+        return false;
+    };
+    route.get("base_url").and_then(Item::as_str) == Some(crate::oceanway::API_BASE)
+        && extract_codex_auth_api_key(auth).as_deref()
+            == route.get("experimental_bearer_token").and_then(Item::as_str)
+}
+
 /// 执行一次 Codex 写入：拿写锁，决定 `auth.json` 的去向，和 `config.toml`、模型目录、
 /// 托管账号标记、登录暂存一起提交，最后落定 `pending`（指针、模式状态）。
 pub(crate) fn run(
@@ -1161,7 +1179,7 @@ pub(crate) fn run_with_edits(
         unreadable: stash_unreadable,
     } = load_stash(store, &planned.official_logins, live_auth.as_ref());
     let preserve = preserve_login(op);
-    let auth_plan = codex_login::plan(AuthInput {
+    let mut auth_plan = codex_login::plan(AuthInput {
         live: live_auth.as_ref(),
         live_is_managed,
         third_party_keys: &planned.retired_keys,
@@ -1171,6 +1189,39 @@ pub(crate) fn run_with_edits(
         now: chrono::Utc::now().timestamp(),
     });
     let config_text = read_config_text();
+    // The current Codex desktop needs an API-key identity even when the custom
+    // route already carries its bearer token. Initialize a fresh Oceanway
+    // profile in the same guarded transaction as the config and catalog.
+    // Existing official logins and non-file credential stores remain native.
+    if auth_readable
+        && matches!(planned.auth, AuthGoal::ThirdParty)
+        && codex_config_auth_store_mode(&config_text) == CodexAuthStoreMode::File
+        && (auth_pre.is_none()
+            || live_auth.as_ref().is_some_and(|auth| {
+                is_oceanway_desktop_api_login(auth, &config_text)
+            })
+            || (auth_plan.auth == Some(None)
+                && live_auth.as_ref().is_some_and(
+                    crate::codex_config::codex_live_auth_is_stale_third_party_residue,
+                )))
+    {
+        if let RouteWrite::Custom(table) = &planned.config.route {
+            if table.get("base_url").and_then(Item::as_str)
+                == Some(crate::oceanway::API_BASE)
+            {
+                if let Some(key) = table
+                    .get("experimental_bearer_token")
+                    .and_then(Item::as_str)
+                    .filter(|key| !key.trim().is_empty())
+                {
+                    auth_plan.auth = Some(Some(serde_json::json!({
+                        "auth_mode": "apikey", "OPENAI_API_KEY": key
+                    })));
+                    auth_plan.login_on_disk = true;
+                }
+            }
+        }
+    }
     // 目录里的官方行是按拿锁前预测的登录取的：实际的目标登录换了人（Codex 恰好重新登录、
     // settle 补完了上一次操作），就停下，什么都不写。不能换成别的来源：目录已经算进契约。
     // 钥匙串用取完官方行后读到的那次（见 `prepare_official_rows`），不在锁里读。
