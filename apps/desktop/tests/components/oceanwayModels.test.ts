@@ -4,7 +4,6 @@ import {
   compatibleConversationModels,
   familyModels,
   imageModels,
-  videoModels,
   recommendedModel,
 } from "@/components/oceanway/models";
 
@@ -72,7 +71,7 @@ describe("Oceanway model modalities", () => {
       "seedance-2.5",
     ].map((id) => ({ id }));
     expect(imageModels(models)).toHaveLength(9);
-    expect(videoModels(models)).toHaveLength(4);
+    expect(imageModels(models)).not.toContain("seedance-2.0");
     expect(conversationModels(models)).toHaveLength(3);
     expect(familyModels("codex", conversationModels(models))).toEqual([
       "gpt-6.1-sol",

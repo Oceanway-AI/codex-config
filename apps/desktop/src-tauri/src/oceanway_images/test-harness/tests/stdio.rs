@@ -19,6 +19,15 @@ async fn image_model_discovery_requires_configuration_instead_of_returning_a_fak
     let listed = client.list_tools(None).await.unwrap();
     assert_eq!(listed.ttl_ms, Some(0));
     assert_eq!(listed.cache_scope, Some(rmcp::model::CacheScope::Private));
+    let mut names: Vec<_> = listed.tools.iter().map(|tool| tool.name.as_ref()).collect();
+    names.sort_unstable();
+    assert_eq!(names, ["cancel_image_job", "generate_images", "get_image_job", "get_image_models", "retry_image_job"]);
+    for removed in ["get_video_models", "generate_video", "get_video_job"] {
+        let rejected = timeout(Duration::from_secs(5), client.call_tool(CallToolRequestParams::new(removed)))
+            .await.unwrap().unwrap();
+        assert_eq!(rejected.is_error, Some(true));
+        assert_eq!(rejected.structured_content.unwrap()["error"], "Unknown image tool.");
+    }
     let result = timeout(Duration::from_secs(5), client.call_tool(CallToolRequestParams::new("get_image_models")))
         .await.unwrap().unwrap();
     assert_eq!(result.is_error, Some(true));
@@ -156,7 +165,7 @@ async fn discovery_check_preserves_existing_job_bytes_and_rejects_all_tool_calls
         .unwrap()
         .unwrap();
     let tools = client.list_all_tools().await.unwrap();
-    assert_eq!(tools.len(), 8);
+    assert_eq!(tools.len(), 5);
     for tool in tools {
         let result = timeout(
             Duration::from_secs(5),

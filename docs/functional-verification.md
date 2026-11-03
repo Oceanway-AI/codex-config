@@ -7,7 +7,7 @@
 | 入口 | 功能 |
 | --- | --- |
 | 登录 Oceanway 官网 | 打开 https://oceanway.tech，登录后进入 Console 查看调用情况 |
-| 连接 Oceanway | 使用同一个 API Key 获取实时文本、图片、视频目录 |
+| 连接 Oceanway | 使用同一个 API Key 获取实时文本和图片目录 |
 | 六款应用 | Codex、Claude Desktop、Claude Code、DeepSeek Harness、Hermes、Kimi Code Desktop 全部直接展示 |
 | 模型选择 | 多选兼容对话模型、设置默认模型；所选模型写入对应 Agent 配置 |
 | 下载安装 | 从 Oceanway 下载完整包，显示进度，校验后由用户打开安装包，再检测安装结果；状态显示在对应 Agent 区域 |
@@ -40,23 +40,21 @@ Windows 重新应用配置时，Claude、Kimi、DeepSeek 共 8 个历史文件�
 
 切换测试覆盖原生配置路由与默认历史列表。原地续聊不是本期必过条件。
 
-## 图片与视频
+## 图片
 
-当前同一个 Console Key 实时返回 **48 个模型：36 文本、8 图片、4 视频**。分类和协议以平台公开能力为准，权限以 Key 的模型目录为准。
+当前同一个 Console Key 的可用目录中包含 **36 个文本模型、8 个图片模型**。分类和协议以平台公开能力为准，权限以 Key 的模型目录为准。
 
 `get_image_models` 实时查询这个 Key 的全部图片模型，并返回默认模型；用户可在对话中指定目录内任意模型，旧的默认值和已选清单不再限制发现范围。DeepSeek 的 MCP 工具发现补齐缓存字段后，官方 SDK 及桌面会话均通过。
 
 独立 Codex 调用已编译应用自身的 `--image-mcp-stdio`，一次 `generate_images` 提交两张图片，持续查询原任务，101.81 秒取得两张 1024×1024 PNG；没有重新提交生成请求。图片证据保存在本地验收目录。
-
-视频按 Console 文档提交异步任务并查询原任务。本轮平台仍返回 HTTP 413：`fail_to_fetch_task` / `video_request_too_large`，158 字节的最小请求也失败，尚未生成成功。请求标识：`202611030438137715554248268d9d6Tnfl5TZO`、`202611030441470591902738268d9d6vispZPnL`。需平台技术人员查询服务日志；本地素材上传入口仍由平台后续补齐。
 
 ## 检查与证据
 
 | 检查 | 结果 |
 | --- | --- |
 | Oceanway 原生定向回归 | 140 项通过，3 项手动验收忽略 |
-| 媒体模块与独立 stdio | 103 项模块测试、5 项 stdio 测试通过 |
-| 模型选择前端回归 | 25 项通过 |
+| 图片模块与独立 stdio | 当前 98 项模块测试、5 项 stdio 测试通过；工具列表严格为 5 个图片工具 |
+| 模型选择前端回归 | 当前 26 项通过；Key 含其他能力时，文本与图片配置仍可完成 |
 | TypeScript 与 renderer build | 通过 |
 | Linux 完整应用本体编译 | 通过 |
 | Windows/Mac 新安装包 | 本轮未构建发布 |
@@ -70,9 +68,8 @@ Windows 重新应用配置时，Claude、Kimi、DeepSeek 共 8 个历史文件�
 - `native-desktop-session-results.json`、`native-session-evidence/`：Kimi、DeepSeek 原生旧会话中的模型切换与完整图片目录。
 - `claude-native-mcp.json`、`hermes-native-mcp.json`、`dsh-sdk-mcp-result.json`：图片目录发现。
 - `native-app-media-results.json`：自然语言批量图片生成。
-- `video-direct-diagnostic.json`：平台视频错误。
 - `cleanup-windows-result.json`、`cleanup-wsl-result.json`、`final-cleanup-audit.json`：本轮隔离环境清理、凭据检查与当前用户配置哈希。
 
 本轮测试进程、独立 HOME、临时运行依赖及 WSL 验收目录已清理；脱敏证据与两张生成图片保留。当前用户的四个 Codex/Claude 配置和登录文件 SHA256 与测试前一致，189 个保留文本文件未检出测试 Key。
 
-国内下载已有电信、联通、移动节点的分段读取证据；本机公司/校园 Wi-Fi 直连仍有握手超时，不能据分段读取判定所有地区完整下载已通过。最新全功能、全目标平台安装验收和视频实际生成仍未完成，工作包保持 doing。
+国内下载已有电信、联通、移动节点的分段读取证据；本机公司/校园 Wi-Fi 直连仍有握手超时，不能据分段读取判定所有地区完整下载已通过。最新全功能、全目标平台安装验收仍未完成，工作包保持 doing。

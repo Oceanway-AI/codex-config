@@ -92,7 +92,6 @@ pub struct AppResult {
     ok: bool,
     message: String,
     image_configured: bool,
-    video_configured: bool,
     image_message: Option<String>,
 }
 #[derive(Serialize)]
@@ -102,7 +101,6 @@ pub struct ApplyResult {
     restart_required: bool,
     backup_path: String,
     images_configured: bool,
-    videos_configured: bool,
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -479,7 +477,7 @@ fn config_paths(id: &str) -> Result<Vec<PathBuf>, String> {
 const IMAGE_RULE_START: &str = "<!-- OCEANWAY:IMAGES:BEGIN -->";
 const IMAGE_RULE_END: &str = "<!-- OCEANWAY:IMAGES:END -->";
 pub(crate) fn merge_image_rule(original: &str) -> Result<String, String> {
-    let rule = format!("{IMAGE_RULE_START}\nWhen the user requests image generation or image editing, use the oceanway_images MCP tools: generate_images, then get_image_job until completion. Omit the model to use the configured Oceanway image model. When the user wants to choose an image model, call get_image_models and pass any returned model ID. For multiple images, submit one generate_images call with count equal to the total requested and prompts for distinct images; the service handles concurrency. Return completed image files as they become available while polling the same job until completion. For image references use ordered real HTTPS reference_urls, or reference_paths only when the selected model supports local inline files. Follow the tool capability errors; never invent uploaded URLs. Do not use built-in imagegen or an image CLI as a fallback. Do not automatically retry failed paid requests.\nFor video generation, use oceanway_images get_video_models, generate_video, then get_video_job until the video is saved. Preserve actual ordered image, video and audio reference URLs; never substitute descriptions for attachments. Local reference uploads and explicit first/last-frame controls are not yet available; explain this if requested. Return the saved video file. Do not repeat a paid submission after an uncertain result.\n{IMAGE_RULE_END}");
+    let rule = format!("{IMAGE_RULE_START}\nWhen the user requests image generation or image editing, use the oceanway_images MCP tools: generate_images, then get_image_job until completion. Omit the model to use the configured Oceanway image model. When the user wants to choose an image model, call get_image_models and pass any returned model ID. For multiple images, submit one generate_images call with count equal to the total requested and prompts for distinct images; the service handles concurrency. Return completed image files as they become available while polling the same job until completion. For image references use ordered real HTTPS reference_urls, or reference_paths only when the selected model supports local inline files. Follow the tool capability errors; never invent uploaded URLs. Do not use built-in imagegen or an image CLI as a fallback. Do not automatically retry failed paid requests.\n{IMAGE_RULE_END}");
     match (
         original.find(IMAGE_RULE_START),
         original.find(IMAGE_RULE_END),
@@ -841,15 +839,14 @@ pub async fn oceanway_apply_config(
     let key = resolve_key(&request.api_key)?;
     let models = fetch_models(&key).await?;
     validate_selection(&request, &models)?;
-    let video_available = models.iter().any(|model| crate::oceanway_images::video_api::is_video_model(&model.id));
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let media_requested = request.image_model.as_deref().is_some_and(|model| !model.is_empty()) || video_available;
+        let images_requested = request.image_model.as_deref().is_some_and(|model| !model.is_empty());
         let home = crate::config::get_app_config_dir();
         let previous_mcp = state.db.get_all_mcp_servers().map_err(|e| e.to_string())?
             .get("oceanway_images").cloned();
         let mut backup_apps = request.apps.clone();
-        if media_requested {
+        if images_requested {
             if let Some(previous) = &previous_mcp {
                 for app in previous.apps.enabled_apps() {
                     if APPS.iter().any(|(id, _)| *id == app.as_str())
@@ -895,14 +892,13 @@ pub async fn oceanway_apply_config(
                     )
                     .map_err(|e| e.to_string())?;
                 }
-                mcp_apps.set_enabled_for(&app, media_requested);
+                mcp_apps.set_enabled_for(&app, images_requested);
                 Ok(())
             })();
             results.push(AppResult {
                 app_id: selection.app_id,
                 ok: outcome.is_ok(),
                 image_configured: false,
-                video_configured: false,
                 image_message: None,
                 message: match outcome {
                     Ok(()) => "配置已保存，请重开应用加载新配置".into(),
@@ -916,7 +912,7 @@ pub async fn oceanway_apply_config(
                 return Ok(());
             }
             crate::oceanway_images::configure(&home, &key, effective_image_model.as_deref(), &image_models)?;
-            if media_requested && !mcp_apps.is_empty() {
+            if images_requested && !mcp_apps.is_empty() {
                 let spec = crate::oceanway_images::mcp_server_spec(&home)?;
                 if let Some(previous) = &previous_mcp {
                     for app in previous.apps.enabled_apps() {
@@ -930,11 +926,11 @@ pub async fn oceanway_apply_config(
                     &state,
                     crate::McpServer {
                         id: "oceanway_images".into(),
-                        name: "Oceanway 图片与视频".into(),
+                        name: "Oceanway 图片".into(),
                         server: spec.clone(),
                         apps: mcp_apps,
                         description: Some(
-                            "通过 Oceanway 生成图片和视频，查询任务并保存结果".into(),
+                            "通过 Oceanway 生成图片，查询任务并保存结果".into(),
                         ),
                         homepage: Some(ORIGIN.into()),
                         docs: None,
@@ -948,12 +944,11 @@ pub async fn oceanway_apply_config(
                         .and_then(|_|install_image_rule(&state,&app));
                     if let Some(result)=results.iter_mut().find(|r|r.app_id==app.as_str()) {
                         result.image_configured=outcome.is_ok() && effective_image_model.is_some();
-                        result.video_configured=outcome.is_ok() && video_available;
                         result.image_message=Some(match outcome {
-                            Ok(())=>"Oceanway 图片与视频 MCP 已写入，并通过本机启动和工具检查；首次使用按 Agent 提示授权".into(),
+                            Ok(())=>"Oceanway 图片 MCP 已写入，并通过本机启动和工具检查；首次使用按 Agent 提示授权".into(),
                             Err(e)=>crate::redact_known_secrets_strict(&format!("{e}{}",sync_error.as_ref().map(|s|format!("：{s}")).unwrap_or_default()),&[key.clone()]),
                         });
-                        if (effective_image_model.is_some() && !result.image_configured) || (video_available && !result.video_configured) {result.message.push_str("；媒体工具配置未完成，请查看配置详情");}
+                        if effective_image_model.is_some() && !result.image_configured {result.message.push_str("；图片工具配置未完成，请查看配置详情");}
                     }
                 }
                 images_configured=results.iter().filter(|r|r.ok).all(|r|r.image_configured);
@@ -973,7 +968,7 @@ pub async fn oceanway_apply_config(
             let safe = crate::redact_known_secrets_strict(&error, &[key.clone()]);
             for result in results.iter_mut().filter(|r| r.ok) {
                 result.message = format!(
-                    "文本配置已保存；媒体工具配置未完成：{safe}。原配置备份：{}",
+                    "文本配置已保存；图片工具配置未完成：{safe}。原配置备份：{}",
                     backup.display()
                 );
                 result.image_message=Some(safe.clone());
@@ -991,13 +986,11 @@ pub async fn oceanway_apply_config(
             }
         }
         let restart_required = results.iter().any(|r| r.ok);
-        let results_video_configured = results.iter().any(|r| r.ok) && results.iter().filter(|r| r.ok).all(|r| r.video_configured);
         Ok(ApplyResult {
             results,
             restart_required,
             backup_path: backup.display().to_string(),
             images_configured,
-            videos_configured: video_available && results_video_configured,
         })
     })
     .await
@@ -1257,6 +1250,12 @@ mod tests {
         assert!(once.starts_with(original));
         assert_eq!(merge_image_rule(&once).unwrap(), once);
         assert!(merge_image_rule(IMAGE_RULE_START).is_err());
+        let legacy = format!("{original}{IMAGE_RULE_START}\nFor video generation, use generate_video and get_video_job.\n{IMAGE_RULE_END}\nUser footer.");
+        let updated = merge_image_rule(&legacy).unwrap();
+        assert!(updated.starts_with(original));
+        assert!(updated.ends_with("\nUser footer."));
+        assert!(updated.contains("get_image_models"));
+        assert!(!updated.contains("video"));
     }
 
     #[test]

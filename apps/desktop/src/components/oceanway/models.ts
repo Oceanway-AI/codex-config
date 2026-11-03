@@ -50,17 +50,6 @@ export function isImageModel(id: string): boolean {
 export function isVideoModel(id: string): boolean {
   return /(?:seedance|sora|veo|kling|(?:^|[-_/])video(?:[-_/]|$))/i.test(id);
 }
-export function videoModels(models: OceanwayModel[]): string[] {
-  return [
-    ...new Set(
-      models
-        .filter((m) =>
-          m.modelType ? m.modelType === "video" : isVideoModel(m.id),
-        )
-        .map((m) => m.id),
-    ),
-  ].sort((a, b) => b.localeCompare(a, "en", { numeric: true }));
-}
 export function conversationModels(models: OceanwayModel[]): string[] {
   return [
     ...new Set(

@@ -42,7 +42,6 @@ import {
   imageModels,
   recommendedModel,
   recommendedImageModel,
-  videoModels,
 } from "./models";
 
 import {
@@ -121,9 +120,7 @@ export function OceanwayConfigPanel({
     result?.results.length &&
     result.results.every(
       (r) =>
-        r.ok &&
-        (!imageModel || r.imageConfigured) &&
-        (!videoModels(catalog?.models ?? []).length || r.videoConfigured),
+        r.ok && (!imageModel || r.imageConfigured),
     );
 
   async function refresh() {
@@ -898,13 +895,6 @@ export function OceanwayConfigPanel({
                     </p>
                   </div>
                 )}
-                {catalog && videoModels(catalog.models).length > 0 && (
-                  <p className="mt-3 border-t border-border pt-3 text-caption text-fg-2">
-                    视频也会自动配好，共 {videoModels(catalog.models).length}{" "}
-                    个模型。 直接告诉 AI
-                    想拍什么；参考素材目前支持图片、视频和音频的 HTTPS 链接。
-                  </p>
-                )}
               </section>
               <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-4">
                 <p className="flex items-center gap-2 text-caption text-fg-3">
@@ -1013,11 +1003,6 @@ export function OceanwayConfigPanel({
                           生图：{item.imageMessage}
                         </p>
                       ) : null)}
-                    {item.ok && item.videoConfigured && (
-                      <p className="mt-3 text-body text-fg-2">
-                        视频已配好，试着说：“生成一段海边日落的视频。”
-                      </p>
-                    )}
                     <details className="mt-3 text-caption text-fg-3">
                       <summary className="w-fit cursor-pointer rounded focus-visible:outline focus-visible:outline-2">
                         配置详情

@@ -126,6 +126,27 @@ beforeEach(() => {
 });
 
 describe("Oceanway guided configuration", () => {
+  it("completes text and image setup when the account also has video models", async () => {
+    vi.mocked(oceanwayApi.checkKey).mockResolvedValueOnce({
+      models: [...models, { id: "seedance-2.0", modelType: "video" }],
+      baseUrl: "https://console.oceanway.tech/v1",
+      checkedAt: "2026-11-03",
+    });
+    vi.mocked(oceanwayApi.apply).mockResolvedValueOnce({
+      results: [{ appId: "codex", ok: true, message: "配置已保存", imageConfigured: true }],
+      restartRequired: true,
+      backupPath: "fixture/backups",
+      imagesConfigured: true,
+    });
+    const user = userEvent.setup();
+    mount("codex");
+    await connect(user);
+    expect(screen.queryByText(/视频也会自动配好/)).toBeNull();
+    await user.click(screen.getByRole("button", { name: "一键配置" }));
+    expect(await screen.findByRole("heading", { name: "准备好了，开始使用吧" })).toBeVisible();
+    expect(screen.getByText(/生图已配好/)).toBeVisible();
+    expect(screen.queryByText(/视频已配好/)).toBeNull();
+  });
   it("keeps incompatible models out of the other-series picker", async () => {
     vi.mocked(oceanwayApi.checkKey).mockResolvedValueOnce({
       models: [

@@ -13,7 +13,7 @@ import threading
 import time
 
 
-TOOLS = {"generate_images", "get_image_job", "cancel_image_job", "retry_image_job", "get_video_models", "generate_video", "get_video_job", "get_image_models"}
+TOOLS = {"generate_images", "get_image_job", "cancel_image_job", "retry_image_job", "get_image_models"}
 FIXTURE_KEY = "oceanway-packaged-smoke-not-a-real-key"
 
 
@@ -129,7 +129,7 @@ def check(executable):
             print(json.dumps({
                 "ok": True,
                 "executable": str(executable),
-                "checks": ["initialize", "four-tools", "EOF-exit", "unicode-space-home",
+                "checks": ["initialize", "five-image-tools", "EOF-exit", "unicode-space-home",
                            "unrelated-cwd", "no-runtime-PATH", "app-data-unchanged"],
                 "imageRequests": 0,
                 "note": "Discovery only; no tools/call or HTTP generation request was made.",
