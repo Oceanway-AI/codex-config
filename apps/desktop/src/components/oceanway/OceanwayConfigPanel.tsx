@@ -123,12 +123,22 @@ export function OceanwayConfigPanel({
   const appName = (id: string) => apps.find((a) => a.appId === id)?.name ?? id;
   const resultComplete =
     result?.results.length &&
-    result.results.every((r) => r.ok && (!imageModel || r.imageConfigured) && (!videoModels(catalog?.models ?? []).length || r.videoConfigured));
+    result.results.every(
+      (r) =>
+        r.ok &&
+        (!imageModel || r.imageConfigured) &&
+        (!videoModels(catalog?.models ?? []).length || r.videoConfigured),
+    );
 
   async function refresh() {
     setBusy("load");
     setError("");
     try {
+      if (
+        installer.job &&
+        ["ready", "awaiting_install"].includes(installer.job.stage)
+      )
+        await installer.check();
       const [summary, detected] = await Promise.all([
         oceanwayApi.connection(),
         oceanwayApi.detectApps(),
@@ -760,7 +770,7 @@ export function OceanwayConfigPanel({
                 {displayed.some((a) => !a.installed) && (
                   <p className="text-caption text-fg-3">
                     Codex 和 Claude Desktop 从 Oceanway
-                    下载离线包。安装完成后点击“重新检测”。左下角“应用”可管理所有安装。
+                    下载完成后点击“打开安装包”，按提示装好后检测安装结果。左下角“应用”可管理所有安装。
                   </p>
                 )}
                 {downloadMessage && (
@@ -828,8 +838,9 @@ export function OceanwayConfigPanel({
                 )}
                 {catalog && videoModels(catalog.models).length > 0 && (
                   <p className="mt-3 border-t border-border pt-3 text-caption text-fg-2">
-                    视频也会自动配好，共 {videoModels(catalog.models).length} 个模型。
-                    直接告诉 AI 想拍什么；参考素材目前支持图片、视频和音频的 HTTPS 链接。
+                    视频也会自动配好，共 {videoModels(catalog.models).length}{" "}
+                    个模型。 直接告诉 AI
+                    想拍什么；参考素材目前支持图片、视频和音频的 HTTPS 链接。
                   </p>
                 )}
               </section>

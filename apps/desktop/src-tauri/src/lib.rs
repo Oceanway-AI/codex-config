@@ -1503,6 +1503,8 @@ pub fn run() {
             oceanway_install::oceanway_start_install,
             oceanway_install::oceanway_get_install,
             oceanway_install::oceanway_cancel_install,
+            oceanway_install::oceanway_open_installer,
+            oceanway_install::oceanway_check_install,
             oceanway::oceanway_start_image_job,
             oceanway::oceanway_get_image_job,
             oceanway::oceanway_cancel_image_job,

@@ -57,7 +57,7 @@ function render() {
       meta.textContent = `${label} · ${item.version} · ${(item.size / 1024 / 1024).toFixed(0)} MB${item.minimumOS ? ' · ' + item.minimumOS : ''}`;
       const link = document.createElement('a'); link.className = 'download'; link.href = item.filename; link.textContent = `下载 ${label}`; link.download = item.filename;
       if (item.install === 'native-binary') {
-        const help=document.createElement('p'); help.textContent='请在 Oceanway Config 中点击“下载安装”，应用会自动安装这个官方原生程序。';row.append(meta,help);
+        const help=document.createElement('p'); help.textContent='请在 Oceanway Config 中点击“下载安装”，下载完成后点击“安装 Claude Code”即可。';row.append(meta,help);
       } else {row.append(meta,link);}
       article.append(row);
     }

@@ -176,7 +176,7 @@ jobs:
           - macOS：下载对应芯片的 ZIP，解压后将应用放入“应用程序”。
           - 三个平台的前端测试、原生定向测试、安装包构建及包内 MCP 检查均通过后更新此测试版。
 
-          应用安装页提供 Codex、Claude Desktop、Claude Code、DeepSeek Harness、Hermes 和 Kimi Code Desktop。点击“下载安装”后从 Oceanway 下载完整包，按默认方式安装并自动检测结果。Hermes 当前有 Windows x64 和 Apple 芯片 Mac 完整包。此版本属于开发测试版。
+          应用安装页提供 Codex、Claude Desktop、Claude Code、DeepSeek Harness、Hermes 和 Kimi Code Desktop。点击“下载安装”后从 Oceanway 下载完整包并显示进度；下载完成后点击“打开安装包”，按系统提示安装，再检测结果。Claude Code 下载后点击“安装 Claude Code”。Hermes 当前有 Windows x64 和 Apple 芯片 Mac 完整包。此版本属于开发测试版。
           """, encoding='utf-8')
           PY
           tag=oceanway-preview

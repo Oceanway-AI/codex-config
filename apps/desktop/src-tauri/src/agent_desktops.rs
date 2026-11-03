@@ -1,6 +1,18 @@
 //! Installed GUI discovery, independent of CLI availability and saved user data.
 use std::{path::PathBuf, process::{Command, Stdio}, time::{Duration, Instant}};
 
+#[cfg(target_os = "windows")]
+pub(crate) fn windows_powershell(script: &str) -> Command {
+    // A launcher using PowerShell 7 can pass a module path that hides Windows
+    // PowerShell's Appx and Management modules. Use this runtime's own modules.
+    let script = format!(
+        "$env:PSModulePath=(Join-Path $PSHOME 'Modules')+';'+[Environment]::GetEnvironmentVariable('PSModulePath','Machine');\n[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);\n{script}"
+    );
+    let mut command = Command::new("powershell.exe");
+    command.args(["-NoProfile", "-NonInteractive", "-Command", &script]);
+    command
+}
+
 pub(crate) fn bounded_output(command: &mut Command, seconds: u64) -> Result<std::process::Output, String> {
     command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     #[cfg(target_os = "windows")]
@@ -51,7 +63,7 @@ foreach($pkg in (Get-AppxPackage | Where-Object { $_.Name -like "*$($name.Replac
 Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and ($_.ProcessName -eq $name -or $_.ProcessName -eq $name.Replace(' ','')) } | ForEach-Object { $candidates+=$_.Path }
 $candidates | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) -and (Test-Path -LiteralPath (Join-Path (Split-Path -Parent $_) 'resources\app.asar') -PathType Leaf) } | Select-Object -Unique -First 1
 "#;
-    let output=bounded_output(Command::new("powershell.exe").args(["-NoProfile","-NonInteractive","-Command",SCRIPT]).env("OCEANWAY_DESKTOP_NAME",names), 12)?;
+    let output=bounded_output(windows_powershell(SCRIPT).env("OCEANWAY_DESKTOP_NAME",names), 12)?;
     if !output.status.success() { return Err("桌面应用检测失败，请重新检测".into()); }
     Ok(String::from_utf8_lossy(&output.stdout).lines().map(str::trim).find(|line| !line.is_empty()).map(PathBuf::from))
 }
@@ -88,7 +100,7 @@ try {
   Start-Process -FilePath $path | Out-Null
 } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }
 "#;
-        let result=bounded_output(Command::new("powershell.exe").args(["-NoProfile","-NonInteractive","-Command",SCRIPT]).env("OCEANWAY_DESKTOP_PATH",path).env("OCEANWAY_DESKTOP_RESTART",if restart {"1"} else {"0"}),25)?;
+        let result=bounded_output(windows_powershell(SCRIPT).env("OCEANWAY_DESKTOP_PATH",path).env("OCEANWAY_DESKTOP_RESTART",if restart {"1"} else {"0"}),25)?;
         if !result.status.success() {return Err(String::from_utf8_lossy(&result.stderr).trim().into());}
     }
     #[cfg(target_os="macos")]
@@ -106,4 +118,22 @@ try {
     { let _=(path,restart); return Err("当前系统尚无桌面启动支持".into()); }
     #[allow(unreachable_code)]
     Ok(if restart {"已重新打开应用，请开始新请求加载配置"} else {"已请求打开桌面应用"}.into())
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod tests {
+    #[test]
+    fn oceanway_powershell_loads_system_modules_with_an_incompatible_parent_path() {
+        let empty = tempfile::tempdir().unwrap();
+        let mut command = super::windows_powershell(
+            "$ErrorActionPreference='Stop'; Get-Command Get-FileHash,Get-AppxPackage,Get-ItemProperty,Start-Process | ForEach-Object Name; Write-Output '安装检测正常'",
+        );
+        command.env("PSModulePath", empty.path());
+        let output = super::bounded_output(&mut command, 20).unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        let text = String::from_utf8(output.stdout).unwrap();
+        for expected in ["Get-FileHash", "Get-AppxPackage", "Get-ItemProperty", "Start-Process", "安装检测正常"] {
+            assert!(text.contains(expected), "Missing {expected}: {text}");
+        }
+    }
 }

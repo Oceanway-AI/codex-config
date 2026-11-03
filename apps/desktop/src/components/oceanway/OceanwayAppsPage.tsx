@@ -35,6 +35,11 @@ export function OceanwayAppsPage() {
     setDetecting(true);
     setError("");
     try {
+      if (
+        installer.job &&
+        ["ready", "awaiting_install"].includes(installer.job.stage)
+      )
+        await installer.check();
       setApps(await oceanwayApi.detectApps());
     } catch (e) {
       failure(e);
@@ -88,8 +93,8 @@ export function OceanwayAppsPage() {
               先安装应用，再连接 Oceanway
             </h2>
             <p className="mt-2 text-body text-fg-2">
-              选择应用，点击“下载安装”。Oceanway
-              会下载完整安装包并安装到这台电脑。
+              选择应用下载安装包，下载完成后点击“打开安装包”。
+              按提示装好，再回来检测并连接 Oceanway。
             </p>
           </div>
           <AgentInstallProgress />
@@ -197,8 +202,9 @@ export function OceanwayAppsPage() {
             })}
           </div>
           <p className="text-caption text-fg-3">
-            安装时如出现系统权限提示，请选择允许。完成后会自动检测，再到对应应用页填写
-            API Key。
+            安装时如出现系统权限提示，请选择允许。装好后点击“检测安装结果”，
+            再到对应应用页填写 API Key。Claude Code 下载完成后点击“安装 Claude
+            Code”即可。
           </p>
         </div>
       </div>

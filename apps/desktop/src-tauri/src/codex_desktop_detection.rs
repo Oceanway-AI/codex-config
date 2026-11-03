@@ -39,7 +39,7 @@ pub fn is_installed() -> bool {
     use std::os::windows::process::CommandExt;
     use std::{
         path::PathBuf,
-        process::{Command, Stdio},
+        process::Stdio,
         time::{Duration, Instant},
     };
 
@@ -78,8 +78,7 @@ foreach ($package in $packages) {
 }
 $candidates | Sort-Object -Unique
 "#;
-    let Ok(mut child) = Command::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-Command", SCRIPT])
+    let Ok(mut child) = crate::agent_desktops::windows_powershell(SCRIPT)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
