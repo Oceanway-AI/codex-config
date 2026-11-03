@@ -468,6 +468,9 @@ mod tests {
             let stop=Arc::new(std::sync::atomic::AtomicBool::new(false));let stopped=stop.clone();
             std::thread::spawn(move || while !stopped.load(Ordering::SeqCst) {
                 let Ok((mut socket,_))=listener.accept() else {std::thread::sleep(Duration::from_millis(5));continue;};
+                // Windows accepted sockets inherit the listener's nonblocking mode.
+                // Keep accept cancellable, but read each HTTP request in blocking mode.
+                socket.set_nonblocking(false).unwrap();
                 socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
                 let mut bytes=Vec::new();let mut buffer=[0;4096];
                 let header_end=loop {let n=socket.read(&mut buffer).unwrap();if n==0 {break 0;} bytes.extend_from_slice(&buffer[..n]);if let Some(p)=bytes.windows(4).position(|p|p==b"\r\n\r\n") {break p+4;}};
