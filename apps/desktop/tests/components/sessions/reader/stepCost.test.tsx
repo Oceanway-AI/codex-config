@@ -8,11 +8,10 @@ import { buildTurns } from "@/components/sessions/reader/turns";
 import { formatMoneyCompact, USD_DISPLAY } from "@/components/usage/format";
 import { fixtures } from "./helpers";
 
-// 会话阅读页的费用只来自 OpenCode 的 step-finish，本机常常没有这类数据，
-// 这里把「界面显示」和「导出 Markdown」两条出口各钉一次。
+// Oceanway 不展示用量统计；导出历史时仍保留原记录中的费用数据。
 describe("session reader step cost", () => {
-  it("renders the step cost through the shared money formatter", () => {
-    render(
+  it("hides usage metadata in the Oceanway session reader", () => {
+    const { container } = render(
       <StepMetaText
         meta={{
           status: "success",
@@ -23,7 +22,8 @@ describe("session reader step cost", () => {
         }}
       />,
     );
-    expect(screen.getByText("$0.012")).toBeInTheDocument();
+    expect(screen.queryByText("$0.012")).not.toBeInTheDocument();
+    expect(container).toBeEmptyDOMElement();
   });
 
   it("writes step costs into the exported markdown with the given formatter", () => {
