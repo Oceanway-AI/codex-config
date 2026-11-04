@@ -120,7 +120,7 @@ Windows 使用完整安装器，Mac 使用厂商 DMG、PKG 或应用包。国内
 
 参考图片字节随生成请求直接发送。API 参考输入与 Console/Studio 素材库分开：同步请求直接返回图片，异步请求可暂存结果并通过原任务取回。用户只需上传到 Agent，图片 MCP 完成后续处理。
 
-**本机 MCP 的批次任务与 HTTP 同步/异步是两层机制。** `generate_images` 返回本地任务 ID，用于多图进度、取消和查询；HTTP 是否携带 `async:true` 取决于所选 API 的公开协议。同步 HTTP 请求也可以在 MCP 后台并行执行。
+`generate_images` 返回本地任务 ID，用于多图进度、取消和查询。MCP 在后台并行执行同步 HTTP 请求，省略 `async`；服务返回异步任务回执时，按原任务继续查询。
 
 ### 3.2 安装与自动注册
 
@@ -191,7 +191,7 @@ Console 能力说明来自 [图片文档](https://docs.oceanway.tech/docs/images
 
 | 协议 | 文生图 | 本地参考图 | 链接参考图 |
 | --- | --- | --- | --- |
-| OpenAI Images | `POST {baseUrl}/images/generations`，JSON | `POST {baseUrl}/images/edits`，multipart 的 `image` 或 `image[]` 文件字段 | 采用服务公布的 URL 输入；支持 Console 扩展时使用 `reference_images` |
+| OpenAI Images | `POST {baseUrl}/images/generations`，JSON | `POST {baseUrl}/images/edits`，multipart 文件或 JSON `images[].image_url` 中的 data URI | 同一编辑接口的 `images[].image_url` |
 | Gemini | `POST {geminiBase}/models/{model}:generateContent` | `contents[].parts[].inlineData` 携带 MIME 和原文件 Base64 | 支持时使用 `fileData.fileUri` |
 | Grok / xAI | 使用该服务公布的 Images 生成接口 | 原生 xAI 编辑使用 `image: {type: "image_url", url: "data:image/...;base64,..."}`；网关公布标准 Images 编辑时按该协议发送 | 使用该服务公布的 `image.url` 或 `reference_images` |
 
@@ -203,7 +203,19 @@ OpenAI 文生图核心请求体：
 {"model":"gpt-image-2","prompt":"一艘橙色帆船，白色背景","n":1,"size":"1024x1024"}
 ```
 
-本地编辑使用同一模型、描述、单张数量及尺寸，并附 multipart 文件原字节。Gemini 核心输入如下，其中 Base64 为原图字节：
+本地编辑使用同一模型、描述、单张数量及尺寸。Console 原生 JSON 编辑示例：
+
+```json
+{
+  "model":"gpt-image-2",
+  "prompt":"保留原船形，把帆改成紫色",
+  "n":1,
+  "size":"1024x1024",
+  "images":[{"image_url":"data:image/png;base64,<原图Base64>"}]
+}
+```
+
+New API 使用同样的原生请求；全部为本地文件时，也可发送 multipart 的 `image[]` 原文件字节。GPT 图片请求由服务返回原生图片结果，使用原生输出格式参数。Gemini 核心输入如下，其中 Base64 为原图字节：
 
 ```json
 {
@@ -215,13 +227,32 @@ OpenAI 文生图核心请求体：
 }
 ```
 
-Gemini 的尺寸按模型能力转换为 `generationConfig.imageConfig.aspectRatio` 和 `imageSize`。Grok 采用当前服务公布的编辑字段和参考数量。MCP 始终使用用户选定模型处理实际参考内容，生成结果另存，原附件保留。
+Gemini 的尺寸按模型能力转换为 `generationConfig.imageConfig.aspectRatio` 和 `imageSize`。
+
+Grok 的本地图编辑入口为 `POST {baseUrl}/images/edits`。xAI 原生请求使用 JSON，单张参考图如下：
+
+```json
+{
+  "model":"grok-imagine-image-2.0",
+  "prompt":"保留原船形，把帆改成紫色",
+  "n":1,
+  "image":{"type":"image_url","url":"data:image/png;base64,<原图Base64>"}
+}
+```
+
+网关对外提供标准 Images 编辑时，MCP 按前述 `images[].image_url` 或 multipart `image[]` 发送，由网关转换为 xAI JSON。服务端发布的 Grok 能力应包含 `operation=edit`、`/images/edits`、实际接受的参考图格式和各型号参考数量；Console 与 New API 使用一致的编辑契约。本地图随请求直接传递，返回图片给当前会话。
+
+MCP 始终使用用户选定模型处理实际参考内容，生成结果另存，原附件保留。
 
 ### 3.6 同步与异步结果
 
+默认使用同步图片 API，省略 `async`。本地参考图随生成请求直接传递，生成结果保存到用户电脑。MCP 本地任务在后台执行同步请求，Agent 通过 `get_image_job` 获取进度与图片；本地任务与服务端异步任务分别处理。
+
 **同步返回**：OpenAI Images 读取 `data[].b64_json` 或 `data[].url`；Gemini 读取 `candidates[].content.parts[].inlineData`，兼容 `inline_data`。解码或下载原图，校验可读取后保存。响应已经包含图片时优先接收图片，`X-Task-ID` 作为请求跟踪信息记录。
 
-**异步返回**：接口明确支持异步时才发送相应参数。返回任务回执后保存服务地址、原任务 ID、查询协议和请求编号；随后查询这个原任务。Console Images 使用 `GET {baseUrl}/images/{id}`，完成后读取 `/images/{id}/outputs/{index}/content`；Gemini 采用对应 `/v1beta/images/{id}` 路径。New API 使用它实际开放的查询协议；仅有跟踪头时按实际响应内容处理。
+**异步返回**：返回任务回执后保存服务地址、原任务 ID、查询协议和请求编号；随后查询这个原任务。Console Images 使用 `GET {baseUrl}/images/{id}`，完成后读取 `/images/{id}/outputs/{index}/content`；Gemini 采用对应 `/v1beta/images/{id}` 路径。New API 使用它实际开放的查询协议；仅有跟踪头时按实际响应内容处理。
+
+同步交付返回 HTTP 503/504，同时带有 `X-Task-ID` 和同站对应任务的 `Location` 时，保存任务回执并查询原任务取得图片。
 
 生成 POST 与结果查询分别记录。查询和断线恢复复用原任务；接口返回的错误保留 HTTP 状态、错误码和有用原因，API Key 脱敏。查询地址缺失或结果未知时向 Agent 返回当前状态与原任务信息。参数或配置错误通过 MCP `isError:true` 与文字说明返回；批次执行错误记入对应 `items[].error`，让已成功图片继续回传。
 
@@ -296,7 +327,7 @@ Gemini 的尺寸按模型能力转换为 `generationConfig.imageConfig.aspectRat
 
 测试使用独立配置目录和 Agent 进程。每次记录实际版本、服务地址、模型 ID、请求/任务编号、结果文件及通过情况；保留脱敏证据，清理临时进程、测试安装和凭据。
 
-图片全模型验收先完成 Console，再通过 New API 转接重测；自然语言端到端验收至少覆盖 Codex 与 Claude Code，其余四款应用逐项核对 MCP 注册、调用和图片展示。平台接口更新后重测受影响项，实际接入通过后再构建安装包。
+图片全模型验收先完成 Console，再通过 New API 转接重测；自然语言端到端验收至少覆盖 Codex 与 Claude Code，其余四款应用逐项核对 MCP 注册、调用和图片展示。平台接口更新后重测受影响项。发布前完成客户端接入验证，模型能力与渠道状态记录在功能核验中，由平台维护。
 
 ## 5. 实现入口与维护
 

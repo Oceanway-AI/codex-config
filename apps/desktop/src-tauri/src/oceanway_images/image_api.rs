@@ -226,6 +226,7 @@ struct Input {
     provider: SavedProvider,
     references: Vec<Reference>,
     directory: PathBuf,
+    protocol: image_protocol::ImageProtocol,
 }
 
 struct StoredJob {
@@ -1234,6 +1235,7 @@ impl ImageJobs {
             guard,
             load_provider_in_home,
             load_references_in_home,
+            image_protocol::discover,
         )
     }
 
@@ -1245,6 +1247,7 @@ impl ImageJobs {
         guard: ImageSubmissionGuard,
         load_provider: impl FnOnce(&Path) -> Result<SavedProvider, String>,
         load_references: impl FnOnce(&[String], &Path) -> Result<Vec<Reference>, String>,
+        load_protocol: impl FnOnce(&SavedProvider, &str) -> Result<image_protocol::ImageProtocol, String>,
     ) -> Result<ImageJob, String> {
         check_submission_guard(&guard).map_err(|failure| failure.message)?;
         let mut request = validate_request(request)?;
@@ -1255,6 +1258,8 @@ impl ImageJobs {
         ensure_inputs_do_not_contain_key(&request, &provider.key)?;
         check_submission_guard(&guard).map_err(|failure| failure.message)?;
         let references = load_references(&request.reference_paths, &home)?;
+        check_submission_guard(&guard).map_err(|failure| failure.message)?;
+        let protocol = load_protocol(&provider, &request.model)?;
         check_submission_guard(&guard).map_err(|failure| failure.message)?;
         let (id, directory) = match workspace {
             Some(workspace) => create_workspace_directory(workspace)?,
@@ -1268,6 +1273,7 @@ impl ImageJobs {
                 provider,
                 references,
                 directory,
+                protocol,
             },
             leased,
             guard,
@@ -1310,7 +1316,7 @@ impl ImageJobs {
     }
 
     pub fn retry_guarded(&self, id: &str, guard: ImageSubmissionGuard) -> Result<ImageJob, String> {
-        self.retry_with_loaders(id, guard, load_provider_in_home, load_references_in_home)
+        self.retry_with_loaders(id, guard, load_provider_in_home, load_references_in_home, image_protocol::discover)
     }
 
     #[cfg(test)]
@@ -1319,7 +1325,8 @@ impl ImageJobs {
         id: &str,
         load: impl FnOnce(&Path) -> Result<SavedProvider, String>,
     ) -> Result<ImageJob, String> {
-        self.retry_with_loaders(id, no_submission_guard(), load, load_references_in_home)
+        self.retry_with_loaders(id, no_submission_guard(), load, load_references_in_home,
+            |_,_|Ok(image_protocol::ImageProtocol::OpenAi))
     }
 
     fn retry_with_loaders(
@@ -1328,6 +1335,7 @@ impl ImageJobs {
         guard: ImageSubmissionGuard,
         load: impl FnOnce(&Path) -> Result<SavedProvider, String>,
         load_references: impl FnOnce(&[String], &Path) -> Result<Vec<Reference>, String>,
+        load_protocol: impl FnOnce(&SavedProvider, &str) -> Result<image_protocol::ImageProtocol, String>,
     ) -> Result<ImageJob, String> {
         check_submission_guard(&guard).map_err(|failure| failure.message)?;
         let home = self.home()?;
@@ -1373,6 +1381,7 @@ impl ImageJobs {
             );
         }
         verify_directory(&previous.directory)?;
+        let protocol = load_protocol(&provider, &previous.request.model)?;
         let mut registry = lock(&self.shared)?;
         if registry.shutdown {
             return Err("Image jobs are shutting down.".into());
@@ -1389,6 +1398,7 @@ impl ImageJobs {
         let mut input = (*previous).clone();
         input.provider = provider;
         input.references = references;
+        input.protocol = protocol;
         check_submission_guard(&guard).map_err(|failure| failure.message)?;
         job.input = Arc::new(input);
         job.submission_guard = guard;
@@ -1929,7 +1939,6 @@ fn client_builder(timeout: Duration) -> ClientBuilder {
         .redirect(Policy::none())
         .retry(reqwest::retry::never())
         .referer(false)
-        .no_proxy()
         .timeout(timeout)
         .connect_timeout(Duration::from_secs(15).min(timeout))
 }
@@ -2002,8 +2011,10 @@ fn json_response(
     let request_id = safe_request_id(&response, key);
     let task_id = response.headers().get("x-task-id").and_then(|v|v.to_str().ok())
         .filter(|v|async_images::valid_id(v) && (key.is_empty() || !v.contains(key))).map(str::to_owned);
+    let pending = task_id.as_deref().and_then(|id|pending_image_delivery(&response,id));
     let result = (|| {
         if !response.status().is_success() {
+            if let Some(receipt)=pending {return Ok(receipt);}
             let mut failure = status_failure(response.status());
             if let Ok(bytes) = bounded_read(response, 16 * 1024) {
                 if let Ok(body) = serde_json::from_slice::<Value>(&bytes) {
@@ -2028,6 +2039,21 @@ fn json_response(
         })
 }
 
+// Native synchronous delivery can time out after generation has been accepted.
+// Preserve that receipt and query the original task instead of posting again.
+fn pending_image_delivery(response: &Response, id: &str) -> Option<Value> {
+    if !matches!(response.status().as_u16(),503|504) {return None;}
+    let request=response.url();
+    let prefix=request.path().strip_suffix("/images/generations")
+        .or_else(||request.path().strip_suffix("/images/edits"))
+        .or_else(||request.path().strip_suffix(":generateContent")?.rsplit_once("/models/").map(|(prefix,_)|prefix))?;
+    let location=request.join(response.headers().get("location")?.to_str().ok()?).ok()?;
+    if location.origin()!=request.origin() || !location.username().is_empty() || location.password().is_some()
+        || location.query().is_some() || location.fragment().is_some()
+        || location.path()!=format!("{prefix}/images/{id}") {return None;}
+    Some(json!({"task_id":id,"status":"pending"}))
+}
+
 /// Present recognized service errors and bounded codes, never raw upstream
 /// messages which may contain a credential, signed URL, or provider payload.
 pub(super) fn media_error_details(body: &Value,key: &str) -> String {
@@ -2039,7 +2065,7 @@ pub(super) fn media_error_details(body: &Value,key: &str) -> String {
         }
         let message=current.pointer("/error/message").or_else(||current.get("message")).and_then(Value::as_str).unwrap_or("");
         if message.to_ascii_lowercase().contains("account asset storage is full") {
-            details.push_str(" Oceanway account asset storage is full. Free account storage or ask the platform administrator to increase its quota.");
+            details.push_str(" The image service reports that account asset storage is full. Ask the service administrator to check the affected account's storage quota.");
             break;
         }
         if message.len()>16*1024 {break;}
@@ -2104,17 +2130,14 @@ fn post_image_at_with_guard(
             .get(index.wrapping_sub(1))
             .ok_or_else(|| Failure::not_sent("Missing prompt for the requested image slot."))?
     };
-    let editing = !input.references.is_empty();
-    if editing && Url::parse(&input.provider.api_base).ok().is_some_and(|url| super::provider::is_oceanway_endpoint(&url)) {
-        return Err(Failure::not_sent("Local reference upload is pending platform support. Supply the original image's HTTPS URL in reference_urls."));
-    }
+    let editing = !input.references.is_empty() || !request.reference_urls.is_empty();
     let endpoint = format!(
         "{}/images/{}",
         input.provider.api_base,
         if editing { "edits" } else { "generations" }
     );
     let builder = client.post(endpoint);
-    let builder = if editing {
+    let builder = if editing && request.reference_urls.is_empty() {
         let mut form = multipart::Form::new()
             .text("model", request.model.clone())
             .text("prompt", prompt.clone())
@@ -2134,11 +2157,13 @@ fn post_image_at_with_guard(
         }
         builder.multipart(form)
     } else {
-        // Custom gateways use standard Images responses; Console async requests
-        // are prepared separately from its published model capabilities.
-        let mut body = json!({ "model": request.model, "prompt": prompt, "n": 1, "response_format": "url", "output_format": "png" });
-        if !request.reference_urls.is_empty() {
-            body["reference_images"] = json!(request.reference_urls);
+        // Native JSON edits carry URLs and local data URIs together, preserving
+        // every reference on the same request to the selected service.
+        let mut body = json!({ "model": request.model, "prompt": prompt, "n": 1 });
+        if editing {
+            let images:Vec<_>=input.references.iter().map(|r|json!({"image_url":format!("data:{};base64,{}",r.mime,STANDARD.encode(&r.bytes))}))
+                .chain(request.reference_urls.iter().map(|url|json!({"image_url":url}))).collect();
+            body["images"] = json!(images);
         }
         if !request.size.is_empty() {
             body["size"] = Value::String(request.size.clone());
@@ -2210,6 +2235,22 @@ fn verify_unused_slot(input: &Input, index: usize) -> Result<(), Failure> {
     Ok(())
 }
 
+fn image_preview(decoded: &DynamicImage) -> Result<String, Failure> {
+    // Each completed image must fit its share of the response budget. Detailed
+    // PNGs can exceed it at 256px; shrink only the preview, never the saved original.
+    for side in [256, 192, 128, 96, 64] {
+        let mut thumbnail = Cursor::new(Vec::new());
+        decoded.thumbnail(side, side)
+            .write_to(&mut thumbnail, ImageFormat::Png)
+            .map_err(|_| Failure::new("Could not encode the image thumbnail."))?;
+        let preview = format!("data:image/png;base64,{}", STANDARD.encode(thumbnail.into_inner()));
+        if preview.len() <= PREVIEW_BUDGET / MAX_PREVIEWS {
+            return Ok(preview);
+        }
+    }
+    Err(Failure::new("Could not fit the image thumbnail in the response."))
+}
+
 fn save_image_bytes(
     input: &Input,
     index: usize,
@@ -2218,15 +2259,7 @@ fn save_image_bytes(
 ) -> Result<(PathBuf, String, ImageOutput), Failure> {
     let (decoded, format) = decode_image(bytes)?;
     let preview = if extra.is_none() {
-        let mut thumbnail = Cursor::new(Vec::new());
-        decoded
-            .thumbnail(256, 256)
-            .write_to(&mut thumbnail, ImageFormat::Png)
-            .map_err(|_| Failure::new("Could not encode the image thumbnail."))?;
-        format!(
-            "data:image/png;base64,{}",
-            STANDARD.encode(thumbnail.into_inner())
-        )
+        image_preview(&decoded)?
     } else {
         String::new()
     };
@@ -2525,6 +2558,7 @@ fn download_image(raw: &str, started: Instant) -> Result<Vec<u8>, Failure> {
     // A fresh client has no provider Authorization/cookies. Pin the validated DNS
     // answer and disable proxies/redirects so it cannot be resolved again elsewhere.
     let client = client_builder(remaining(started)?)
+        .no_proxy()
         .https_only(true)
         .resolve_to_addrs(host, &addresses)
         .build()

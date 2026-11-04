@@ -69,7 +69,7 @@ struct GenerateArgs {
     /// Preserve order and duplicate roles. Never substitute descriptions for unavailable files.
     #[serde(default)]
     reference_paths: Vec<String>,
-    /// Ordered real HTTPS URLs of reference images. Local uploads depend on the model's published protocol.
+    /// Ordered real HTTPS URLs of reference images. For local attachments use reference_paths.
     #[serde(default)]
     reference_urls: Vec<String>,
 }
@@ -161,9 +161,11 @@ fn tools() -> Vec<Tool> {
              use the saved Oceanway image model, one image, and 1024x1024 when unspecified. For different \
              subjects or styles supply one prompt per output slot. Submit the entire requested \
              batch in one call with count instead of serial count=1 calls; the engine runs up to \
-             two requests concurrently and fills free slots automatically. For edits use actual original \
-             HTTPS reference_urls, or original reference_paths when the selected model supports inline files; \
-             never text substitutes or invented paths. URL-only models require platform upload support for local files. \
+             two requests concurrently and fills free slots automatically. For edits pass uploaded local \
+             attachments in reference_paths and real HTTPS image links in reference_urls. The service reads \
+             the original files and sends their bytes using the selected model's protocol; never replace \
+             them with text descriptions or invented URLs. If that endpoint rejects local files, report \
+             the error instead of silently switching models or generating without the references. \
              Do not call for analysis-only or prompt-writing requests, or without a generation \
              or edit prompt. Requests may be charged. Poll get_image_job while running and \
              display each completed image as it becomes available, without waiting for the whole \
@@ -1110,7 +1112,7 @@ mod tests {
         let stopping = stop.clone();
         let mock = std::thread::spawn(move || {
             let mut handlers = Vec::new();
-            while handlers.len() < 2 && !stopping.load(Ordering::SeqCst) {
+            while handlers.len() < 3 && !stopping.load(Ordering::SeqCst) {
                 let (mut stream, _) = match listener.accept() {
                     Ok(connection) => connection,
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -1137,6 +1139,11 @@ mod tests {
                         }
                     };
                     let headers = String::from_utf8(request[..boundary].to_vec()).unwrap();
+                    if headers.starts_with("GET /v1/models ") {
+                        let reply=json!({"data":[{"id":"fixture-image-v1"}]}).to_string();
+                        write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",reply.len(),reply).unwrap();
+                        return;
+                    }
                     assert!(headers.starts_with("POST /v1/images/generations "));
                     let length: usize = headers.lines().find_map(|line| {
                         let (name, value) = line.split_once(':')?;

@@ -20,9 +20,7 @@ pub(super) fn validate_receipt(task: &RemoteTask) -> Result<(), String> {
         || !task.credential_sha256.bytes().all(|c| c.is_ascii_hexdigit()) {
         return Err("Invalid accepted image task receipt.".into());
     }
-    let base = Url::parse(&task.api_base).map_err(|_| "Invalid image receipt endpoint.")?;
-    let mut gemini = base.clone();
-    gemini.set_path("/v1beta");
+    let gemini = image_protocol::gemini_base(&task.api_base)?;
     if task.query_base != task.api_base && task.query_base != gemini.as_str().trim_end_matches('/') {
         return Err("Image receipt query endpoint does not match its provider.".into());
     }
@@ -185,8 +183,8 @@ fn refresh(input: &Input, index: usize, task: &RemoteTask) -> Result<Refresh,Fai
             Ok(Refresh::Completed(saved))
         }
         "failed" | "cancelled" | "canceled" => {
-            let code = safe_error_code(&body,&provider.key).map(|c|format!(" Code: {c}.")).unwrap_or_default();
-            Ok(Refresh::Failed(format!("Oceanway image task failed.{code} Task: {}. No new generation was submitted.",task.id)))
+            let details = media_error_details(&body,&provider.key);
+            Ok(Refresh::Failed(format!("Oceanway image task failed.{details} Task: {}. No new generation was submitted.",task.id)))
         }
         _ => Ok(Refresh::Pending(retry_after)),
     }

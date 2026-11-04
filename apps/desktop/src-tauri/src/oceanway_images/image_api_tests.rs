@@ -255,6 +255,7 @@ fn completed_images_with_task_tracking_do_not_poll_or_resubmit() {
     for variant in 0..3 {
         let home=TempHome::new();
         let mock=Mock::new(move |_,request| {
+            if request.path=="/v1/models" {return Reply::json(json!({"data":[{"id":"fixture-image-v1"}]}));}
             assert_eq!(request.method,"POST","finished images must not be queried as tasks");
             assert_eq!(request.path,"/v1/images/generations");
             let request_body:Value=serde_json::from_slice(&request.body).unwrap();
@@ -279,7 +280,7 @@ fn completed_images_with_task_tracking_do_not_poll_or_resubmit() {
         assert_eq!(result.items[0].outputs.len(),1);
         assert_eq!(fs::read(&result.items[0].outputs[0].path).unwrap(),png(320,160));
         service.status(&job.id).unwrap();
-        assert_eq!(mock.count(),1);
+        assert_eq!(mock.count(),2);
         assert!(service.retry(&job.id).is_err());
     }
 }
@@ -289,6 +290,7 @@ fn invalid_finished_image_with_tracking_header_fails_without_task_polling() {
     let _serial=WORKER_TEST.lock().unwrap();
     let home=TempHome::new();
     let mock=Mock::new(|_,request| {
+        if request.path=="/v1/models" {return Reply::json(json!({"data":[{"id":"fixture-image-v1"}]}));}
         assert_eq!(request.method,"POST");
         let mut reply=Reply::json(json!({"data":[{"b64_json":"!invalid!"}]}));
         reply.headers.push(("X-Task-ID".into(),"invalid-image-task".into()));
@@ -302,7 +304,7 @@ fn invalid_finished_image_with_tracking_header_fails_without_task_polling() {
     assert_eq!(result.failed,1);
     assert!(result.items[0].remote_task.is_none());
     service.status(&job.id).unwrap();
-    assert_eq!(mock.count(),1);
+    assert_eq!(mock.count(),2);
 }
 
 #[test]
@@ -310,6 +312,7 @@ fn asynchronous_image_polling_obeys_retry_after_without_resubmitting() {
     let _serial=WORKER_TEST.lock().unwrap();
     let home=TempHome::new();
     let mock=Mock::new(|_,request| {
+        if request.path=="/v1/models" {return Reply::json(json!({"data":[{"id":"fixture-image-v1"}]}));}
         if request.method=="POST" {return Reply::json(json!({"task_id":"retry-after-task","status":"queued"}));}
         Reply {status:429,headers:vec![("Retry-After".into(),"60".into())],body:serde_json::to_vec(&json!({"error":{"code":"rate_limited"}})).unwrap()}
     });
@@ -321,8 +324,74 @@ fn asynchronous_image_polling_obeys_retry_after_without_resubmitting() {
     wait_until(||!lock(&service.shared).unwrap().jobs[&job.id].remote_polling);
     assert!(lock(&service.shared).unwrap().jobs[&job.id].remote_poll_after.unwrap().saturating_duration_since(Instant::now())>Duration::from_secs(55));
     for _ in 0..10 {service.status(&job.id).unwrap();}
-    assert_eq!(mock.count(),2);
+    assert_eq!(mock.count(),3);
     assert!(service.retry(&job.id).is_err());
+}
+
+#[test]
+fn failed_async_task_preserves_storage_reason_without_secrets_or_another_post() {
+    let _serial=WORKER_TEST.lock().unwrap();
+    let home=TempHome::new();
+    let mock=Mock::new(|_,request| {
+        if request.path=="/v1/models" {return Reply::json(json!({"data":[{"id":"fixture-image-v1"}]}));}
+        if request.method=="POST" {return Reply::json(json!({"task_id":"quota-task","status":"queued"}));}
+        assert_eq!(request.path,"/v1/images/quota-task");
+        Reply::json(json!({"status":"failed","error":{"code":"fail_to_fetch_task","message":json!({"error":{"message":format!("account asset storage is full {LOCAL_FIXTURE_KEY} https://private.example/?token=secret"),"code":"model_price_error"}}).to_string()}}))
+    });
+    save_local_fixture_provider(&home.0,&mock.base,LOCAL_FIXTURE_KEY);
+    let service=ImageJobs::new(&home.0).unwrap();
+    let job=service.start(request(1),None,false).unwrap();
+    wait_until(||service.status(&job.id).unwrap().failed==1);
+    let result=finished(&service,&job.id);
+    assert_eq!(result.failed,1);
+    let error=result.items[0].error.as_ref().unwrap();
+    assert!(error.contains("account asset storage is full"));
+    assert!(error.contains("fail_to_fetch_task"));
+    assert!(!error.contains(LOCAL_FIXTURE_KEY));
+    assert!(!error.contains("private.example"));
+    for _ in 0..3 {service.status(&job.id).unwrap();}
+    assert_eq!(mock.requests.lock().unwrap().iter().filter(|r|r.method=="POST").count(),1);
+}
+
+#[test]
+fn native_sync_delivery_timeout_retrieves_the_original_task_without_reposting() {
+    let _serial=WORKER_TEST.lock().unwrap();
+    for status in [503,504] {
+        let home=TempHome::new();
+        let mock=Mock::new(move |_,request| {
+            match (request.method.as_str(),request.path.as_str()) {
+                ("GET","/v1/models")=>Reply::json(json!({"data":[{"id":"fixture-image-v1"}]})),
+                ("POST","/v1/images/generations")=>Reply {status,
+                    headers:vec![("X-Task-ID".into(),"native-task".into()),("Location".into(),"/v1/images/native-task".into())],
+                    body:serde_json::to_vec(&json!({"error":{"type":"server_error","message":"Image result unavailable; retrieve the original task from Location"}})).unwrap()},
+                ("GET","/v1/images/native-task")=>Reply::json(json!({"status":"completed","outputs":[{"index":0,"sha256":hash(&png(320,160))}]})),
+                ("GET","/v1/images/native-task/outputs/0/content")=>Reply {status:200,headers:vec![],body:png(320,160)},
+                _=>panic!("unexpected request {} {}",request.method,request.path),
+            }
+        });
+        save_local_fixture_provider(&home.0,&mock.base,LOCAL_FIXTURE_KEY);
+        let service=ImageJobs::new(&home.0).unwrap();
+        let job=service.start(request(1),None,false).unwrap();
+        wait_until(||service.status(&job.id).unwrap().completed==1);
+        let result=finished(&service,&job.id);
+        assert_eq!(result.items[0].outputs.len(),1);
+        assert_eq!(result.completed,1);
+        assert_eq!(mock.requests.lock().unwrap().iter().filter(|r|r.method=="POST").count(),1);
+        assert!(service.retry(&job.id).is_err());
+    }
+}
+
+#[test]
+fn sync_error_requires_the_matching_same_origin_image_receipt() {
+    for (status,location) in [(504,"https://other.example/v1/images/native-task"),
+        (504,"/v1/images/different-task"),(504,"/v1/images/native-task?token=private"),
+        (400,"/v1/images/native-task")] {
+        let mock=Mock::new(move |_,_|Reply {status,headers:vec![
+            ("X-Task-ID".into(),"native-task".into()),("Location".into(),location.into())],body:b"{}".to_vec()});
+        let response=Client::new().post(format!("{}/images/generations",mock.base)).send().unwrap();
+        assert!(json_response(response,MOCK_KEY,4096).is_err());
+        assert_eq!(mock.count(),1);
+    }
 }
 
 #[test]
@@ -332,6 +401,7 @@ fn async_receipts_resume_after_restart_without_a_second_generation() {
     let mock=Mock::new(|_,request| {
         assert_eq!(request.headers["authorization"],format!("Bearer {LOCAL_FIXTURE_KEY}"));
         match (request.method.as_str(),request.path.as_str()) {
+            ("GET","/v1/models")=>Reply::json(json!({"data":[{"id":"fixture-image-v1"}]})),
             ("POST","/v1/images/generations")=>{
                 let body:Value=serde_json::from_slice(&request.body).unwrap();
                 assert!(body.get("async").is_none());
@@ -348,7 +418,7 @@ fn async_receipts_resume_after_restart_without_a_second_generation() {
     let service=ImageJobs::new(&home.0).unwrap();
     let job=service.start(request(1),None,false).unwrap();
     wait_until(||lock(&service.shared).unwrap().jobs[&job.id].items.get(&1).is_some_and(|i|i.status=="remote_pending"));
-    assert_eq!(mock.count(),1);
+    assert_eq!(mock.count(),2);
     assert!(service.retry(&job.id).is_err());
     let manifest=fs::read_to_string(Path::new(&job.output_directory).join("manifest.json")).unwrap();
     assert!(manifest.contains("async-task-1"));
@@ -373,6 +443,10 @@ fn async_pending_task_retains_original_key_and_blocks_resubmission() {
     let _serial=WORKER_TEST.lock().unwrap();
     let home=TempHome::new();
     let mock=Mock::new(|_,request| {
+        if request.path=="/v1/models" {
+            assert_eq!(request.headers["authorization"],format!("Bearer {LOCAL_FIXTURE_KEY}"));
+            return Reply::json(json!({"data":[{"id":"fixture-image-v1"}]}));
+        }
         if request.method=="POST" {return Reply::json(json!({"id":"async-key-bound","status":"queued"}));}
         panic!("changed credentials must never be sent for an existing task");
     });
@@ -386,7 +460,7 @@ fn async_pending_task_retains_original_key_and_blocks_resubmission() {
     let status=service.status(&job.id).unwrap();
     assert_eq!(status.items[0].status,"remote_pending");
     assert!(status.items[0].error.as_ref().unwrap().contains("Query this original job"));
-    assert_eq!(mock.count(),1);
+    assert_eq!(mock.count(),2);
 }
 
 fn input(home: &TempHome, mock: &Mock, count: usize) -> (String, Input) {
@@ -406,6 +480,7 @@ fn input(home: &TempHome, mock: &Mock, count: usize) -> (String, Input) {
             },
             references: Vec::new(),
             directory,
+            protocol: image_protocol::ImageProtocol::OpenAi,
         },
     )
 }
@@ -524,6 +599,40 @@ fn default_size_and_custom_prefix_reach_generation_and_edit_requests() {
     assert!(
         String::from_utf8_lossy(&captured[1].body).contains("name=\"size\"\r\n\r\n1024x1024\r\n")
     );
+}
+
+#[test]
+fn native_json_edit_preserves_mixed_local_and_url_references() {
+    let home = TempHome::new();
+    let mock = Mock::new(|_, request| {
+        assert!(request.path.ends_with("/images/edits"));
+        let body: Value=serde_json::from_slice(&request.body).unwrap();
+        assert_eq!(body["n"],1);
+        assert!(body.get("async").is_none());
+        assert!(body.get("response_format").is_none());
+        assert!(body.get("reference_images").is_none());
+        let refs=body["images"].as_array().unwrap();
+        assert_eq!(refs.len(),2);
+        let encoded=refs[0]["image_url"].as_str().unwrap().strip_prefix("data:image/png;base64,").unwrap();
+        assert_eq!(STANDARD.decode(encoded).unwrap(),png(1,1));
+        assert_eq!(refs[1]["image_url"],"https://example.com/second-reference.png");
+        Reply::json(success())
+    });
+    let (_, mut input) = input(&home, &mock, 1);
+    input.references.push(Reference {
+        bytes: png(1, 1).into(),
+        mime: "image/png",
+        extension: "png",
+    });
+    input.request.reference_urls = vec!["https://example.com/second-reference.png".into()];
+    let admitted = AtomicBool::new(false);
+    let response = post_image_with_guard(&input, || {
+        admitted.store(true, Ordering::Relaxed);
+        Ok(())
+    }).unwrap();
+    assert!(response.0["data"].is_array());
+    assert!(admitted.load(Ordering::Relaxed));
+    assert_eq!(mock.requests.lock().unwrap().len(),1);
 }
 
 #[test]
@@ -748,7 +857,7 @@ fn omitted_model_uses_saved_image_selection_and_rejects_unavailable_models_befor
     let job = service.start(selected, None, false).unwrap();
     assert_eq!(job.model, "customer-selected-image-model");
     assert_eq!(finished(&service, &job.id).completed, 1);
-    assert_eq!(mock.count(), 2);
+    assert_eq!(mock.count(), 3);
 }
 
 #[test]
@@ -889,6 +998,40 @@ fn generation_posts_one_and_saves_valid_thumbnail_without_overwrite() {
         1,
         "existing output must be detected before another paid POST"
     );
+}
+
+#[test]
+fn detailed_images_keep_both_previews_and_unmodified_originals() {
+    let home = TempHome::new();
+    let mut seed = 0x12345678u32;
+    let pixels = image::RgbaImage::from_fn(256, 256, |_, _| {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        image::Rgba(seed.to_le_bytes())
+    });
+    let mut encoded = Cursor::new(Vec::new());
+    DynamicImage::ImageRgba8(pixels).write_to(&mut encoded, ImageFormat::Png).unwrap();
+    let original = encoded.into_inner();
+    assert!(STANDARD.encode(&original).len() > PREVIEW_BUDGET);
+    let response = json!({"data":[{"b64_json":STANDARD.encode(&original)}]});
+    let mock = Mock::new(move |_, _| Reply::json(response.clone()));
+    let (id, input) = input(&home, &mock, 2);
+    let mut job = StoredJob::new(id, input);
+    for index in 1..=2 {
+        assert_eq!(job.claim(), Some(index));
+        let output = execute(&job.input, index, Instant::now()).unwrap();
+        assert_eq!(fs::read(&output.path).unwrap(), original);
+        let data = output.preview.strip_prefix("data:image/png;base64,").unwrap();
+        let (preview, _) = decode_image(&STANDARD.decode(data).unwrap()).unwrap();
+        assert!(preview.width() < 256 && preview.width() >= 64);
+        finish_item(&mut job, index, Ok(output), 1);
+    }
+    let snapshot = job.snapshot();
+    assert_eq!(snapshot.completed, 2);
+    let previews: Vec<_> = snapshot.items.iter().filter_map(|item|item.preview_data_url.as_ref()).collect();
+    assert_eq!(previews.len(), 2, "detailed pictures must still be returned to the Agent");
+    assert!(previews.iter().map(|p|p.len()).sum::<usize>() <= PREVIEW_BUDGET);
 }
 
 #[test]
@@ -2463,6 +2606,7 @@ fn cross_process_image_lock_helper() {
                 },
                 references: Vec::new(),
                 directory,
+                protocol: image_protocol::ImageProtocol::OpenAi,
             },
         )
     };
@@ -2613,6 +2757,7 @@ fn start_cancellation_during_reference_preflight_never_publishes_or_posts() {
                 thread_resume.wait();
                 Ok(references)
             },
+            |_,_|panic!("cancelled reference preflight must not discover protocols"),
         )
     });
     ready.wait();
@@ -2805,6 +2950,7 @@ fn retry_cancellation_during_reference_preflight_preserves_existing_output_and_q
                 thread_resume.wait();
                 Ok(references)
             },
+            |_,_|panic!("cancelled retry must not discover protocols"),
         )
     });
     ready.wait();
@@ -2888,6 +3034,7 @@ fn invalid_unrelated_history_is_preserved_and_does_not_block_new_jobs() {
             no_submission_guard(),
             |_| Ok(next_input.provider),
             load_references_in_home,
+            |_,_|Ok(image_protocol::ImageProtocol::OpenAi),
         )
         .unwrap();
     assert_eq!(finished(&service, &next.id).completed, 1);
@@ -2974,10 +3121,15 @@ fn custom_saved_endpoint_generates_images_with_its_own_key_and_path() {
     let _serial = WORKER_TEST.lock().unwrap();
     let home = TempHome::new();
     let mock = Mock::new(|_, request| {
+        if request.method=="GET" {
+            assert_eq!(request.path,"/custom/api/v1/models");
+            return Reply::json(json!({"data":[{"id":"fixture-image-v1"}]}));
+        }
         assert_eq!(request.path, "/custom/api/v1/images/generations");
         assert_eq!(request.headers["authorization"], "Bearer custom-test-key");
         let body: Value = serde_json::from_slice(&request.body).unwrap();
         assert_eq!(body["model"], "fixture-image-v1");
+        assert!(body.get("output_format").is_none());
         Reply::json(success())
     });
     let base = format!("http://{}/custom/api/v1/", mock.address);
@@ -2993,7 +3145,7 @@ fn custom_saved_endpoint_generates_images_with_its_own_key_and_path() {
     let submitted = service.start(request, None, false).unwrap();
     let done = finished(&service, &submitted.id);
     assert_eq!(done.completed, 2, "{:?}", done.status);
-    assert_eq!(mock.count(), 2);
+    assert_eq!(mock.count(), 3);
     for item in done.items.iter().filter(|item| item.status == "succeeded") {
         assert!(Path::new(item.path.as_ref().unwrap()).is_file());
     }
@@ -3043,8 +3195,8 @@ fn production_fixture_auth_metadata_partial_retry_and_ordered_edits_share_the_re
     );
     assert_eq!(
         mock.count(),
-        3,
-        "metadata plus two POSTs; failure must not automatically retry"
+        4,
+        "probe, protocol discovery and two POSTs; failure must not automatically retry"
     );
     let saved = partial
         .items
@@ -3057,7 +3209,7 @@ fn production_fixture_auth_metadata_partial_retry_and_ordered_edits_share_the_re
     service.retry(&submitted.id).unwrap();
     assert_eq!(finished(&service, &submitted.id).completed, 2);
     assert_eq!(fs::read(path).unwrap(), original);
-    assert_eq!(mock.count(), 4);
+    assert_eq!(mock.count(), 6);
 
     let first = home.0.join("fixture-first.png");
     let second = home.0.join("fixture-second.png");
@@ -3076,7 +3228,7 @@ fn production_fixture_auth_metadata_partial_retry_and_ordered_edits_share_the_re
         vec![hash(&png(1, 2)), hash(&png(3, 4)), hash(&png(1, 2))]
     );
     let captured = mock.requests.lock().unwrap();
-    assert_eq!(captured.len(), 5);
+    assert_eq!(captured.len(), 8);
     let edit = captured.last().unwrap();
     assert_eq!(edit.path, "/v1/images/edits");
     let body = String::from_utf8_lossy(&edit.body);
@@ -3167,6 +3319,7 @@ fn production_loopback_fixture_keeps_redirects_disabled_and_output_downloads_pub
     for scenario in ["redirect", "http", "https"] {
         let home = TempHome::new();
         let mock = Mock::new(move |_, request| {
+            if request.path=="/v1/models" {return Reply::json(json!({"data":[{"id":"fixture-image-v1"}]}));}
             if scenario == "redirect" {
                 return Reply {
                     status: 307,
@@ -3187,7 +3340,7 @@ fn production_loopback_fixture_keeps_redirects_disabled_and_output_downloads_pub
         assert_eq!(finished(&service, &submitted.id).failed, 1);
         assert_eq!(
             mock.count(),
-            1,
+            2,
             "no redirect or loopback download may follow the provider POST"
         );
     }
@@ -3253,6 +3406,10 @@ fn child_process_batch_is_parallel_and_publishes_images_before_the_slow_first_im
     let handler_started = started.clone();
     let handler_gate = gate.clone();
     let mock = Mock::new(move |_, captured| {
+        if captured.method=="GET" {
+            assert_eq!(captured.path,"/v1/models");
+            return Reply::json(json!({"data":[{"id":"fixture-image-v1"}]}));
+        }
         assert_eq!(captured.path, "/v1/images/generations");
         assert_eq!(
             captured.headers["authorization"],
@@ -3327,9 +3484,74 @@ fn child_process_batch_is_parallel_and_publishes_images_before_the_slow_first_im
     assert_eq!((done.completed, done.failed, done.total), (4, 0, 4));
     assert_eq!(
         mock.count(),
-        4,
-        "exactly one request per requested image, no retry"
+        5,
+        "one protocol lookup and one POST per requested image, no retry"
     );
     assert_eq!(maximum.load(Ordering::SeqCst), 2);
     assert_eq!(fs::read(saved_path).unwrap(), saved_bytes);
+}
+
+#[test]
+fn custom_gemini_catalog_routes_aliases_references_and_multiple_images_without_losing_prefix() {
+    let _serial = WORKER_TEST.lock().unwrap();
+    let home = TempHome::new();
+    let mock = Mock::new(|_,request| {
+        assert_eq!(request.headers["authorization"],"Bearer custom-gemini-key");
+        if request.method=="GET" {
+            assert_eq!(request.path,"/customer/api/v1/models");
+            return Reply::json(json!({"data":[{"id":"studio-drawing-v2","model_type":"image","supported_endpoint_types":["gemini","openai"]}]}));
+        }
+        assert_eq!(request.path,"/customer/api/v1beta/models/studio-drawing-v2:generateContent");
+        let body:Value=serde_json::from_slice(&request.body).unwrap();
+        assert_eq!(body["generationConfig"]["imageConfig"],json!({"aspectRatio":"1:1","imageSize":"1K"}));
+        assert_eq!(body["generationConfig"]["responseModalities"],json!(["TEXT","IMAGE"]));
+        assert_eq!(body["generationConfig"]["candidateCount"],1);
+        let parts=body["contents"][0]["parts"].as_array().unwrap();
+        assert!(parts[0]["text"].as_str().unwrap().contains("reference"));
+        assert_eq!(parts[1]["inlineData"]["mimeType"],"image/png");
+        assert_eq!(STANDARD.decode(parts[1]["inlineData"]["data"].as_str().unwrap()).unwrap(),png(1,2));
+        assert_eq!(parts[2]["fileData"]["fileUri"],"https://example.com/reference.png");
+        for field in ["n","size","output_format","response_format","async","model"] {assert!(body.get(field).is_none());}
+        let mut reply=Reply::json(json!({"candidates":[{"content":{"parts":[{"text":"Here is the image."},{"inlineData":{"mimeType":"image/png","data":STANDARD.encode(png(3,4))}}]}}]}));
+        reply.headers.push(("X-Task-ID".into(),"completed-gemini-tracking-id".into()));
+        reply
+    });
+    let base=format!("http://{}/customer/api/v1",mock.address);
+    super::super::provider::configure_at(&home.0,&base,"custom-gemini-key",Some("studio-drawing-v2"),&["studio-drawing-v2".into()]).unwrap();
+    let reference=home.0.join("reference.png");fs::write(&reference,png(1,2)).unwrap();
+    let mut request=request(2);request.model="studio-drawing-v2".into();request.prompt="Paint two boats using the reference.".into();
+    request.reference_paths=vec![reference.to_string_lossy().into_owned()];
+    request.reference_urls=vec!["https://example.com/reference.png".into()];
+    let service=ImageJobs::new(&home.0).unwrap();
+    let submitted=service.start(request,None,false).unwrap();
+    let done=finished(&service,&submitted.id);
+    assert_eq!((done.completed,done.failed),(2,0));
+    assert_eq!(mock.count(),3); // one model lookup, two generation POSTs, no receipt polling
+    for item in done.items {assert_eq!(fs::read(item.path.unwrap()).unwrap(),png(3,4));}
+}
+
+#[test]
+fn gateway_discovery_and_generation_errors_do_not_change_model_or_repeat_paid_posts() {
+    let _serial = WORKER_TEST.lock().unwrap();
+    for status in [401,503] {
+        let home=TempHome::new();
+        let mock=Mock::new(move |_,request| {
+            if request.method=="GET" && status!=401 {
+                return Reply::json(json!({"data":[{"id":"gemini-3.1-flash-image","supported_endpoint_types":["gemini","openai"]}]}));
+            }
+            if request.method=="POST" {assert_eq!(request.path,"/v1beta/models/gemini-3.1-flash-image:generateContent");}
+            Reply {status,headers:vec![],body:serde_json::to_vec(&json!({"error":{"code":"model_not_found","message":"upstream unavailable"}})).unwrap()}
+        });
+        super::super::provider::configure_at(&home.0,&mock.base,MOCK_KEY,Some("gemini-3.1-flash-image"),&["gemini-3.1-flash-image".into()]).unwrap();
+        let service=ImageJobs::new(&home.0).unwrap();
+        let mut request=request(1);request.model="gemini-3.1-flash-image".into();
+        let result=service.start(request,None,false);
+        if status==401 {assert!(result.is_err());assert_eq!(mock.count(),1);}
+        else {
+            let done=finished(&service,&result.unwrap().id);
+            assert_eq!((done.completed,done.failed),(0,1));
+            assert!(done.items[0].error.as_ref().unwrap().contains("model_not_found"));
+            assert_eq!(mock.count(),2);
+        }
+    }
 }

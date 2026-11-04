@@ -42,6 +42,8 @@ async fn installed_stdio_process_discovers_and_generates_at_the_saved_custom_end
                 let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
                 assert_eq!(body["model"],"studio-drawing-v2");
                 assert!(body.get("async").is_none());
+                assert!(body.get("output_format").is_none());
+                assert!(body.get("response_format").is_none());
                 json!({"data":[{"b64_json":encoded}]})
             }.to_string();
             paths.push(request);
@@ -78,6 +80,6 @@ async fn installed_stdio_process_discovers_and_generates_at_the_saved_custom_end
     client.close_with_timeout(Duration::from_secs(5)).await.unwrap();
     stop.store(true,Ordering::SeqCst);
     let requests = server.join().unwrap();
-    assert_eq!(requests.len(),3);
+    assert_eq!(requests.len(),4); // catalog, protocol discovery and two generation POSTs
     std::fs::remove_dir_all(home).unwrap();
 }

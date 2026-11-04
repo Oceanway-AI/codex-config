@@ -332,6 +332,8 @@ fn recover_owned_job(home: &Path, id: String, entry: Value) -> Result<Option<Sto
         },
         references: Vec::new(),
         directory: entry.directory,
+        // Recovered receipts are GET-only. Explicit retries discover the current protocol.
+        protocol: image_protocol::ImageProtocol::OpenAi,
     };
     let mut job = StoredJob::new(id, input);
     job.ownership = Mutex::new(Some(ownership));
