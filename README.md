@@ -8,7 +8,7 @@
 
 新版本源码位于 `apps/desktop/`。沿用 CC Switch 的应用框架、组件和会话管理，提供 Oceanway Key 接入、模型选择与配置流程。
 
-**[Oceanway Config 需求与功能说明](docs/PROJECT_REQUIREMENTS.md)**：本项目唯一需求文档，包含全部功能、[图片 MCP 设计](docs/PROJECT_REQUIREMENTS.md#image-mcp)和验收要求。
+[Oceanway Config 项目文档](https://docs.oceanway.site/docs/03_项目/codex-config) 维护现行需求 DEV-X-07-001 与功能规格 DEV-X-07-002。追溯本重建分支的原始功能、[图片 MCP 设计](docs/PROJECT_REQUIREMENTS.md#image-mcp)及验收材料，见[重建需求基线](docs/PROJECT_REQUIREMENTS.md)。
 
 当前版本提供文本模型接入和图片 MCP，支持多模型选择、批量生图及历史保留。构建流程、验证结果与后续维护见 [开发交接](docs/DEVELOPMENT_HANDOFF.md)。
 

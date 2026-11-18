@@ -4,7 +4,7 @@
 
 项目：`Oceanway-AI/codex-config` · 分支：`codex/oceanway-config-rebuild`
 
-本文件统一维护产品需求、功能行为、图片 MCP 设计和验收要求。后续功能调整直接更新对应章节，在文末记录版本与改动。
+本文件保留此重建分支原有需求、功能行为、图片 MCP 设计和验收要求。后续提需先在 [Oceanway Config 项目文档](https://docs.oceanway.site/docs/03_项目/codex-config) 查重，沿现行 PRD（DEV-X-07-001）及 FS（DEV-X-07-002）修订，并关联这里的原始章节与采用提交。
 
 阅读入口：[产品与流程](#product) · [功能要求](#features) · [图片 MCP 设计](#image-mcp) · [验收](#acceptance) · [变更记录](#changes)
 

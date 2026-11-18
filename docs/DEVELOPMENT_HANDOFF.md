@@ -2,7 +2,7 @@
 
 更新：2026-11-04。分支：`codex/oceanway-config-rebuild`。
 
-产品功能、图片 MCP 工具契约、API 接入和验收统一见 [需求与功能说明](PROJECT_REQUIREMENTS.md)。实际调用与安装结果见 [功能核验](functional-verification.md)，客户操作见 [使用说明](USER_GUIDE.md)。
+现行需求及其修订从 [Oceanway Config 项目文档](https://docs.oceanway.site/docs/03_项目/codex-config) 进入。本分支原有功能、图片 MCP 工具契约、API 接入和验收材料见 [重建需求基线](PROJECT_REQUIREMENTS.md)。实际调用与安装结果见 [功能核验](functional-verification.md)，客户操作见 [使用说明](USER_GUIDE.md)。
 
 ## 开发命令
 
