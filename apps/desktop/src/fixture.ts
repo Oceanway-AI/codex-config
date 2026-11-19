@@ -192,7 +192,7 @@ mockIPC(async (command, args: any) => {
     command === "get_managed_auth_statuses"
   )
     return [];
-  if (command === "plugin:app|version") return "0.1.0-fixture";
+  if (command === "plugin:app|version") return "0.1.1-fixture";
   if (command === "get_migration_result") return false;
   if (command === "get_init_error" || command === "take_tray_navigation")
     return null;

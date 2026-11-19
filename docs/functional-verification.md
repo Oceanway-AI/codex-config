@@ -1,8 +1,20 @@
 # Oceanway Config 功能核验
 
-更新：2026-11-04。工作包：WP-CODEXCONFIG-001。分支：`codex/oceanway-config-rebuild`。
+更新：2026-11-19。工作包：WP-CODEXCONFIG-001。分支：`codex/oceanway-config-rebuild`。
 
-## 本轮结果
+## 2026-11-19：Codex 新装与已有安装（CFG-A15～16）
+
+验收代码：[`13ba0e97ac56`](https://github.com/Oceanway-AI/codex-config/commit/13ba0e97ac56976aa35751ca834ea2fbc08b1fe5)。在干净的 GitHub 托管桌面使用 Oceanway 下载服务器的实际 Codex 安装包。验收对生产检测和重启逻辑检查了旧进程退出及新窗口出现。
+
+| 平台 | 新装与重启 | 已有安装 |
+| --- | --- | --- |
+| [Windows x64](https://github.com/Oceanway-AI/codex-config/actions/runs/44478001646) | 运行完整离线 EXE，系统注册的 Codex 打开后重启，窗口进程 `9604 → 4004` | 本机另起隔离配置的真实 Codex，窗口进程 `66380 → 71308`。临时程序单独验证了自定义目录快捷方式、退出后的残留及再次拉起的后台进程 |
+| [Apple 芯片 Mac](https://github.com/Oceanway-AI/codex-config/actions/runs/44478001607/job/135403115731) | 从 DMG 安装，窗口进程 `2837 → 3126` | 清除独立后台任务；将已装应用移动、改名并注册后，重新检测并实际打开 |
+| [Intel Mac](https://github.com/Oceanway-AI/codex-config/actions/runs/44478001607/job/135403115301) | 从 DMG 安装，窗口进程 `6172 → 6390` | 同样通过后台清理、已有安装和自定义位置启动 |
+
+配置页、应用接入及原生命令绑定共 37 项测试通过。以上是打包前的实机验收。0.1.1 安装包见[官网下载页](https://console.oceanway.tech/docs/get-started/)。
+
+## 2026-11-04：模型与图片 MCP
 
 使用用户授权的 Console 和 New API 测试 Key，实时拉取目录并实际调用全部文本、图片模型。视频不进入配置或测试。
 

@@ -1,6 +1,6 @@
 {
   "name": "oceanway-config-desktop",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Oceanway desktop configuration application, based on CC Switch",
   "type": "module",
   "scripts": {
