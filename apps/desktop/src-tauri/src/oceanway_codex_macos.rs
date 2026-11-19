@@ -8,6 +8,88 @@ use std::{
 
 static LAST_HOST: Mutex<Option<PathBuf>> = Mutex::new(None);
 
+mod windows {
+    use super::*;
+    use std::ffi::c_void;
+    type Ref = *const c_void;
+    #[repr(C)]
+    #[derive(Default)]
+    struct Rect {
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+    }
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGWindowListCopyWindowInfo(options: u32, relative_to: u32) -> Ref;
+        fn CGRectMakeWithDictionaryRepresentation(dict: Ref, rect: *mut Rect) -> u8;
+        static kCGWindowOwnerPID: Ref;
+        static kCGWindowNumber: Ref;
+        static kCGWindowLayer: Ref;
+        static kCGWindowBounds: Ref;
+    }
+    #[link(name = "CoreFoundation", kind = "framework")]
+    extern "C" {
+        fn CFRelease(obj: Ref);
+        fn CFArrayGetCount(array: Ref) -> isize;
+        fn CFArrayGetValueAtIndex(array: Ref, index: isize) -> Ref;
+        fn CFDictionaryGetValue(dict: Ref, key: Ref) -> Ref;
+        fn CFNumberGetValue(number: Ref, kind: isize, value: *mut i64) -> u8;
+    }
+    struct List(Ref);
+    impl Drop for List {
+        fn drop(&mut self) {
+            unsafe {
+                CFRelease(self.0);
+            }
+        }
+    }
+
+    /// All dictionaries and values are borrowed from the retained Quartz list.
+    /// Read window IDs, owners and bounds only; no titles, images or accessibility API.
+    pub(super) fn visible(host_dir: &Path) -> Result<Vec<(i32, i64)>, String> {
+        unsafe {
+            let raw = CGWindowListCopyWindowInfo(1 | 16, 0); // on-screen only, exclude desktop
+            if raw.is_null() {
+                return Err("无法读取当前 Mac 桌面的窗口，请在已登录的桌面重试。".into());
+            }
+            let list = List(raw);
+            let mut found = Vec::new();
+            for i in 0..CFArrayGetCount(list.0) {
+                let dict = CFArrayGetValueAtIndex(list.0, i);
+                let number = |key| {
+                    let value = CFDictionaryGetValue(dict, key);
+                    let mut out: i64 = 0;
+                    (!value.is_null() && CFNumberGetValue(value, 4, &mut out) != 0).then_some(out)
+                };
+                if number(kCGWindowLayer) != Some(0) {
+                    continue;
+                }
+                let (Some(pid), Some(id)) = (
+                    number(kCGWindowOwnerPID).and_then(|p| i32::try_from(p).ok()),
+                    number(kCGWindowNumber),
+                ) else {
+                    continue;
+                };
+                if !executable(pid).is_some_and(|p| p.parent() == Some(host_dir)) {
+                    continue;
+                }
+                let bounds = CFDictionaryGetValue(dict, kCGWindowBounds);
+                let mut rect = Rect::default();
+                if !bounds.is_null()
+                    && CGRectMakeWithDictionaryRepresentation(bounds, &mut rect) != 0
+                    && rect.width > 1.
+                    && rect.height > 1.
+                {
+                    found.push((pid, id));
+                }
+            }
+            Ok(found)
+        }
+    }
+}
+
 #[link(name = "proc")]
 extern "C" {
     fn proc_pidpath(pid: i32, buffer: *mut std::ffi::c_void, size: u32) -> i32;
@@ -62,9 +144,14 @@ fn clients() -> Result<Vec<(i32, PathBuf)>, String> {
                 || name == "codex-aarch64-apple-darwin"
                 || name == "codex-x86_64-apple-darwin"
                 || runtime
-                || exe.ancestors().filter(|p| p.extension().is_some_and(|ext| ext == "app")).any(|p| {
-                    *known.entry(p.to_owned()).or_insert_with(|| crate::codex_desktop_detection::macos_bundle_present(p))
-                })
+                || exe
+                    .ancestors()
+                    .filter(|p| p.extension().is_some_and(|ext| ext == "app"))
+                    .any(|p| {
+                        *known.entry(p.to_owned()).or_insert_with(|| {
+                            crate::codex_desktop_detection::macos_bundle_present(p)
+                        })
+                    })
             {
                 Some((pid, exe))
             } else {
@@ -140,7 +227,12 @@ pub fn launch_codex(restart: bool) -> Result<Option<String>, String> {
         .into_iter()
         .filter_map(|(_, exe)| bundle(&exe).map(Path::to_path_buf))
         .find(|p| crate::codex_desktop_detection::macos_install_location(p))
-        .or_else(|| previous.filter(|p| crate::codex_desktop_detection::macos_install_location(p) && crate::codex_desktop_detection::macos_bundle_present(p)))
+        .or_else(|| {
+            previous.filter(|p| {
+                crate::codex_desktop_detection::macos_install_location(p)
+                    && crate::codex_desktop_detection::macos_bundle_present(p)
+            })
+        })
         .or_else(crate::codex_desktop_detection::macos_installed_bundle);
     let Some(path) = target else {
         return Ok(None);
@@ -153,37 +245,18 @@ pub fn launch_codex(restart: bool) -> Result<Option<String>, String> {
     if !output.status.success() {
         return Err("系统未能打开 Codex，请检查安装后重试。".into());
     }
-    // Quartz checks on-screen layer-zero windows; no Accessibility permission required.
-    let script = r#"ObjC.import('AppKit'); ObjC.import('CoreGraphics');
-function run(argv) {
-  const until = Date.now() + 30000;
-  let last = [];
-  while (Date.now() < until) {
-    const apps = $.NSWorkspace.sharedWorkspace.runningApplications;
-    const pids = [];
-    for (let i = 0; i < apps.count; i++) {
-      const a = apps.objectAtIndex(i);
-      const url = a.bundleURL;
-      if (url && !url.isNil() && ObjC.unwrap(url.path) === argv[0]) pids.push(Number(a.processIdentifier));
+    let host_dir = path.canonicalize().unwrap_or(path).join("Contents/MacOS");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut last = Vec::new();
+    while Instant::now() < deadline {
+        let visible = windows::visible(&host_dir)?;
+        if visible.iter().any(|w| last.contains(w)) {
+            return Ok(Some("Codex 窗口已打开，可以开始对话。".into()));
+        }
+        last = visible;
+        thread::sleep(Duration::from_millis(300));
     }
-    const windows = ObjC.deepUnwrap($.CGWindowListCopyWindowInfo(17, 0)) || [];
-    const visible = windows.filter(w => pids.includes(w.kCGWindowOwnerPID) && w.kCGWindowLayer === 0 && w.kCGWindowBounds.Width > 1 && w.kCGWindowBounds.Height > 1).map(w => String(w.kCGWindowOwnerPID) + ':' + w.kCGWindowNumber);
-    if (visible.some(id => last.includes(id))) return 'opened';
-    last = visible;
-    $.NSThread.sleepForTimeInterval(0.3);
-  }
-  return 'timeout';
-}"#;
-    let check = crate::agent_desktops::bounded_output(
-        Command::new("/usr/bin/osascript")
-            .args(["-l", "JavaScript", "-e", script])
-            .arg(&path),
-        35,
-    )?;
-    if !check.status.success() || String::from_utf8_lossy(&check.stdout).trim() != "opened" {
-        return Err("没有检测到 Codex 窗口。配置已保留，请稍等片刻；窗口仍未出现时可以重试，或从“应用程序”打开。".into());
-    }
-    Ok(Some("Codex 窗口已打开，可以开始对话。".into()))
+    Err("没有检测到 Codex 窗口。配置已保留，请稍等片刻；窗口仍未出现时可以重试，或从“应用程序”打开。".into())
 }
 
 #[cfg(test)]
@@ -194,12 +267,23 @@ mod acceptance {
     #[ignore = "Requires the Oceanway DMG installed on a disposable macOS desktop"]
     fn installed_mac_codex_lifecycle() {
         assert_eq!(std::env::var("GITHUB_ACTIONS").as_deref(), Ok("true"));
-        assert_eq!(std::env::var("RUNNER_ENVIRONMENT").as_deref(), Ok("github-hosted"));
+        assert_eq!(
+            std::env::var("RUNNER_ENVIRONMENT").as_deref(),
+            Ok("github-hosted")
+        );
         assert!(!running().unwrap(), "expected an unused test desktop");
-        let app = crate::codex_desktop_detection::macos_installed_bundle().expect("fresh install detected");
-        assert!(app.starts_with(crate::config::get_home_dir().join("Applications")), "unexpected install: {app:?}");
+        let app = crate::codex_desktop_detection::macos_installed_bundle()
+            .expect("fresh install detected");
+        assert!(
+            app.starts_with(crate::config::get_home_dir().join("Applications")),
+            "unexpected install: {app:?}"
+        );
         struct Cleanup;
-        impl Drop for Cleanup { fn drop(&mut self) { let _ = close(); } }
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = close();
+            }
+        }
         let _cleanup = Cleanup;
         // A CLI worker outliving the window must still block a new configuration.
         let tmp = tempfile::tempdir().unwrap();
@@ -208,22 +292,52 @@ mod acceptance {
         let mut worker = Command::new(&worker).arg("180").spawn().unwrap();
         let reap = std::thread::spawn(move || worker.wait());
         assert!(running().unwrap());
-        assert_eq!(launch_codex(false).unwrap_err(), "OCEANWAY_CODEX_RESTART_REQUIRED");
+        assert_eq!(
+            launch_codex(false).unwrap_err(),
+            "OCEANWAY_CODEX_RESTART_REQUIRED"
+        );
         close().unwrap();
         assert!(reap.join().unwrap().is_ok());
         assert!(!running().unwrap());
-        let host = || clients().unwrap().into_iter()
-            .find(|(_, exe)| exe.parent() == Some(app.join("Contents/MacOS").as_path())).expect("visible desktop host").0;
+        let host = || {
+            clients()
+                .unwrap()
+                .into_iter()
+                .find(|(_, exe)| exe.parent() == Some(app.join("Contents/MacOS").as_path()))
+                .expect("visible desktop host")
+                .0
+        };
         assert!(launch_codex(false).unwrap().is_some());
         let first = host();
-        assert_eq!(launch_codex(false).unwrap_err(), "OCEANWAY_CODEX_RESTART_REQUIRED");
+        assert_eq!(
+            launch_codex(false).unwrap_err(),
+            "OCEANWAY_CODEX_RESTART_REQUIRED"
+        );
         assert!(launch_codex(true).unwrap().is_some());
         let next = host();
         assert_ne!(first, next);
-        assert!(!clients().unwrap().iter().any(|(pid,_)| *pid == first));
+        assert!(!clients().unwrap().iter().any(|(pid, _)| *pid == first));
         close().unwrap();
         assert!(!running().unwrap());
-        assert!(crate::codex_desktop_detection::is_installed(), "previously installed, closed app must remain discoverable");
-        eprintln!("Verified {app:?}, background worker exit, and visible windows: {first} -> {next}");
+        assert!(
+            crate::codex_desktop_detection::is_installed(),
+            "previously installed, closed app must remain discoverable"
+        );
+        // Same installed app, now closed and moved out of both Applications folders.
+        let moved = tmp.path().join("My existing Codex.app");
+        std::fs::rename(&app, &moved).unwrap();
+        assert!(Command::new("/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister")
+            .arg("-f").arg(&moved).status().unwrap().success());
+        let detected = crate::codex_desktop_detection::macos_installed_bundle()
+            .expect("registered custom install");
+        assert_eq!(
+            detected.canonicalize().unwrap(),
+            moved.canonicalize().unwrap()
+        );
+        assert!(launch_codex(false).unwrap().is_some());
+        close().unwrap();
+        // Preserve the existing installation for the rest of the runner job.
+        std::fs::rename(&moved, &app).unwrap();
+        eprintln!("Verified fresh install and existing relocated Codex, background worker exit, and visible windows: {first} -> {next}");
     }
 }

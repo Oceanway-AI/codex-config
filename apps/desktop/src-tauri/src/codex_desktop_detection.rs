@@ -18,15 +18,31 @@ fn windows_bundle_present(executable: &std::path::Path) -> bool {
 
 #[cfg(any(target_os = "macos", test))]
 pub(crate) fn macos_bundle_present(bundle: &std::path::Path) -> bool {
-    if bundle.extension().is_none_or(|ext| ext != "app") { return false; }
+    if bundle.extension().is_none_or(|ext| ext != "app") {
+        return false;
+    }
     let plist_path = bundle.join("Contents/Info.plist");
     if plist_path.is_file() {
-        let Ok(info) = plist::Value::from_file(plist_path) else { return false; };
-        let Some(info) = info.as_dictionary() else { return false; };
-        if let Some(id) = info.get("CFBundleIdentifier").and_then(plist::Value::as_string) {
-            let Some(exe) = info.get("CFBundleExecutable").and_then(plist::Value::as_string) else { return false; };
+        let Ok(info) = plist::Value::from_file(plist_path) else {
+            return false;
+        };
+        let Some(info) = info.as_dictionary() else {
+            return false;
+        };
+        if let Some(id) = info
+            .get("CFBundleIdentifier")
+            .and_then(plist::Value::as_string)
+        {
+            let Some(exe) = info
+                .get("CFBundleExecutable")
+                .and_then(plist::Value::as_string)
+            else {
+                return false;
+            };
             return id == "com.openai.codex"
-                && std::path::Path::new(exe).file_name().is_some_and(|name| name == exe)
+                && std::path::Path::new(exe)
+                    .file_name()
+                    .is_some_and(|name| name == exe)
                 && bundle.join("Contents/MacOS").join(exe).is_file();
         }
     }
@@ -77,15 +93,43 @@ pub fn is_installed() -> bool {
 
 #[cfg(target_os = "macos")]
 pub(crate) fn macos_install_location(path: &std::path::Path) -> bool {
-    if !path.is_absolute() || path.components().any(|c| [".Trash", ".Trashes", "AppTranslocation"].iter().any(|n| c.as_os_str() == *n)) { return false; }
-    if !path.starts_with("/Volumes") { return true; }
+    if !path.is_absolute()
+        || path.components().any(|c| {
+            [".Trash", ".Trashes", "AppTranslocation"]
+                .iter()
+                .any(|n| c.as_os_str() == *n)
+        })
+    {
+        return false;
+    }
+    if !path.starts_with("/Volumes") {
+        return true;
+    }
     // Installed on a separate disk is valid; mounted installer images are not.
-    let Ok(output) = crate::agent_desktops::bounded_output(std::process::Command::new("/usr/bin/hdiutil").args(["info","-plist"]), 5) else {return false;};
-    if !output.status.success() { return false; }
-    let Ok(info) = plist::Value::from_reader(std::io::Cursor::new(output.stdout)) else { return false; };
-    let Some(images) = info.as_dictionary().and_then(|d|d.get("images")).and_then(plist::Value::as_array) else { return false; };
-    !images.iter().filter_map(|image|image.as_dictionary()?.get("system-entities")?.as_array()).flatten()
-        .filter_map(|entity|entity.as_dictionary()?.get("mount-point")?.as_string())
+    let Ok(output) = crate::agent_desktops::bounded_output(
+        std::process::Command::new("/usr/bin/hdiutil").args(["info", "-plist"]),
+        5,
+    ) else {
+        return false;
+    };
+    if !output.status.success() {
+        return false;
+    }
+    let Ok(info) = plist::Value::from_reader(std::io::Cursor::new(output.stdout)) else {
+        return false;
+    };
+    let Some(images) = info
+        .as_dictionary()
+        .and_then(|d| d.get("images"))
+        .and_then(plist::Value::as_array)
+    else {
+        return false;
+    };
+    !images
+        .iter()
+        .filter_map(|image| image.as_dictionary()?.get("system-entities")?.as_array())
+        .flatten()
+        .filter_map(|entity| entity.as_dictionary()?.get("mount-point")?.as_string())
         .any(|mount| path.starts_with(mount))
 }
 
@@ -95,20 +139,33 @@ pub(crate) fn macos_installed_bundle() -> Option<std::path::PathBuf> {
     if let Some(home) = dirs::home_dir() {
         roots.push(home.join("Applications"));
     }
-    let conventional = roots.into_iter().flat_map(|root| ["Codex.app", "ChatGPT.app"].map(|name|root.join(name))).find(|path| macos_bundle_present(path));
-    if conventional.is_some() { return conventional }
+    let conventional = roots
+        .into_iter()
+        .flat_map(|root| ["Codex.app", "ChatGPT.app"].map(|name| root.join(name)))
+        .find(|path| macos_bundle_present(path));
+    if conventional.is_some() {
+        return conventional;
+    }
     // Launch Services also knows installed apps moved to a different folder.
     // Lookup only: this must never launch Codex while detecting an installation.
     let script = r#"ObjC.import('AppKit'); function run() { const url = $.NSWorkspace.sharedWorkspace.URLForApplicationWithBundleIdentifier('com.openai.codex'); return ObjC.unwrap(url.path) || ''; }"#;
-    let result = crate::agent_desktops::bounded_output(std::process::Command::new("/usr/bin/osascript").args(["-l","JavaScript","-e",script]), 5).ok()?;
-    if !result.status.success() { return None; }
+    let result = crate::agent_desktops::bounded_output(
+        std::process::Command::new("/usr/bin/osascript").args(["-l", "JavaScript", "-e", script]),
+        5,
+    )
+    .ok()?;
+    if !result.status.success() {
+        return None;
+    }
     let path = std::path::PathBuf::from(std::str::from_utf8(&result.stdout).ok()?.trim_end());
     // A still-mounted download is not an installation.
     (macos_install_location(&path) && macos_bundle_present(&path)).then_some(path)
 }
 
 #[cfg(target_os = "macos")]
-pub fn is_installed() -> bool { macos_installed_bundle().is_some() }
+pub fn is_installed() -> bool {
+    macos_installed_bundle().is_some()
+}
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
 pub fn is_installed() -> bool {
     false
@@ -186,15 +243,17 @@ mod tests {
         let path = fixture.file("Work Tools/My Agent.app/Contents/Info.plist");
         let bundle = fixture.0.join("Work Tools/My Agent.app");
         for (id, exe, expected) in [
-            ("com.openai.codex","ChatGPT",true),
-            ("com.openai.chat","ChatGPT",false),
-            ("com.openai.codex","../MacOS/ChatGPT",false),
+            ("com.openai.codex", "ChatGPT", true),
+            ("com.openai.chat", "ChatGPT", false),
+            ("com.openai.codex", "../MacOS/ChatGPT", false),
         ] {
             let mut info = plist::Dictionary::new();
-            info.insert("CFBundleIdentifier".into(),id.into());
-            info.insert("CFBundleExecutable".into(),exe.into());
-            plist::Value::Dictionary(info).to_file_binary(&path).unwrap();
-            assert_eq!(macos_bundle_present(&bundle),expected);
+            info.insert("CFBundleIdentifier".into(), id.into());
+            info.insert("CFBundleExecutable".into(), exe.into());
+            plist::Value::Dictionary(info)
+                .to_file_binary(&path)
+                .unwrap();
+            assert_eq!(macos_bundle_present(&bundle), expected);
         }
     }
 }

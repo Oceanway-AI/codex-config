@@ -66,16 +66,23 @@ jobs:
           function Get-WindowProcess {
             (Get-CodexInstances | Where-Object { $_.Gui -and $_.Path -eq $target.Path -and $_.Process.MainWindowHandle -ne 0 } | Select-Object -First 1).Process
           }
+          $VerbosePreference = 'Continue'
           try {
+            Write-Host "Closing any installed Codex clients"
             $null = Invoke-CodexLifecycle close $null
+            Write-Host "Opening registered desktop $($target.AppId)"
             $null = Invoke-CodexLifecycle open $null
             $first = Get-WindowProcess
             if (!$first) { throw 'Store activation did not open a Codex window' }
+            Write-Host "Window opened: $($first.Id); restarting"
             $null = Invoke-CodexLifecycle restart $null
             $next = Get-WindowProcess
             if (!$next -or !$first.HasExited -or $next.Id -eq $first.Id) { throw 'Restart did not open a fresh Codex window' }
             Write-Host "Verified $($target.AppId): window PID $($first.Id) -> $($next.Id)"
-          } finally { $null = Invoke-CodexLifecycle close $null }
+          } catch {
+            Get-CodexInstances | ForEach-Object { Write-Host "Remaining: $($_.Process.Id) $($_.Process.ProcessName) gui=$($_.Gui) hwnd=$($_.Process.MainWindowHandle)" }
+            throw
+          } finally { try { $null = Invoke-CodexLifecycle close $null } catch { Write-Warning $_ } }
       - name: Collect Windows installation diagnostics
         if: always()
         shell: pwsh

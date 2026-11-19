@@ -144,7 +144,12 @@ function Stop-CodexClients($initial) {
             try {
                 if (!$row.Process.HasExited) {
                     $live = Get-Process -Id $row.Process.Id -ErrorAction SilentlyContinue
-                    if ($live -and $live.Path -eq $row.Path -and $live.StartTime -eq $row.Started) { $row.Process.Kill() }
+                    if ($live -and $live.Path -eq $row.Path -and $live.StartTime -eq $row.Started) {
+                        Write-Verbose "Stopping $($row.Process.ProcessName) PID $($row.Process.Id)"
+                        $row.Process.Kill()
+                    } elseif ($live) {
+                        Write-Verbose "PID $($row.Process.Id) no longer matched its saved path/start time."
+                    }
                 }
             }
             catch { if (!$row.Process.HasExited) { throw "无法退出 $($row.Process.ProcessName)（PID $($row.Process.Id)），请关闭它后重试。" } }
