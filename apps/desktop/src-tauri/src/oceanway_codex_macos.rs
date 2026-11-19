@@ -324,7 +324,11 @@ mod acceptance {
             "previously installed, closed app must remain discoverable"
         );
         // Same installed app, now closed and moved out of both Applications folders.
-        let moved = tmp.path().join("My existing Codex.app");
+        let custom = tempfile::Builder::new()
+            .prefix("Work tools ")
+            .tempdir_in(crate::config::get_home_dir())
+            .unwrap();
+        let moved = custom.path().join("My existing Codex.app");
         std::fs::rename(&app, &moved).unwrap();
         assert!(Command::new("/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister")
             .arg("-f").arg(&moved).status().unwrap().success());

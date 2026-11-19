@@ -148,18 +148,32 @@ pub(crate) fn macos_installed_bundle() -> Option<std::path::PathBuf> {
     }
     // Launch Services also knows installed apps moved to a different folder.
     // Lookup only: this must never launch Codex while detecting an installation.
-    let script = r#"ObjC.import('AppKit'); function run() { const url = $.NSWorkspace.sharedWorkspace.URLForApplicationWithBundleIdentifier('com.openai.codex'); return ObjC.unwrap(url.path) || ''; }"#;
-    let result = crate::agent_desktops::bounded_output(
-        std::process::Command::new("/usr/bin/osascript").args(["-l", "JavaScript", "-e", script]),
-        5,
-    )
-    .ok()?;
-    if !result.status.success() {
+    use core_foundation::{
+        array::{CFArray, CFArrayRef},
+        base::TCFType,
+        string::{CFString, CFStringRef},
+        url::CFURL,
+    };
+    #[link(name = "CoreServices", kind = "framework")]
+    extern "C" {
+        fn LSCopyApplicationURLsForBundleIdentifier(
+            id: CFStringRef,
+            error: *mut *const std::ffi::c_void,
+        ) -> CFArrayRef;
+    }
+    let id = CFString::new("com.openai.codex");
+    let raw = unsafe {
+        LSCopyApplicationURLsForBundleIdentifier(id.as_concrete_TypeRef(), std::ptr::null_mut())
+    };
+    if raw.is_null() {
         return None;
     }
-    let path = std::path::PathBuf::from(std::str::from_utf8(&result.stdout).ok()?.trim_end());
-    // A still-mounted download is not an installation.
-    (macos_install_location(&path) && macos_bundle_present(&path)).then_some(path)
+    let urls = unsafe { CFArray::<CFURL>::wrap_under_create_rule(raw) };
+    let path = urls
+        .iter()
+        .filter_map(|url| url.to_path())
+        .find(|p| macos_install_location(p) && macos_bundle_present(p));
+    path
 }
 
 #[cfg(target_os = "macos")]

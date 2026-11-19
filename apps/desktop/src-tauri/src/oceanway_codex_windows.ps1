@@ -17,8 +17,21 @@ function Get-CodexInstances($candidates = (Get-Process -Name 'Codex','ChatGPT','
         if ($p.SessionId -ne $session) { continue }
         $exe = $p.Path
         if (!$exe) {
-            if ($p.ProcessName -in @('codex','ChatGPT') -and !$p.HasExited) { throw "无法确认 $($p.ProcessName)（PID $($p.Id)）的安装位置，请先退出该程序再重试。" }
-            continue
+            if ($p.ProcessName -notin @('codex','ChatGPT') -or $p.HasExited) { continue }
+            # Electron can disappear or acquire its image path between a process
+            # snapshot and opening the handle. Never treat that race as an elevated app.
+            for ($n=0; $n -lt 3 -and !$exe -and !$p.HasExited; $n++) {
+                Start-Sleep -Milliseconds 120
+                $p.Refresh()
+                $exe = $p.Path
+            }
+            if (!$exe -and !$p.HasExited) {
+                $info = Get-CimInstance Win32_Process -Filter "ProcessId=$($p.Id)" -ErrorAction SilentlyContinue
+                if (!$info -or $p.HasExited) { continue }
+                $exe = $info.ExecutablePath
+                if (!$exe) { throw "无法确认 $($p.ProcessName)（PID $($p.Id)）的安装位置，请先退出该程序再重试。" }
+            }
+            if (!$exe) { continue }
         }
         $gui = Test-CodexBundle $exe
         # The desktop and terminal may share an app-server installed outside the app bundle.
@@ -111,14 +124,16 @@ function Find-CodexTarget($instances, $packages, $previous) {
 
 function Stop-CodexClients($initial) {
     $known = @{}
+    $hosts = @{}
     foreach ($row in $initial) {
         $known[$row.Process.Id] = $row.Started
         if (!$row.Process.HasExited -and $row.Gui -and $row.Process.MainWindowHandle -ne 0) {
+            $hosts[$row.Process.Id] = $row.Started
             try { [void]$row.Process.CloseMainWindow() } catch { if (!$row.Process.HasExited) { throw } }
         }
     }
     $grace = [DateTime]::UtcNow.AddSeconds(4)
-    $deadline = $grace.AddSeconds(5)
+    $deadline = $grace.AddSeconds(12)
     $quiet = 0
     do {
         Start-Sleep -Milliseconds 250
@@ -129,7 +144,8 @@ function Stop-CodexClients($initial) {
             continue
         }
         $quiet = 0
-        foreach ($row in $remaining) {
+        # Stop the original window host before its renderers so it cannot replace them.
+        foreach ($row in ($remaining | Sort-Object { $hosts[$_.Process.Id] -eq $_.Started } -Descending)) {
             if ($row.Gui -and !$row.Process.HasExited -and $known[$row.Process.Id] -ne $row.Started) {
                 if ($row.Process.MainWindowHandle -ne 0) { throw '检测到新打开的 Codex 窗口，请先保存工作后重试。' }
                 # A fresh desktop host may not have created its window yet. Only

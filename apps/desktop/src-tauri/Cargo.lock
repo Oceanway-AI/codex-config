@@ -3484,6 +3484,7 @@ dependencies = [
  "brotli 7.0.0",
  "bytes",
  "chrono",
+ "core-foundation 0.10.1",
  "dirs 5.0.1",
  "flate2",
  "futures",

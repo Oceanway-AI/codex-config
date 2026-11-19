@@ -17,7 +17,7 @@ mod platform {
             crate::agent_desktops::windows_powershell(script)
                 .env("OW_CODEX_ACTION", action)
                 .env("OW_PREVIOUS_HOST", previous.unwrap_or_default()),
-            50,
+            if action == "restart" { 65 } else { 50 },
         )?;
         if !output.status.success() {
             return Err(format!(

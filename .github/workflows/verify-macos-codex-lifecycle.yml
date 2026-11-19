@@ -51,6 +51,7 @@ jobs:
           version = "0.1.0"
           edition = "2021"
           [dependencies]
+          core-foundation = "0.10"
           dirs = "5"
           libc = "0.2"
           plist = "1"
