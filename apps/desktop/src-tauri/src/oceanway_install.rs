@@ -421,6 +421,12 @@ mod tests {
         }
         let cached=cached_package(&cache_root(),&app).expect("verified package survives the download task");
         verify_file(&cached.0,&cached.1).unwrap();
+        if app=="codex" && cfg!(target_os="macos") {
+            use std::io::Write as _;
+            if let Ok(path)=std::env::var("GITHUB_OUTPUT") {
+                writeln!(std::fs::OpenOptions::new().append(true).open(path).unwrap(),"codex_package={}",cached.1.display()).unwrap();
+            }
+        }
         assert!(!installed(&app).await.unwrap(),"downloading must not install an application");
         assert_eq!(oceanway_check_install(started.id.clone()).await.unwrap().stage,"ready");
         assert_eq!(oceanway_start_install(app.clone()).await.unwrap().id,started.id,"reuse downloaded package");

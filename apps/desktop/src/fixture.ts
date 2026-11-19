@@ -123,6 +123,10 @@ mockIPC(async (command, args: any) => {
     };
   }
   if (command === "oceanway_apply_config") {
+    if (query.has("codexRunning") && args.request.apps.some((a: any) => a.appId === "codex")) {
+      if (!args.request.closeCodexConfirmed) throw "OCEANWAY_CODEX_CLOSE_REQUIRED";
+      query.delete("codexRunning");
+    }
     configured = true;
     savedBaseUrl = args.request.baseUrl ?? savedBaseUrl;
     configuredApps = args.request.apps.map((a: any) => a.appId);
@@ -152,12 +156,14 @@ mockIPC(async (command, args: any) => {
         !args.request.apps.some((a: any) => a.appId === "openclaw"),
     };
   }
-  if (command === "oceanway_launch_app")
+  if (command === "oceanway_launch_app") {
+    if (query.has("codexReopened") && args.appId === "codex" && !args.restart) throw "OCEANWAY_CODEX_RESTART_REQUIRED";
     return {
       launched: false,
       restartRequired: true,
       message: "界面测试不会启动或重启本机应用。",
     };
+  }
   if (command === "get_settings")
     return {
       language: "zh",

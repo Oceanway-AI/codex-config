@@ -104,6 +104,8 @@ export function OceanwayConfigPanel({
   const [launchMessage, setLaunchMessage] = useState("");
   const [downloadMessage, setDownloadMessage] = useState("");
   const [restartApp, setRestartApp] = useState<string>();
+  const [confirmCloseCodex, setConfirmCloseCodex] = useState(false);
+  const [openingId, setOpeningId] = useState<string>();
   const generation = useRef(0);
   const initialized = useRef(false);
   const detectedIds = useRef<string[]>([]);
@@ -298,14 +300,16 @@ export function OceanwayConfigPanel({
       if (current === generation.current) setBusy(null);
     }
   }
-  async function save() {
+  async function save(closeCodexConfirmed = false) {
     if (!canSave) return;
+    setConfirmCloseCodex(false);
     setBusy("save");
     setError("");
     setLaunchMessage("");
     try {
       const response = await oceanwayApi.apply({
         apiKey: key.trim(),
+        ...(closeCodexConfirmed ? { closeCodexConfirmed: true } : {}),
         baseUrl: catalog!.baseUrl,
         apps: selected.map((id) => ({
           appId: id,
@@ -324,22 +328,32 @@ export function OceanwayConfigPanel({
         setConnection(await oceanwayApi.connection());
       }
     } catch (e) {
-      setError(errorText(e));
+      if (errorText(e) === "OCEANWAY_CODEX_CLOSE_REQUIRED") {
+        setConfirmCloseCodex(true);
+      } else {
+        setError(errorText(e));
+      }
     } finally {
       setBusy(null);
     }
   }
   async function launch(id: string, restart: boolean) {
+    setOpeningId(id);
+    setRestartApp(undefined);
     setBusy("launch");
     setError("");
     setLaunchMessage("");
     try {
       setLaunchMessage((await oceanwayApi.launch(id, restart)).message);
     } catch (e) {
-      setError(errorText(e));
+      if (id === "codex" && !restart && errorText(e) === "OCEANWAY_CODEX_RESTART_REQUIRED") {
+        setRestartApp(id);
+      } else {
+        setError(errorText(e));
+      }
     } finally {
       setBusy(null);
-      setRestartApp(undefined);
+      setOpeningId(undefined);
     }
   }
   async function install(id: string) {
@@ -477,7 +491,7 @@ export function OceanwayConfigPanel({
                 : "填入 Key，选好应用。对话模型和生图工具一起配好。"}
             </p>
           </div>
-          {error && (
+          {error && !result && (
             <div
               role="alert"
               className="flex items-start gap-2 rounded-panel border border-border bg-danger-soft p-3 text-body text-danger-text"
@@ -976,6 +990,11 @@ export function OceanwayConfigPanel({
               aria-live="polite"
               className="space-y-4"
             >
+              {error && (
+                <p role="alert" className="break-words text-body text-danger-text">
+                  {error}
+                </p>
+              )}
               <div className="divide-y divide-border overflow-hidden rounded-panel border border-border bg-surface">
                 {result.results.map((item) => (
                   <div key={item.appId} className="p-5">
@@ -1011,7 +1030,7 @@ export function OceanwayConfigPanel({
                               desktopDownloadUrl(item.appId as DownloadApp)
                             )
                               void install(item.appId);
-                            else if (
+                            else if (item.appId !== "codex" &&
                               apps.find((a) => a.appId === item.appId)
                                 ?.desktopInstalled
                             )
@@ -1019,12 +1038,12 @@ export function OceanwayConfigPanel({
                             else void launch(item.appId, false);
                           }}
                         >
-                          {busy === "launch" ? (
+                          {openingId === item.appId ? (
                             <Loader2 className="h-4 w-4 animate-spin" />
                           ) : (
                             <ArrowRight className="h-4 w-4" />
                           )}
-                          {apps.find((a) => a.appId === item.appId)?.installed
+                          {openingId === item.appId ? "正在打开" : apps.find((a) => a.appId === item.appId)?.installed
                             ? "打开"
                             : "安装"}{" "}
                           {appName(item.appId)}
@@ -1089,11 +1108,21 @@ export function OceanwayConfigPanel({
         </div>
       </div>
       <ConfirmDialog
+        isOpen={confirmCloseCodex}
+        variant="info"
+        title="退出 Codex 后继续配置？"
+        message="Codex 仍在运行。请保存工作并等当前任务结束。继续后会退出本机当前用户的 Codex 桌面、终端任务和后台服务。已保存的会话会保留。"
+        confirmText="已保存，退出并配置"
+        cancelText="取消"
+        onCancel={() => setConfirmCloseCodex(false)}
+        onConfirm={() => void save(true)}
+      />
+      <ConfirmDialog
         isOpen={!!restartApp}
         variant="info"
-        title={`打开 ${restartApp ? appName(restartApp) : "应用"} 并加载配置`}
-        message="如果应用已经打开，会先关闭再重新打开。请先保存正在进行的工作。"
-        confirmText="保存好了，打开应用"
+        title={restartApp === "codex" ? "重启 Codex 并加载配置？" : `打开 ${restartApp ? appName(restartApp) : "应用"} 并加载配置`}
+        message={restartApp === "codex" ? "Codex 已在运行。请保存工作并等任务结束，再重启桌面和后台服务。" : "如果应用已经打开，会先关闭再重新打开。请先保存正在进行的工作。"}
+        confirmText={restartApp === "codex" ? "已保存，重启 Codex" : "保存好了，打开应用"}
         cancelText="稍后打开"
         pending={busy === "launch"}
         onCancel={() => setRestartApp(undefined)}

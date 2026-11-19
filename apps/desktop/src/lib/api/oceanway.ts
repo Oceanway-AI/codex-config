@@ -31,6 +31,7 @@ export interface DetectedApp {
 }
 export interface ApplyRequest {
   apiKey: string;
+  closeCodexConfirmed?: boolean;
   baseUrl: string;
   apps: { appId: string; model: string; models?: string[] }[];
   imageModel?: string;

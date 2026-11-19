@@ -3508,6 +3508,7 @@ dependencies = [
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
  "once_cell",
+ "plist",
  "png 0.18.1",
  "prost",
  "regex",

@@ -1,0 +1,60 @@
+name: Verify Codex desktop on macOS
+on:
+  push:
+    tags: ['qa-codex-lifecycle-*']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  existing-and-fresh:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v6
+      - name: Download and verify the Codex DMG offered by Oceanway
+        shell: bash
+        run: |
+          set -euo pipefail
+          base=https://api.ocean-way.top/downloads/agents
+          curl -fsS --retry 2 --max-time 50 "$base/manifest.json" -o "$RUNNER_TEMP/manifest.json"
+          arch="$(uname -m)"
+          [[ "$arch" != x86_64 ]] || arch=x64
+          file="codex-macos-$arch.dmg"
+          row="$(jq -ce --arg f "$file" '.packages[] | select(.app=="codex" and .platform=="macos" and .filename==$f)' "$RUNNER_TEMP/manifest.json")"
+          dest="$RUNNER_TEMP/$file"
+          curl -fsS --retry 2 --max-time 450 "$base/$file" -o "$dest"
+          [[ "$(stat -f%z "$dest")" == "$(jq -r .size <<<"$row")" ]]
+          printf '%s  %s\n' "$(jq -r .sha256 <<<"$row")" "$dest" | shasum -a 256 -c -
+          bash apps/desktop/tests/native/install-codex-dmg.sh "$dest"
+      - name: Run the production detector, stop, launch and restart against the installed app
+        shell: bash
+        run: |
+          set -euo pipefail
+          harness="$RUNNER_TEMP/ow-macos-lifecycle"
+          mkdir -p "$harness/src"
+          cp apps/desktop/src-tauri/Cargo.lock "$harness/"
+          cp apps/desktop/src-tauri/src/{agent_desktops,codex_desktop_detection,oceanway_desktop,oceanway_codex_macos}.rs "$harness/src/"
+          # Only the application-home dependency is supplied by the harness.
+          cat > "$harness/src/lib.rs" <<'RS'
+          mod config { pub fn get_home_dir() -> std::path::PathBuf { dirs::home_dir().unwrap() } }
+          mod agent_desktops;
+          mod codex_desktop_detection;
+          mod oceanway_desktop;
+          RS
+          cat > "$harness/Cargo.toml" <<'TOML'
+          [package]
+          name = "oceanway-codex-lifecycle-acceptance"
+          version = "0.1.0"
+          edition = "2021"
+          [dependencies]
+          dirs = "5"
+          libc = "0.2"
+          plist = "1"
+          tempfile = "3"
+          TOML
+          cargo test --manifest-path "$harness/Cargo.toml" oceanway_macos -- --nocapture
+          cargo test --manifest-path "$harness/Cargo.toml" installed_mac_codex_lifecycle -- --ignored --nocapture

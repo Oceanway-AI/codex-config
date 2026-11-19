@@ -338,7 +338,10 @@ describe("Oceanway guided configuration", () => {
     expect(oceanwayApi.apply).not.toHaveBeenCalled();
   });
 
-  it("configures a detected Codex desktop without a CLI and asks before restarting it", async () => {
+  it("asks before closing Codex for configuration and verifies opening separately", async () => {
+    vi.mocked(oceanwayApi.apply)
+      .mockRejectedValueOnce("OCEANWAY_CODEX_CLOSE_REQUIRED")
+      .mockRejectedValueOnce("OCEANWAY_CODEX_CLOSE_REQUIRED");
     vi.mocked(oceanwayApi.detectApps).mockResolvedValueOnce([
       {
         appId: "codex",
@@ -357,24 +360,32 @@ describe("Oceanway guided configuration", () => {
     await connect(user);
     expect(screen.queryByLabelText("Codex 对话默认模型")).toBeNull();
     await user.click(screen.getByRole("button", { name: "一键配置" }));
+    const firstPrompt = await screen.findByRole("dialog");
+    await user.click(within(firstPrompt).getByRole("button", { name: "取消" }));
+    expect(oceanwayApi.apply).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(oceanwayApi.apply).mock.calls[0][0].closeCodexConfirmed).toBeUndefined();
+    expect(screen.queryByRole("region", { name: "配置结果" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "一键配置" }));
+    await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "已保存，退出并配置" }));
     await screen.findByRole("region", { name: "配置结果" });
-    expect(oceanwayApi.apply).toHaveBeenCalledWith(
+    expect(oceanwayApi.apply).toHaveBeenLastCalledWith(
       expect.objectContaining({
+        closeCodexConfirmed: true,
         apps: [
           { appId: "codex", model: "gpt-5", models: ["gpt-5-mini", "gpt-5"] },
         ],
       }),
     );
     expect(oceanwayApi.launch).not.toHaveBeenCalled();
+    vi.mocked(oceanwayApi.launch).mockRejectedValueOnce("没有检测到 Codex 窗口。配置已保留。");
     await user.click(screen.getByRole("button", { name: "打开 Codex" }));
-    const dialog = await screen.findByRole("dialog");
-    expect(oceanwayApi.launch).not.toHaveBeenCalled();
-    await user.click(
-      within(dialog).getByRole("button", { name: "保存好了，打开应用" }),
-    );
-    await waitFor(() =>
-      expect(oceanwayApi.launch).toHaveBeenCalledWith("codex", true),
-    );
+    expect(await screen.findByRole("alert")).toHaveTextContent("没有检测到 Codex 窗口");
+    expect(oceanwayApi.launch).toHaveBeenCalledWith("codex", false);
+    expect(screen.getByRole("region", { name: "配置结果" })).toBeVisible();
+    vi.mocked(oceanwayApi.launch).mockRejectedValueOnce("OCEANWAY_CODEX_RESTART_REQUIRED");
+    await user.click(screen.getByRole("button", { name: "打开 Codex" }));
+    await user.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "已保存，重启 Codex" }));
+    expect(oceanwayApi.launch).toHaveBeenLastCalledWith("codex", true);
   });
 
   it("keeps all current Console image models separate from conversation families", () => {

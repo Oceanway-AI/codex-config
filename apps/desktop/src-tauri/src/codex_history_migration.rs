@@ -423,17 +423,16 @@ pub(crate) fn recover_oceanway_codex_history() -> Result<(), AppError> {
     Ok(())
 }
 
-#[cfg(not(test))]
+#[cfg(all(not(test), any(target_os = "windows", target_os = "macos")))]
 fn ensure_oceanway_history_idle() -> Result<(), AppError> {
-    #[cfg(windows)]
-    let output = {
-        use std::os::windows::process::CommandExt;
-        std::process::Command::new("tasklist.exe")
-            .args(["/FO", "CSV", "/NH"])
-            .creation_flags(0x08000000)
-            .output()
-    };
-    #[cfg(not(windows))]
+    if crate::oceanway_desktop::running().map_err(AppError::Message)? {
+        return Err(AppError::Message("Codex 已重新运行。请先保存正在进行的工作，再点一次“一键配置”。".into()));
+    }
+    Ok(())
+}
+
+#[cfg(all(not(test), not(any(target_os = "windows", target_os = "macos"))))]
+fn ensure_oceanway_history_idle() -> Result<(), AppError> {
     let output = std::process::Command::new("ps")
         .args(["-x", "-o", "comm="])
         .output();
@@ -455,6 +454,7 @@ fn ensure_oceanway_history_idle() -> Result<(), AppError> {
     Ok(())
 }
 
+#[cfg(any(test, not(any(target_os = "windows", target_os = "macos"))))]
 fn oceanway_history_process_running(processes: &str) -> bool {
     processes.lines().any(|line| {
         let executable = line

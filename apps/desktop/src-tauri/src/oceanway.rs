@@ -81,6 +81,8 @@ impl AppSelection {
 pub struct ApplyRequest {
     api_key: String,
     #[serde(default)]
+    close_codex_confirmed: bool,
+    #[serde(default)]
     base_url: Option<String>,
     apps: Vec<AppSelection>,
     image_model: Option<String>,
@@ -860,6 +862,13 @@ pub async fn oceanway_apply_config(
     validate_selection(&request, &models)?;
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
+        if request.apps.iter().any(|app| app.app_id == "codex") {
+            if request.close_codex_confirmed {
+                crate::oceanway_desktop::close()?;
+            } else if crate::oceanway_desktop::running()? {
+                return Err("OCEANWAY_CODEX_CLOSE_REQUIRED".into());
+            }
+        }
         let images_requested = request.image_model.as_deref().is_some_and(|model| !model.is_empty());
         let home = crate::config::get_app_config_dir();
         let previous_mcp = state.db.get_all_mcp_servers().map_err(|e| e.to_string())?
@@ -1073,11 +1082,19 @@ pub async fn oceanway_open_image(
 #[tauri::command]
 pub async fn oceanway_launch_app(app_id: String, restart: bool) -> Result<LaunchResult, String> {
     app_type(&app_id)?;
+    let _guard = if app_id == "codex" {
+        Some(APPLY_LOCK.lock().await)
+    } else {
+        None
+    };
     tauri::async_runtime::spawn_blocking(move || {
         if app_id != "claude" {
-            let message=if app_id=="codex" {
-                crate::oceanway_desktop::launch_codex(restart)?.ok_or("尚未找到 Codex 桌面版，请下载安装后重新检测")?
-            }else{crate::agent_desktops::launch(&app_id,restart)?};
+            let message = if app_id == "codex" {
+                crate::oceanway_desktop::launch_codex(restart)?
+                    .ok_or("尚未找到 Codex 桌面版，请下载安装后重新检测")?
+            } else {
+                crate::agent_desktops::launch(&app_id, restart)?
+            };
             return Ok(LaunchResult {launched:true,restart_required:false,message});
         }
         crate::commands::misc::launch_oceanway_terminal(&app_id)?;
@@ -1227,6 +1244,7 @@ mod tests {
         assert_eq!(models.len(), 1);
         let request = ApplyRequest {
             api_key: "fixture".into(),
+            close_codex_confirmed: false,
             base_url: None,
             apps: vec![AppSelection {
                 app_id: "codex".into(),
