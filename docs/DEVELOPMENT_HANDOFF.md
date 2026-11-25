@@ -41,3 +41,7 @@ gh workflow run build.yml --repo Oceanway-AI/codex-config --ref codex/oceanway-c
 回归命令仍为上方独立图片模块测试。新增 `image_protocol_tests.rs` 覆盖当前 10 个模型的 36 个请求准备组合、自定义路径与原图字节；目录测试覆盖分页及修订匹配；异步测试覆盖 202/503/504 的原任务恢复。真实接口批次与图片保存在 `.artifacts/image-mcp-20261125/`，最终结果沿功能核验记录。
 
 最终回归共 121 项通过，真实调用结果及服务端失败见[本轮核验](functional-verification.md#2026-11-25console-与-new-api-图片-mcp)。本轮源码尚未推送或发布安装包。Docs 的 F04 规范已本地修订；全仓检查受原有 9 篇 Platform 文档的 front matter 解析失败及 Windows symlink 测试权限影响，Docs 修改待同步，日志保存在本轮证据目录。
+
+## 0.1.2 发布
+
+用户于 2026-11-25 授权构建、合入 main 及更新服务器下载文件。沿上述实测源码发布 0.1.2，目标为 Windows x64、macOS Apple Silicon 和 Intel。三个平台构建及包内 MCP 检查通过后，使用同一批制品发布 GitHub Release、更新官网下载文件，并同步网站仓库内的副本。官网完整下载文件的 SHA256、包内版本、源码提交和构建批次写入发布记录。

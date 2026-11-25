@@ -1,6 +1,6 @@
 [package]
 name = "oceanway-config"
-version = "0.1.1"
+version = "0.1.2"
 description = "Oceanway Config - Agent configuration powered by CC Switch"
 authors = ["Oceanway AI", "Jason Young (CC Switch)"]
 license = "MIT"
