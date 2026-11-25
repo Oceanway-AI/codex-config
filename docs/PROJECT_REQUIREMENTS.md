@@ -1,6 +1,6 @@
 # Oceanway Config 需求与功能说明
 
-版本：v1.0 · 更新：2026-11-04 · 负责人：zao
+版本：v1.1 · 更新：2026-11-25 · 负责人：zao
 
 项目：`Oceanway-AI/codex-config` · 分支：`codex/oceanway-config-rebuild`
 
@@ -183,41 +183,35 @@ Windows、Apple 芯片 Mac 和 Intel Mac 使用同一流程。已有 Codex 的�
 
 ### 3.4 模型目录与协议选择
 
-用保存的 Key 请求 `{baseUrl}/models`，API 请求使用 `Authorization: Bearer <apiKey>`。图片能力依据目录中的端点元数据和 Console 的公开模型能力识别，包含 OpenAI Images、Gemini、Grok 和站点提供的图片模型别名。返回真实完整清单，模型 ID 原样传递。
+使用客户保存的 Key 读取 `{baseUrl}/models`，返回该 Key 可用的完整图片模型清单。默认 Console 使用图片目录的 `summaries` 分页获取摘要，按模型选择读取 `detail`，并核对价格、能力及连接修订号。公开目录使用匿名请求，短时缓存按修订更新。
 
-Console 能力说明来自 [图片文档](https://docs.oceanway.tech/docs/images)、[任务文档](https://docs.oceanway.tech/docs/tasks)及公开模型能力。New API 以其模型目录、端点元数据和对外响应为准。目录获取与生成统一使用用户保存的站点地址。
+相同 Console 模型 ID 经 New API 转接时，可复用 Console 公布的原生请求格式。模型别名采用该站提供的能力或端点元数据。生成、任务查询均使用客户填写的 Base URL 和该站 Key；模型能力中的路径用于拼接用户服务地址。
 
-地址示例：`https://example.com/customer/v1` 的 Images 地址为 `/customer/v1/images/generations`，Gemini 地址为 `/customer/v1beta/models/{model}:generateContent`；保留 `/customer` 前缀。图片数量、参考图数量、MIME 类型、尺寸和分辨率按所选模型支持的参数校验。
+例如 `https://example.com/customer/v1` 的 Images 入口为 `/customer/v1/images/generations`，Gemini 入口为 `/customer/v1beta/models/{model}:generateContent`。路径前缀和端口保留。
+
+采用 `media_generation_profile.variants[].native_request_variant` 中的协议、方法、路径、编码、默认值、参数与参考图限制。目录中的 `/n`、`/generationConfig/candidateCount` 是 JSON Pointer，实际请求分别为 `{"n":1}` 和 `{"generationConfig":{"candidateCount":1}}`。
 
 ### 3.5 文生图与参考图输入
 
-| 协议 | 文生图 | 本地参考图 | 链接参考图 |
-| --- | --- | --- | --- |
-| OpenAI Images | `POST {baseUrl}/images/generations`，JSON | `POST {baseUrl}/images/edits`，multipart 文件或 JSON `images[].image_url` 中的 data URI | 同一编辑接口的 `images[].image_url` |
-| Gemini | `POST {geminiBase}/models/{model}:generateContent` | `contents[].parts[].inlineData` 携带 MIME 和原文件 Base64 | 支持时使用 `fileData.fileUri` |
-| Grok / xAI | 使用该服务公布的 Images 生成接口 | 原生 xAI 编辑使用 `image: {type: "image_url", url: "data:image/...;base64,..."}`；网关公布标准 Images 编辑时按该协议发送 | 使用该服务公布的 `image.url` 或 `reference_images` |
+| 协议 | 文生图 | 参考图 |
+| --- | --- | --- |
+| GPT Images | `POST {baseUrl}/images/generations`，JSON | `POST {baseUrl}/images/edits`，multipart `image[]` 原文件字节，附带 model、prompt、n 及尺寸等参数 |
+| Gemini Image | `POST {geminiBase}/models/{model}:generateContent`，JSON | `contents[].parts[].inlineData` 携带 MIME 与原文件 Base64 |
+| Grok Image | `POST {baseUrl}/images/generations`，JSON，尺寸转换为 `aspect_ratio` 与 `resolution` | 按发布的模型能力显示支持范围；2026-11-25 目录的两款 Grok 为文生图 |
 
-MCP 读取附件原文件并保留参考顺序。原始文件用于 API 输入，缩略图仅用于结果展示。本地文件和链接混用时，适配器完整转换全部输入；当前接口无法表达时返回具体缺少的输入方式，让用户调整参考格式。
+以上格式用于 Console 当前公布的模型，以及 New API 对这些模型的相应协议转发。其他兼容站的图片别名沿该站的 Images 或 Gemini 协议调用。
 
-OpenAI 文生图核心请求体：
+本地附件读取原图字节。Console 原生编辑的链接参考图先下载并核对图片格式，再与本地图一起通过上述方式发送。保留输入顺序，检查数量、MIME、单图与总字节限制。原附件保留，生成结果另存。
+
+GPT 文生图核心请求：
 
 ```json
 {"model":"gpt-image-2","prompt":"一艘橙色帆船，白色背景","n":1,"size":"1024x1024"}
 ```
 
-本地编辑使用同一模型、描述、单张数量及尺寸。Console 原生 JSON 编辑示例：
+GPT 编辑的 multipart 表单包含 `model=gpt-image-2`、`prompt=保留船形，把帆改成紫色`、`n=1`、`size=1024x1024`、`image[]=原图文件`；请求边界由 HTTP 客户端生成。
 
-```json
-{
-  "model":"gpt-image-2",
-  "prompt":"保留原船形，把帆改成紫色",
-  "n":1,
-  "size":"1024x1024",
-  "images":[{"image_url":"data:image/png;base64,<原图Base64>"}]
-}
-```
-
-New API 使用同样的原生请求；全部为本地文件时，也可发送 multipart 的 `image[]` 原文件字节。GPT 图片请求由服务返回原生图片结果，使用原生输出格式参数。Gemini 核心输入如下，其中 Base64 为原图字节：
+Gemini 参考图请求：
 
 ```json
 {
@@ -229,34 +223,17 @@ New API 使用同样的原生请求；全部为本地文件时，也可发送 mu
 }
 ```
 
-Gemini 的尺寸按模型能力转换为 `generationConfig.imageConfig.aspectRatio` 和 `imageSize`。
-
-Grok 的本地图编辑入口为 `POST {baseUrl}/images/edits`。xAI 原生请求使用 JSON，单张参考图如下：
-
-```json
-{
-  "model":"grok-imagine-image-2.0",
-  "prompt":"保留原船形，把帆改成紫色",
-  "n":1,
-  "image":{"type":"image_url","url":"data:image/png;base64,<原图Base64>"}
-}
-```
-
-网关对外提供标准 Images 编辑时，MCP 按前述 `images[].image_url` 或 multipart `image[]` 发送，由网关转换为 xAI JSON。服务端发布的 Grok 能力应包含 `operation=edit`、`/images/edits`、实际接受的参考图格式和各型号参考数量；Console 与 New API 使用一致的编辑契约。本地图随请求直接传递，返回图片给当前会话。
-
-MCP 始终使用用户选定模型处理实际参考内容，生成结果另存，原附件保留。
+尺寸按所选模型转换为原生字段。每个请求生成一张；用户要求多张时由 MCP 队列并行处理。目录中的 GPT/Grok `n` 可接受 1～10，Gemini 当前 `candidateCount` 为 1。
 
 ### 3.6 同步与异步结果
 
-默认使用同步图片 API，省略 `async`。本地参考图随生成请求直接传递，生成结果保存到用户电脑。MCP 本地任务在后台执行同步请求，Agent 通过 `get_image_job` 获取进度与图片；本地任务与服务端异步任务分别处理。
+默认发送同步生成请求，原图字节随请求传递。MCP 在后台执行，通过 `get_image_job` 返回进度、预览和保存位置。
 
-**同步返回**：OpenAI Images 读取 `data[].b64_json` 或 `data[].url`；Gemini 读取 `candidates[].content.parts[].inlineData`，兼容 `inline_data`。解码或下载原图，校验可读取后保存。响应已经包含图片时优先接收图片，`X-Task-ID` 作为请求跟踪信息记录。
+同步 OpenAI Images 读取 `data[].b64_json` 或 `data[].url`；Gemini 读取 `candidates[].content.parts[].inlineData`，兼容 `inline_data`。优先保存响应中已有的图片，核对格式、尺寸和 SHA256。
 
-**异步返回**：返回任务回执后保存服务地址、原任务 ID、查询协议和请求编号；随后查询这个原任务。Console Images 使用 `GET {baseUrl}/images/{id}`，完成后读取 `/images/{id}/outputs/{index}/content`；Gemini 采用对应 `/v1beta/images/{id}` 路径。New API 使用它实际开放的查询协议；仅有跟踪头时按实际响应内容处理。
+异步响应保存 `X-Task-ID`、同站 `Location`、服务地址、原 Key 指纹与请求编号。使用原 Key 查询 `Location`，完成后读取该任务的 `outputs/{index}/content`。新版常见查询路径为 `/v1/tasks/{id}`，已有 `/images/{id}` 回执继续可恢复。自定义站的任务读取沿该站地址进行。
 
-同步交付返回 HTTP 503/504，同时带有 `X-Task-ID` 和同站对应任务的 `Location` 时，保存任务回执并查询原任务取得图片。
-
-生成 POST 与结果查询分别记录。查询和断线恢复复用原任务；接口返回的错误保留 HTTP 状态、错误码和有用原因，API Key 脱敏。查询地址缺失或结果未知时向 Agent 返回当前状态与原任务信息。参数或配置错误通过 MCP `isError:true` 与文字说明返回；批次执行错误记入对应 `items[].error`，让已成功图片继续回传。
+同步等待返回 HTTP 503/504 并带有效任务地址时，查询原任务取回结果。服务返回的轮询间隔按 `Retry-After` 执行。任务恢复继续查询和下载原结果。错误记录 HTTP 状态、错误码及请求编号，成功图片继续展示。
 
 ### 3.7 批量、状态与恢复
 
@@ -338,6 +315,7 @@ MCP 始终使用用户选定模型处理实际参考内容，生成结果另存�
 | CC Switch 桌面主体 | `apps/desktop/` |
 | Oceanway 配置与 Agent 接入 | `apps/desktop/src-tauri/src/oceanway.rs` |
 | 图片模型、凭据及端点 | `apps/desktop/src-tauri/src/oceanway_images/provider.rs` |
+| Console 公开能力与修订缓存 | `apps/desktop/src-tauri/src/oceanway_images/catalog.rs` |
 | MCP 五个工具和消息 | `apps/desktop/src-tauri/src/oceanway_images/mcp_stdio.rs` |
 | 图片协议转换 | `apps/desktop/src-tauri/src/oceanway_images/image_protocol.rs` |
 | 本地批次、文件与恢复 | `apps/desktop/src-tauri/src/oceanway_images/image_api.rs`、`image_engine_store.rs` |
@@ -351,6 +329,7 @@ MCP 始终使用用户选定模型处理实际参考内容，生成结果另存�
 
 | 版本 | 日期 | 变动 |
 | --- | --- | --- |
+| v1.1 | 2026-11-25 | 对齐 DEV-X-07-002 v1.2，更新原生请求能力、GPT multipart、Gemini 参数、Grok 公开能力和任务 Location；Console 与 New API 分别使用原站 Key，验收沿 CFG-A19/20/21/53/54 |
 | v1.0 | 2026-11-04 | 将需求、功能、MCP 设计和验收合并至 codex-config 本文件；整理六款应用、模型多选、并行下载、自定义地址、历史保留及 API 直接生图流程 |
 
 沿用 CFG-R01～10 和现有 CFG-A 编号；CFG-A53 为全部图片模型逐项验收，CFG-A54 为 API 图片处理与素材库分离验收。后续每项调整记录改动内容、对应编号及源码提交。

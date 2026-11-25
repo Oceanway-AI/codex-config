@@ -2012,6 +2012,8 @@ fn json_response(
     let task_id = response.headers().get("x-task-id").and_then(|v|v.to_str().ok())
         .filter(|v|async_images::valid_id(v) && (key.is_empty() || !v.contains(key))).map(str::to_owned);
     let pending = task_id.as_deref().and_then(|id|pending_image_delivery(&response,id));
+    let request_url = response.url().clone();
+    let location = response.headers().get("location").and_then(|v|v.to_str().ok()).map(str::to_owned);
     let result = (|| {
         if !response.status().is_success() {
             if let Some(receipt)=pending {return Ok(receipt);}
@@ -2026,8 +2028,17 @@ fn json_response(
         let bytes = bounded_read(response, limit)?;
         let mut body: Value = serde_json::from_slice(&bytes)
             .map_err(|_| Failure::new("Image endpoint returned invalid JSON."))?;
+        if let Some(object)=body.as_object_mut() { object.remove("_oceanway_task_location"); }
         if let Some(id) = task_id {
             if body.is_object() && body.get("task_id").is_none() { body["task_id"] = json!(id); }
+        }
+        if let (Some(location),Some(id))=(location,body.get("task_id").or_else(||body.get("id")).and_then(Value::as_str)) {
+            // Ignore unrelated Location headers on completed native responses.
+            if let Some(base)=image_request_base(&request_url) {
+                if let Ok(url)=async_images::validate_task_url(base.as_str(),id,&location) {
+                    body["_oceanway_task_location"]=json!(url);
+                }
+            }
         }
         Ok(body)
     })();
@@ -2043,15 +2054,18 @@ fn json_response(
 // Preserve that receipt and query the original task instead of posting again.
 fn pending_image_delivery(response: &Response, id: &str) -> Option<Value> {
     if !matches!(response.status().as_u16(),503|504) {return None;}
-    let request=response.url();
+    let base=image_request_base(response.url())?;
+    let location=async_images::validate_task_url(base.as_str(),id,response.headers().get("location")?.to_str().ok()?).ok()?;
+    Some(json!({"task_id":id,"status":"pending","_oceanway_task_location":location}))
+}
+
+fn image_request_base(request: &Url) -> Option<Url> {
     let prefix=request.path().strip_suffix("/images/generations")
         .or_else(||request.path().strip_suffix("/images/edits"))
         .or_else(||request.path().strip_suffix(":generateContent")?.rsplit_once("/models/").map(|(prefix,_)|prefix))?;
-    let location=request.join(response.headers().get("location")?.to_str().ok()?).ok()?;
-    if location.origin()!=request.origin() || !location.username().is_empty() || location.password().is_some()
-        || location.query().is_some() || location.fragment().is_some()
-        || location.path()!=format!("{prefix}/images/{id}") {return None;}
-    Some(json!({"task_id":id,"status":"pending"}))
+    let mut base=request.clone();
+    base.set_path(prefix);
+    Some(base)
 }
 
 /// Present recognized service errors and bounded codes, never raw upstream
@@ -2328,7 +2342,8 @@ fn save_response_images(
         let mut unusable = 0usize;
         let mut first_problem = None;
         for (offset, entry) in data.iter().enumerate() {
-            let saved = response_entry_image(entry, started).and_then(|bytes| {
+            let saved = response_entry_with_download(entry, started, |url,started|
+                download_provider_image(url,&input.provider,started)).and_then(|bytes| {
                 save_image_bytes(input, index, primary.as_ref().map(|_| offset + 1), &bytes)
             });
             match saved {
@@ -2390,6 +2405,36 @@ fn save_response_images(
 
 fn response_entry_image(entry: &Value, started: Instant) -> Result<Vec<u8>, Failure> {
     response_entry_with_download(entry, started, download_image)
+}
+
+// Console may return a relative, authenticated task-content URL even for a
+// synchronous native response. External image hosts remain credential-free.
+fn download_provider_image(raw: &str, provider: &SavedProvider, started: Instant) -> Result<Vec<u8>,Failure> {
+    let base=Url::parse(&provider.api_base).map_err(|_|Failure::new("Invalid image provider."))?;
+    let url=base.join(raw).map_err(|_|Failure::new("Invalid image download URL."))?;
+    if url.origin()==base.origin() {
+        if let Some((task_path,output))=url.path().rsplit_once("/outputs/") {
+            if output.strip_suffix("/content").and_then(|v|v.parse::<u64>().ok()).is_some_and(|i|i<=1000) {
+                let id=task_path.rsplit('/').next().unwrap_or("");
+                let mut task_url=url.clone();task_url.set_path(task_path);
+                async_images::validate_task_url(&provider.api_base,id,task_url.as_str())?;
+                let response=provider_client(provider)?.get(url).bearer_auth(&provider.key)
+                    .timeout(remaining(started)?).send().map_err(|e|network_failure(&e))?;
+                if response.status().is_redirection() {
+                    let destination=response.headers().get("location").and_then(|v|v.to_str().ok())
+                        .and_then(|v|response.url().join(v).ok()).ok_or_else(||Failure::new("Invalid image download redirect."))?;
+                    return download_image(destination.as_str(),started);
+                }
+                if !response.status().is_success() {
+                    return Err(json_response(response,&provider.key,16*1024).err().unwrap_or_else(||Failure::new("Image output download failed.")));
+                }
+                let bytes=bounded_read(response,IMAGE_BYTES)?;
+                decode_image(&bytes)?;
+                return Ok(bytes);
+            }
+        }
+    }
+    download_image(url.as_str(),started)
 }
 
 fn response_entry_with_download(

@@ -7,6 +7,7 @@
 pub mod image_api;
 pub mod mcp_stdio;
 mod provider;
+mod catalog;
 
 pub use image_api::{
     ImageCapabilities, ImageItem, ImageJob, ImageJobs, ImageOutput, ImageSubmissionGuard,

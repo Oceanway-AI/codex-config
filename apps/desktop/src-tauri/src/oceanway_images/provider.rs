@@ -286,7 +286,7 @@ pub(super) fn fetch_image_models(base: &str, key: &str) -> Result<Vec<String>, S
     };
     let available = read(client.get(format!("{base}/models")).bearer_auth(key)
         .send().map_err(|_| "Could not load models available to this Key. Please retry.")?)?;
-    let mut origin = Url::parse(&base).map_err(|_| "Invalid Oceanway endpoint.")?;
+    let origin = Url::parse(&base).map_err(|_| "Invalid Oceanway endpoint.")?;
     if !is_oceanway_endpoint(&origin) {
         let rows = available["data"].as_array().ok_or("Invalid model list.")?;
         let mut models: Vec<_> = rows.iter().filter(|row|catalog_image_model(row))
@@ -294,9 +294,8 @@ pub(super) fn fetch_image_models(base: &str, key: &str) -> Result<Vec<String>, S
         models.sort(); models.dedup();
         return Ok(models);
     }
-    origin.set_path("/api/platform/v1/public/offering");
-    let offering = read(client.get(origin).send()
-        .map_err(|_| "Could not load Oceanway image capabilities. Please retry.")?)?;
+    let summaries = super::catalog::image_summaries()?;
+    let offering = serde_json::json!({"data":{"models":summaries}});
     select_image_models(&available, &offering)
 }
 

@@ -3537,14 +3537,14 @@ fn gateway_discovery_and_generation_errors_do_not_change_model_or_repeat_paid_po
         let home=TempHome::new();
         let mock=Mock::new(move |_,request| {
             if request.method=="GET" && status!=401 {
-                return Reply::json(json!({"data":[{"id":"gemini-3.1-flash-image","supported_endpoint_types":["gemini","openai"]}]}));
+                return Reply::json(json!({"data":[{"id":"studio-gemini-alias","supported_endpoint_types":["gemini","openai"]}]}));
             }
-            if request.method=="POST" {assert_eq!(request.path,"/v1beta/models/gemini-3.1-flash-image:generateContent");}
+            if request.method=="POST" {assert_eq!(request.path,"/v1beta/models/studio-gemini-alias:generateContent");}
             Reply {status,headers:vec![],body:serde_json::to_vec(&json!({"error":{"code":"model_not_found","message":"upstream unavailable"}})).unwrap()}
         });
-        super::super::provider::configure_at(&home.0,&mock.base,MOCK_KEY,Some("gemini-3.1-flash-image"),&["gemini-3.1-flash-image".into()]).unwrap();
+        super::super::provider::configure_at(&home.0,&mock.base,MOCK_KEY,Some("studio-gemini-alias"),&["studio-gemini-alias".into()]).unwrap();
         let service=ImageJobs::new(&home.0).unwrap();
-        let mut request=request(1);request.model="gemini-3.1-flash-image".into();
+        let mut request=request(1);request.model="studio-gemini-alias".into();
         let result=service.start(request,None,false);
         if status==401 {assert!(result.is_err());assert_eq!(mock.count(),1);}
         else {
@@ -3554,4 +3554,51 @@ fn gateway_discovery_and_generation_errors_do_not_change_model_or_repeat_paid_po
             assert_eq!(mock.count(),2);
         }
     }
+}
+
+#[test]
+fn current_task_location_is_persisted_and_resumed_with_the_gateway_key() {
+    let _serial=WORKER_TEST.lock().unwrap();
+    for status in [202,503,504] {
+        let home=TempHome::new();
+        let mock=Mock::new(move |_,request| {
+            assert_eq!(request.headers["authorization"],format!("Bearer {LOCAL_FIXTURE_KEY}"));
+            match (request.method.as_str(),request.path.as_str()) {
+                ("GET","/v1/models")=>Reply::json(json!({"data":[{"id":"fixture-image-v1"}]})),
+                ("POST","/v1/images/generations")=>Reply {status,
+                    headers:vec![("X-Task-ID".into(),"location-task".into()),("Location".into(),"/v1/tasks/location-task".into())],
+                    body:serde_json::to_vec(&json!({"status":"queued"})).unwrap()},
+                ("GET","/v1/tasks/location-task")=>Reply::json(json!({"status":"completed","outputs":[{"index":0,"sha256":hash(&png(320,160))}]})),
+                ("GET","/v1/tasks/location-task/outputs/0/content")=>Reply {status:200,headers:vec![],body:png(320,160)},
+                _=>panic!("unexpected request {} {}",request.method,request.path),
+            }
+        });
+        save_local_fixture_provider(&home.0,&mock.base,LOCAL_FIXTURE_KEY);
+        let service=ImageJobs::new(&home.0).unwrap();
+        let job=service.start(request(1),None,false).unwrap();
+        wait_until(||lock(&service.shared).unwrap().jobs[&job.id].items.get(&1).is_some_and(|i|i.status=="remote_pending"));
+        let manifest=fs::read_to_string(Path::new(&job.output_directory).join("manifest.json")).unwrap();
+        assert!(manifest.contains("/v1/tasks/location-task"));
+        assert!(!manifest.contains(LOCAL_FIXTURE_KEY));
+        service.cancel_all();drop(service);
+        wait_until(||try_job_ownership(&home.0,&job.id).unwrap().is_some());
+        let recovered=ImageJobs::new(&home.0).unwrap();
+        wait_until(||recovered.status(&job.id).unwrap().completed==1);
+        assert_eq!(mock.requests.lock().unwrap().iter().filter(|r|r.method=="POST").count(),1);
+        assert_eq!(fs::read(recovered.status(&job.id).unwrap().items[0].path.as_ref().unwrap()).unwrap(),png(320,160));
+    }
+}
+
+#[test]
+fn synchronous_protected_image_urls_use_the_saved_gateway_and_key() {
+    let home=TempHome::new();
+    let mock=Mock::new(|_,request| {
+        assert_eq!(request.path,"/v1/tasks/native-result/outputs/0/content");
+        assert_eq!(request.headers["authorization"],format!("Bearer {MOCK_KEY}"));
+        Reply {status:200,headers:vec![],body:png(320,160)}
+    });
+    let (_,input)=input(&home,&mock,1);
+    let saved=save_response_images(&input,1,&json!({"data":[{"url":"/v1/tasks/native-result/outputs/0/content"}]}),None,Instant::now()).map_err(|e|e.message).unwrap();
+    assert_eq!(fs::read(saved.path).unwrap(),png(320,160));
+    assert_eq!(mock.count(),1);
 }

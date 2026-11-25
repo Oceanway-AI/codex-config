@@ -1,35 +1,61 @@
-//! Protocol selection follows docs.oceanway.tech/docs/images and the selected
-//! model's published media_generation_profile or gateway endpoint metadata.
+//! Model capabilities describe the wire format; the saved gateway owns routing.
 use super::*;
+use super::super::catalog;
 
-struct Prepared { path: String, query_base: String, body: Value }
+struct Prepared {
+    path: String,
+    query_base: String,
+    body: Value,
+    multipart_field: Option<String>,
+}
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum ImageProtocol { Console, OpenAi, Gemini }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum ImageProtocol { Published(Arc<Value>), OpenAi, Gemini }
+
+fn supports(model: &Value, name: &str) -> bool {
+    ["supported_endpoint_types", "supportedProtocols", "supported_protocols"].iter().any(|field|
+        model[*field].as_array().is_some_and(|values|values.iter().any(|value|value==name)))
+}
 
 fn catalog_protocol(model: &Value) -> ImageProtocol {
-    let supports = |name: &str| ["supported_endpoint_types", "supportedProtocols", "supported_protocols"]
-        .iter().any(|field|model[*field].as_array().is_some_and(|values|values.iter().any(|value|value==name)));
-    // An explicitly published Images endpoint also supports model aliases.
-    if supports("image-generation") || supports("openai-images") { ImageProtocol::OpenAi }
-    else if supports("gemini") { ImageProtocol::Gemini }
+    if supports(model,"image-generation") || supports(model,"openai-images") { ImageProtocol::OpenAi }
+    else if supports(model,"gemini") { ImageProtocol::Gemini }
     else { ImageProtocol::OpenAi }
+}
+
+fn canonical_family(model: &str) -> bool {
+    model.starts_with("gpt-image-") || model.starts_with("grok-imagine-image")
+        || (model.starts_with("gemini-") && (model.contains("image") || model.contains("nano-banana")))
 }
 
 pub(super) fn discover(provider: &SavedProvider, model: &str) -> Result<ImageProtocol,String> {
     if Url::parse(&provider.api_base).ok().is_some_and(|url|super::super::provider::is_oceanway_endpoint(&url)) {
-        return Ok(ImageProtocol::Console);
+        return catalog::model_profile(model)?.map(|p|ImageProtocol::Published(Arc::new(p)))
+            .ok_or_else(||"The selected image model is not currently published.".into());
     }
     let response = provider_client(provider).map_err(|f|f.message)?
         .get(format!("{}/models",provider.api_base)).bearer_auth(&provider.key)
         .timeout(Duration::from_secs(25)).send()
         .map_err(|_|"Could not load image model capabilities. No image request was sent.")?;
-    // Some standard Images services do not expose a model catalog.
     if matches!(response.status().as_u16(),404|405|501) { return Ok(ImageProtocol::OpenAi); }
-    let (catalog,_) = json_response(response,&provider.key,4*1024*1024).map_err(|f|f.message)?;
-    let rows = catalog["data"].as_array().ok_or("Invalid image model capabilities. No image request was sent.")?;
+    let (models,_) = json_response(response,&provider.key,MODEL_BYTES).map_err(|f|f.message)?;
+    let rows = models["data"].as_array().ok_or("Invalid image model capabilities.")?;
     let row = rows.iter().find(|row|row["id"]==model)
         .ok_or("The selected image model is no longer listed by this service. Refresh the image model list.")?;
+    if row["media_generation_profile"]["variants"].as_array().is_some_and(|variants|
+        variants.iter().any(|v|v["native_request_variant"].is_object())) {
+        return Ok(ImageProtocol::Published(Arc::new(row["media_generation_profile"].clone())));
+    }
+    // Exact Console model IDs can use its anonymous contract through New API.
+    // Aliases keep the gateway's endpoint metadata, and every POST stays there.
+    if canonical_family(model) {
+        if let Ok(Some(profile)) = catalog::model_profile(model) {
+            let gemini = profile["variants"].as_array().is_some_and(|variants|variants.iter()
+                .any(|v|v["native_request_variant"]["protocol"]=="gemini.image"));
+            let only_images = (supports(row,"image-generation") || supports(row,"openai-images")) && !supports(row,"gemini");
+            if !gemini || !only_images { return Ok(ImageProtocol::Published(Arc::new(profile))); }
+        }
+    }
     Ok(catalog_protocol(row))
 }
 
@@ -42,86 +68,45 @@ pub(super) fn gemini_base(base: &str) -> Result<Url,String> {
     Ok(url)
 }
 
-fn prepare_custom_gemini(input: &Input,index: usize) -> Result<Prepared,String> {
-    let request=&input.request;
-    let prompt=if request.prompts.is_empty(){&request.prompt}else{request.prompts.get(index-1).ok_or("Missing image prompt.")?};
-    let mut parts=vec![json!({"text":prompt})];
-    for reference in &input.references {
-        parts.push(json!({"inlineData":{"mimeType":reference.mime,"data":STANDARD.encode(&reference.bytes)}}));
+fn endpoint(base: &str, path: &str, model: &str) -> Result<(String,String),String> {
+    let mut url = Url::parse(base).map_err(|_|"Invalid image provider.")?;
+    let query_base;
+    match path {
+        "/v1/images/generations" | "/v1/images/edits" => {
+            query_base = base.trim_end_matches('/').to_owned();
+            url.set_path(&format!("{}{}",url.path().trim_end_matches('/'),&path[3..]));
+        }
+        "/v1beta/models/{model}:generateContent" => {
+            url=gemini_base(base)?;
+            query_base=url.as_str().trim_end_matches('/').to_owned();
+            url.path_segments_mut().map_err(|_|"Invalid Gemini image endpoint.")?
+                .push("models").push(&format!("{model}:generateContent"));
+        }
+        _ => return Err("The published image endpoint is not supported.".into()),
     }
-    for url in &request.reference_urls {parts.push(json!({"fileData":{"fileUri":url}}));}
-    let mut body=json!({"contents":[{"role":"user","parts":parts}],
-        "generationConfig":{"candidateCount":1,"responseModalities":["TEXT","IMAGE"]}});
-    if !request.size.is_empty() && request.size!="auto" {
-        let (width,height)=dimensions(&request.size).ok_or("Gemini image size must use WIDTHxHEIGHT or auto.")?;
-        let ratios=[(1,1),(2,3),(3,2),(3,4),(4,3),(4,5),(5,4),(9,16),(16,9),(21,9)];
-        let (w,h)=ratios.into_iter().find(|(w,h)|((width as f64/height as f64)-(*w as f64/ *h as f64)).abs()<0.002)
-            .ok_or("The requested aspect ratio is not supported by Gemini images.")?;
-        let resolution=match width.max(height) {1024=>"1K",2048=>"2K",4096=>"4K",_=>return Err("Gemini image resolution must be 1K, 2K or 4K; use auto for the model default.".into())};
-        body["generationConfig"]["imageConfig"]=json!({"aspectRatio":format!("{w}:{h}"),"imageSize":resolution});
-    }
-    let mut endpoint=gemini_base(&input.provider.api_base)?;
-    let query_base=endpoint.as_str().trim_end_matches('/').to_owned();
-    endpoint.path_segments_mut().map_err(|_|"Invalid Gemini image endpoint.")?
-        .push("models").push(&format!("{}:generateContent",request.model));
-    Ok(Prepared {path:endpoint.path().into(),query_base,body})
+    Ok((url.path().into(),query_base))
 }
 
-pub(super) fn submit(input: &Input, index: usize, started: Instant,
-    guard: impl FnOnce() -> Result<SavedProvider,Failure>) -> Result<(Value,Option<String>,SavedProvider,String),Failure> {
-    if input.protocol == ImageProtocol::OpenAi {
-        let mut submitted = None;
-        let (body,id) = post_image_at_with_guard(input,index,started,|| {
-            let provider = guard()?;
-            submitted = Some(provider.clone());
-            Ok(provider)
-        })?;
-        let provider = submitted.expect("admitted POST");
-        return Ok((body,id,provider.clone(),provider.api_base));
+// JSON Pointer names belong to metadata, never to request property names.
+fn assign(body: &mut Value, pointer: &str, value: Value) -> Result<(),String> {
+    let parts: Vec<_> = pointer.strip_prefix('/').ok_or("Invalid image parameter pointer.")?
+        .split('/').map(|p|p.replace("~1","/").replace("~0","~")).collect();
+    if parts.is_empty() || parts.len()>8 || parts.iter().any(|p|p.is_empty()) {
+        return Err("Invalid image parameter pointer.".into());
     }
-    if input.protocol == ImageProtocol::Gemini {
-        let prepared=prepare_custom_gemini(input,index).map_err(Failure::not_sent)?;
-        let client=provider_client(&input.provider)?;
-        let provider=guard()?;
-        let mut endpoint=Url::parse(&provider.api_base).map_err(|_|Failure::not_sent("Invalid saved image endpoint."))?;
-        endpoint.set_path(&prepared.path);
-        let response=client.post(endpoint).bearer_auth(&provider.key).json(&prepared.body)
-            .timeout(remaining(started)?).send().map_err(|error|network_failure(&error))?;
-        let (body,id)=json_response(response,&provider.key,JSON_BYTES)?;
-        return Ok((body,id,provider,prepared.query_base));
-    }
-    let mut url = Url::parse(&input.provider.api_base).map_err(|_|Failure::not_sent("Invalid Oceanway endpoint."))?;
-    url.set_path("/api/platform/v1/public/offering");
-    let client = provider_client(&input.provider)?;
-    let response = client.get(url).timeout(Duration::from_secs(25)).send()
-        .map_err(|_|Failure::not_sent("Could not load the image model's current capabilities."))?;
-    let (catalog,_) = json_response(response,&input.provider.key,16*1024*1024)
-        .map_err(|f|Failure::not_sent(f.message))?;
-    let model = catalog.pointer("/data/models").and_then(Value::as_array)
-        .and_then(|models|models.iter().find(|m|m["model_name"]==input.request.model && m["invocation_status"]=="available"))
-        .ok_or_else(||Failure::not_sent("The selected image model is not currently available."))?;
-    let prepared = prepare(input,index,&model["media_generation_profile"]).map_err(Failure::not_sent)?;
-    let provider = guard()?;
-    let mut origin = Url::parse(&provider.api_base).map_err(|_|Failure::not_sent("Invalid saved image endpoint."))?;
-    origin.set_path(&prepared.path);
-    let response = client.post(origin).bearer_auth(&provider.key).json(&prepared.body)
-        .timeout(remaining(started)?).send().map_err(|error|network_failure(&error))?;
-    let (body,id) = json_response(response,&provider.key,JSON_BYTES)?;
-    Ok((body,id,provider,prepared.query_base))
-}
-
-fn assign(body: &mut Value, path: &str, value: Value) -> Result<(),String> {
-    let parts: Vec<_> = path.split('.').collect();
-    if parts.is_empty() || parts.len()>5 || parts.iter().any(|v|v.is_empty() || !v.bytes().all(|c|c.is_ascii_alphanumeric() || c==b'_')) {
-        return Err("Invalid published image parameter binding.".into());
-    }
-    let mut cursor = body;
+    let mut cursor=body;
     for part in &parts[..parts.len()-1] {
-        if cursor.get(*part).is_none() { cursor[*part]=json!({}); }
-        cursor = cursor.get_mut(*part).ok_or("Invalid image parameter structure.")?;
+        let object=cursor.as_object_mut().ok_or("Invalid image parameter structure.")?;
+        cursor=object.entry(part.clone()).or_insert_with(||json!({}));
     }
-    cursor[parts[parts.len()-1]]=value;
+    cursor.as_object_mut().ok_or("Invalid image parameter structure.")?.insert(parts.last().unwrap().clone(),value);
     Ok(())
+}
+
+fn schema_at<'a>(schema: &'a Value, pointer: &str) -> &'a Value {
+    let mut cursor=schema;
+    for part in pointer.trim_start_matches('/').split('/') { cursor=&cursor["properties"][part]; }
+    cursor
 }
 
 fn conforms(value: &Value, schema: &Value) -> bool {
@@ -131,114 +116,200 @@ fn conforms(value: &Value, schema: &Value) -> bool {
         Some("string")=>value.is_string(), Some("boolean")=>value.is_boolean(),
         Some("array")=>value.is_array(), Some("object")=>value.is_object(),
         Some("integer")=>value.as_u64().is_some_and(|n|n>=schema["minimum"].as_u64().unwrap_or(0)
-            && n<=schema["maximum"].as_u64().unwrap_or(u64::MAX)), _=>false,
+            && n<=schema["maximum"].as_u64().unwrap_or(u64::MAX)),
+        _=>false,
     }
 }
 
 fn dimensions(size: &str) -> Option<(u32,u32)> {
-    let (w,h)=size.split_once('x')?; Some((w.parse().ok()?,h.parse().ok()?))
+    let (w,h)=size.split_once('x')?;
+    let (w,h)=(w.parse().ok()?,h.parse().ok()?);
+    (w>0 && h>0).then_some((w,h))
 }
 
-fn prepare(input: &Input, index: usize, profile: &Value) -> Result<Prepared,String> {
-    let request=&input.request;
-    let prompt=if request.prompts.is_empty(){&request.prompt}else{request.prompts.get(index-1).ok_or("Missing image prompt.")?};
-    let variants=profile["variants"].as_array().ok_or("Image model capabilities are missing.")?;
-    let mut variants:Vec<_>=variants.iter().collect();
-    variants.sort_by_key(|v|v["id"]!=profile["default_variant"]);
-    let total=request.reference_urls.len()+input.references.len();
-    let native_edit=total>0 && variants.iter().any(|v|v["protocol"]=="openai-images" && v["operation"]=="edit");
-    for variant in variants.iter().copied() {
-        if variant["method"]!="POST" { continue; }
-        let gemini=variant["protocol"]=="gemini";
-        if !gemini && variant["protocol"]!="openai-images" { continue; }
-        let editing=!gemini && native_edit;
-        if variant["operation"]!=if editing {"edit"} else {"generate"} {continue;}
-        let path=if gemini {
-            if variant["path"]!="/v1beta/models/{model}:generateContent" { continue; }
-            format!("/v1beta/models/{}:generateContent",request.model)
-        } else {
-            let suffix=if editing {"/images/edits"} else {"/images/generations"};
-            if variant["path"]!=suffix { continue; }
-            format!("/v1{suffix}")
-        };
-        let mut specs=variant["defaults"].as_object().cloned().unwrap_or_default();
-        // Public image API delivery defaults to synchronous. The MCP job still
-        // runs in its worker pool, so the Agent receives progress while it waits.
-        specs.remove("async");
-        let count_path=if gemini {"generationConfig.candidateCount"} else {"n"};
-        let count_field=variant["parameter_bindings"].as_object()
-            .and_then(|bindings|bindings.iter().find(|(_,path)|*path==count_path).map(|(name,_)|name.clone()))
-            .ok_or("Image count parameter binding is missing.")?;
-        specs.insert(count_field,json!(1));
-        if request.size!="auto" {
-            if gemini {
-                let Some((width,height))=dimensions(&request.size) else {continue};
-                let ratio=variant["specifications_schema"]["properties"]["aspect_ratio"]["enum"].as_array()
-                    .and_then(|values|values.iter().find(|v|v.as_str().and_then(|s|s.split_once(':'))
-                        .and_then(|(w,h)|Some((w.parse::<f64>().ok()?,h.parse::<f64>().ok()?)))
-                        .is_some_and(|(w,h)|((width as f64/height as f64)-(w/h)).abs()<0.002)));
-                let Some(ratio)=ratio else {continue};
-                let resolution=match width.max(height) {1024=>"1K",2048=>"2K",4096=>"4K",_=>continue};
-                specs.insert("aspect_ratio".into(),ratio.clone());
-                specs.insert("image_size".into(),json!(resolution));
-            } else { specs.insert("size".into(),json!(request.size)); }
+fn size_allowed(size: (u32,u32), constraint: &Value) -> bool {
+    let (w,h)=(size.0 as u64,size.1 as u64);
+    let multiple=constraint["multiple_of"].as_u64().unwrap_or(1).max(1);
+    w%multiple==0 && h%multiple==0 &&
+        [(w,"min_width","max_width"),(h,"min_height","max_height"),(w*h,"min_pixels","max_pixels")]
+            .into_iter().all(|(n,min,max)|n>=constraint[min].as_u64().unwrap_or(0) && n<=constraint[max].as_u64().unwrap_or(u64::MAX))
+        && (w as f64/h as f64)>=constraint["min_aspect_ratio"].as_f64().unwrap_or(0.)
+        && (w as f64/h as f64)<=constraint["max_aspect_ratio"].as_f64().unwrap_or(f64::INFINITY)
+}
+
+fn apply_size(body: &mut Value, native: &Value, size: &str) -> Result<(),String> {
+    if size.is_empty() || size=="auto" { return Ok(()); }
+    let (w,h)=dimensions(size).ok_or("Image size must use WIDTHxHEIGHT or auto.")?;
+    let schema=&native["request_schema"];
+    if schema["properties"].get("size").is_some() {
+        let constraints=&native["output_size"];
+        if !conforms(&json!(size),&schema["properties"]["size"]) ||
+            (!constraints.is_null() && !size_allowed((w,h),constraints)) {
+            return Err("The requested image size is not supported by this model.".into());
         }
-        if specs.iter().any(|(key,value)|!conforms(value,&variant["specifications_schema"]["properties"][key])) { continue; }
-        let mut body=if gemini {json!({"contents":[{"role":"user","parts":[{"text":prompt}]}]})}
-            else {json!({"model":request.model,"prompt":prompt})};
-        for (key,value) in &specs {
-            assign(&mut body,variant["parameter_bindings"][key].as_str().ok_or("Image parameter binding is missing.")?,value.clone())?;
-        }
-        let references=variant["native_reference_inputs"].as_array();
-        let mut compatible=true;
-        if editing {
-            let transport=references.and_then(|refs|refs.iter().find(|r|r["field"]=="images" && r["transport"]=="image-reference-array"));
-            let Some(transport)=transport.filter(|r|total as u64<=r["max_items"].as_u64().unwrap_or(u64::MAX)) else {continue};
-            if !reference_limits_allow(transport,&input.references) {continue;}
-            let images:Vec<_>=input.references.iter().map(|r|json!({"image_url":format!("data:{};base64,{}",r.mime,STANDARD.encode(&r.bytes))}))
-                .chain(request.reference_urls.iter().map(|url|json!({"image_url":url}))).collect();
-            body["images"]=json!(images);
-        } else if !request.reference_urls.is_empty() {
-            let transport=references.and_then(|refs|refs.iter().find(|r|r["transport"]=="url-array"));
-            if let Some(transport)=transport.filter(|r|total as u64<=r["max_items"].as_u64().unwrap_or(0)) {
-                if gemini && transport["field"]=="contents.parts.fileData" {
-                    for url in &request.reference_urls {
-                        body["contents"][0]["parts"].as_array_mut().unwrap().push(json!({"fileData":{"fileUri":url}}));
-                    }
-                } else if !gemini && transport["field"]=="reference_images" {
-                    body["reference_images"]=json!(request.reference_urls);
-                } else {compatible=false;}
-            } else {compatible=false;}
-        }
-        if !editing && !input.references.is_empty() {
-            let transport=references.and_then(|refs|refs.iter().find(|r|r["transport"]=="inline-data-array"));
-            if let Some(transport)=transport.filter(|r|gemini && total as u64<=r["max_items"].as_u64().unwrap_or(u64::MAX)) {
-                if !reference_limits_allow(transport,&input.references) {compatible=false;}
-                for reference in &input.references {
-                    body["contents"][0]["parts"].as_array_mut().unwrap().push(json!({"inlineData":{"mimeType":reference.mime,"data":STANDARD.encode(&reference.bytes)}}));
-                }
-            } else {compatible=false;}
-        }
-        if !compatible {continue;}
-        let mut base=Url::parse(&input.provider.api_base).map_err(|_|"Invalid image provider.")?;
-        if gemini {base.set_path("/v1beta");}
-        return Ok(Prepared {path,query_base:base.to_string().trim_end_matches('/').into(),body});
+        body["size"]=json!(size);
+        return Ok(());
     }
-    if !input.references.is_empty() && variants.iter().all(|variant|
-        !variant["native_reference_inputs"].as_array().is_some_and(|refs|
-            refs.iter().any(|reference|reference["transport"]=="inline-data-array"
-                || reference["transport"]=="image-reference-array"))) {
-        return Err("This service currently publishes only URL references for this model. Local image attachments cannot be submitted with its published protocol. No image request was sent.".into());
+    // Exact presets may use model-specific dimensions and resolutions.
+    if let Some(preset)=native["size_presets"].as_array().and_then(|presets|presets.iter()
+        .find(|p|p["width"]==w && p["height"]==h)) {
+        if let Some(params)=preset["parameters"].as_object() {
+            for (pointer,value) in params { assign(body,pointer,value.clone())?; }
+            return Ok(());
+        }
     }
-    Err("This endpoint does not publish a compatible size or reference input format for the selected model. No image request was sent.".into())
+    let gemini=native["protocol"]=="gemini.image";
+    let (ratio_path,resolution_path)=if gemini {("/generationConfig/imageConfig/aspectRatio","/generationConfig/imageConfig/imageSize")}
+        else {("/aspect_ratio","/resolution")};
+    let ratio=schema_at(schema,ratio_path)["enum"].as_array().and_then(|values|values.iter().find(|v|
+        v.as_str().and_then(|s|s.split_once(':')).and_then(|(a,b)|Some((a.parse::<f64>().ok()?,b.parse::<f64>().ok()?)))
+            .is_some_and(|(a,b)|((w as f64/h as f64)-(a/b)).abs()<0.002)))
+        .ok_or("The requested aspect ratio is not supported by this image model.")?;
+    let resolution=match w.max(h) {1024=>"1K",2048=>"2K",4096=>"4K",_=>return Err("Use a published image size or auto.".into())};
+    let resolution=if gemini {resolution.to_owned()} else {resolution.to_ascii_lowercase()};
+    if !conforms(&json!(resolution),schema_at(schema,resolution_path)) {return Err("The requested resolution is not supported by this image model.".into());}
+    assign(body,ratio_path,ratio.clone())?;
+    assign(body,resolution_path,json!(resolution))
 }
 
 fn reference_limits_allow(transport: &Value, references: &[Reference]) -> bool {
     let total:usize=references.iter().map(|r|r.bytes.len()).sum();
-    !transport["max_total_bytes"].as_u64().is_some_and(|max|total as u64>max)
+    references.len() as u64>=transport["min_items"].as_u64().unwrap_or(0)
+        && references.len() as u64<=transport["max_items"].as_u64().unwrap_or(u64::MAX)
+        && !transport["max_total_bytes"].as_u64().is_some_and(|max|total as u64>max)
         && references.iter().all(|reference|
             !transport["max_item_bytes"].as_u64().is_some_and(|max|reference.bytes.len() as u64>max)
             && transport["mime_types"].as_array().is_none_or(|types|types.iter().any(|m|m==reference.mime)))
+}
+
+fn parts(input: &Input, index: usize) -> Result<Vec<Value>,String> {
+    let mut parts=vec![json!({"text":prompt(input,index)?})];
+    for reference in &input.references {
+        parts.push(json!({"inlineData":{"mimeType":reference.mime,"data":STANDARD.encode(&reference.bytes)}}));
+    }
+    Ok(parts)
+}
+
+fn prompt(input: &Input,index: usize) -> Result<&str,String> {
+    if input.request.prompts.is_empty() {Ok(&input.request.prompt)}
+    else {input.request.prompts.get(index-1).map(String::as_str).ok_or_else(||"Missing image prompt.".into())}
+}
+
+fn prepare(input: &Input, index: usize, profile: &Value) -> Result<Prepared,String> {
+    let editing=!input.references.is_empty();
+    let variants=profile["variants"].as_array().ok_or("Image request variants are missing.")?;
+    let mut variants:Vec<_>=variants.iter().collect();
+    variants.sort_by_key(|v|v["id"]!=profile["default_variant"]);
+    let mut last_error="This model does not publish the requested image operation.".to_owned();
+    for variant in variants {
+        let native=&variant["native_request_variant"];
+        let protocol=native["protocol"].as_str().unwrap_or("");
+        let gemini=protocol=="gemini.image";
+        if native["method"]!="POST" || native["operation"]!="create" ||
+            (!gemini && protocol!=if editing {"openai.image.edit"} else {"openai.image.generate"}) {continue;}
+        let result=(|| {
+            let mut body=native["defaults"].as_object().cloned().map(Value::Object).unwrap_or_else(||json!({}));
+            let count_path=if gemini {"/generationConfig/candidateCount"} else {"/n"};
+            if !conforms(&json!(1),schema_at(&native["request_schema"],count_path)) {return Err("The image model does not allow one output.".into());}
+            assign(&mut body,count_path,json!(1))?;
+            let multipart_field=if editing {
+                let reference=native["native_reference_inputs"].as_array().and_then(|refs|refs.iter().find(|r|
+                    if gemini {r["pointer"]=="/contents" && r["transport"]=="content-array"}
+                    else {r["pointer"]=="/image" && r["transport"]=="image-reference-array"}))
+                    .ok_or("This model does not publish reference-image input.")?;
+                if !reference_limits_allow(reference,&input.references) {return Err("Reference images exceed the model's published count, format or byte limits.".into());}
+                (!gemini).then(||"image[]".to_owned())
+            } else {None};
+            let content_type=if multipart_field.is_some(){"multipart/form-data"}else{"application/json"};
+            if !native["content_types"].as_array().is_some_and(|types|types.iter().any(|t|t==content_type)) {
+                return Err("The model does not publish this image request encoding.".into());
+            }
+            if gemini {
+                body["contents"]=json!([{"role":"user","parts":parts(input,index)?}]);
+                assign(&mut body,"/generationConfig/responseModalities",json!(["TEXT","IMAGE"]))?;
+            } else {
+                body["model"]=json!(input.request.model);
+                body["prompt"]=json!(prompt(input,index)?);
+            }
+            apply_size(&mut body,native,&input.request.size)?;
+            let (path,query_base)=endpoint(&input.provider.api_base,native["path"].as_str().ok_or("Missing image endpoint.")?,&input.request.model)?;
+            Ok(Prepared {path,query_base,body,multipart_field})
+        })();
+        match result {Ok(prepared)=>return Ok(prepared),Err(error)=>last_error=error}
+    }
+    Err(last_error)
+}
+
+fn materialize_references(input: &Input, started: Instant) -> Result<Input,Failure> {
+    let mut input=input.clone();
+    for url in &input.request.reference_urls {
+        let bytes=download_image(url,started)?;
+        let (_,format)=decode_image(&bytes)?;
+        let (mime,extension)=format_info(format);
+        input.references.push(Reference {bytes:bytes.into(),mime,extension});
+    }
+    input.request.reference_urls.clear();
+    Ok(input)
+}
+
+fn prepare_custom_gemini(input: &Input,index: usize) -> Result<Prepared,String> {
+    let mut body=json!({"contents":[{"role":"user","parts":parts(input,index)?}],
+        "generationConfig":{"candidateCount":1,"responseModalities":["TEXT","IMAGE"]}});
+    for url in &input.request.reference_urls {
+        body["contents"][0]["parts"].as_array_mut().unwrap().push(json!({"fileData":{"fileUri":url}}));
+    }
+    let native=json!({"protocol":"gemini.image","request_schema":{"properties":{"generationConfig":{"properties":{"imageConfig":{"properties":{
+        "aspectRatio":{"type":"string","enum":["1:1","2:3","3:2","3:4","4:3","4:5","5:4","9:16","16:9","21:9"]},
+        "imageSize":{"type":"string","enum":["1K","2K","4K"]}}}}}}}});
+    apply_size(&mut body,&native,&input.request.size)?;
+    let (path,query_base)=endpoint(&input.provider.api_base,"/v1beta/models/{model}:generateContent",&input.request.model)?;
+    Ok(Prepared {path,query_base,body,multipart_field:None})
+}
+
+fn request_builder(client: &Client,input: &Input,prepared: &Prepared) -> Result<reqwest::blocking::RequestBuilder,Failure> {
+    let mut endpoint=Url::parse(&input.provider.api_base).map_err(|_|Failure::not_sent("Invalid image endpoint."))?;
+    endpoint.set_path(&prepared.path);
+    let builder=client.post(endpoint);
+    if let Some(field)=&prepared.multipart_field {
+        let mut form=multipart::Form::new();
+        for (name,value) in prepared.body.as_object().ok_or_else(||Failure::not_sent("Invalid image request body."))? {
+            form=form.text(name.clone(),value.as_str().map(str::to_owned).unwrap_or_else(||value.to_string()));
+        }
+        for (index,reference) in input.references.iter().enumerate() {
+            let part=multipart::Part::reader_with_length(Cursor::new(Arc::clone(&reference.bytes)),reference.bytes.len() as u64)
+                .file_name(format!("reference-{}.{}",index+1,reference.extension)).mime_str(reference.mime)
+                .map_err(|_|Failure::not_sent("Invalid reference image MIME type."))?;
+            form=form.part(field.clone(),part);
+        }
+        Ok(builder.multipart(form))
+    } else {Ok(builder.json(&prepared.body))}
+}
+
+pub(super) fn submit(input: &Input, index: usize, started: Instant,
+    guard: impl FnOnce() -> Result<SavedProvider,Failure>) -> Result<(Value,Option<String>,SavedProvider,String),Failure> {
+    if input.protocol == ImageProtocol::OpenAi {
+        let mut submitted=None;
+        let (body,id)=post_image_at_with_guard(input,index,started,|| {
+            let provider=guard()?; submitted=Some(provider.clone()); Ok(provider)
+        })?;
+        let provider=submitted.expect("admitted POST");
+        return Ok((body,id,provider.clone(),provider.api_base));
+    }
+    let input=if matches!(input.protocol,ImageProtocol::Published(_)) {materialize_references(input,started)?} else {input.clone()};
+    let prepared=match &input.protocol {
+        ImageProtocol::Published(profile)=>prepare(&input,index,profile),
+        ImageProtocol::Gemini=>prepare_custom_gemini(&input,index),
+        ImageProtocol::OpenAi=>unreachable!(),
+    }.map_err(Failure::not_sent)?;
+    let client=provider_client(&input.provider)?;
+    let builder=request_builder(&client,&input,&prepared)?;
+    let provider=guard()?;
+    // The admission guard rejects endpoint/model changes. Key rotation may be
+    // admitted; bind that current key only after building the credential-free body.
+    let response=builder.bearer_auth(&provider.key).timeout(remaining(started)?).send()
+        .map_err(|error|network_failure(&error))?;
+    let (body,id)=json_response(response,&provider.key,JSON_BYTES)?;
+    Ok((body,id,provider,prepared.query_base))
 }
 
 pub(super) fn normalize_sync(body: Value) -> Value {
@@ -251,129 +322,5 @@ pub(super) fn normalize_sync(body: Value) -> Value {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn gateway_protocol_follows_capabilities_and_receipts_keep_the_path_prefix() {
-        assert_eq!(catalog_protocol(&json!({"id":"any-alias","supported_endpoint_types":["gemini","openai"]})),ImageProtocol::Gemini);
-        assert_eq!(catalog_protocol(&json!({"id":"gemini-named-alias","supported_endpoint_types":["gemini","image-generation"]})),ImageProtocol::OpenAi);
-        assert_eq!(catalog_protocol(&json!({"id":"gemini-name-without-metadata"})),ImageProtocol::OpenAi);
-        assert_eq!(catalog_protocol(&json!({"supportedProtocols":["gemini"]})),ImageProtocol::Gemini);
-        assert_eq!(catalog_protocol(&json!({"supported_protocols":["openai-images"]})),ImageProtocol::OpenAi);
-        for (base,expected) in [("https://example.com/custom/v1","https://example.com/custom/v1beta"),
-            ("https://example.com/custom/v1beta","https://example.com/custom/v1beta"),
-            ("https://example.com/custom/api","https://example.com/custom/api/v1beta")] {
-            assert_eq!(gemini_base(base).unwrap().as_str(),expected);
-            let mut task=async_images::RemoteTask {id:"task-fixture".into(),api_base:base.into(),query_base:expected.into(),credential_sha256:hash(b"fixture-key")};
-            assert!(async_images::validate_receipt(&task).is_ok());
-            task.query_base="https://example.com/v1beta".into();
-            assert!(async_images::validate_receipt(&task).is_err());
-        }
-    }
-    fn prepared(model: &str,size: &str,urls: Vec<String>) -> Result<Prepared,String> {
-        prepared_with_local(model,size,urls,false)
-    }
-    fn prepared_with_local(model: &str,size: &str,urls: Vec<String>,local: bool) -> Result<Prepared,String> {
-        let profiles:Value=serde_json::from_str(include_str!("test-harness/image-profiles.json")).unwrap();
-        prepared_profile(model,size,urls,local,&profiles["models"][model])
-    }
-    fn prepared_profile(model: &str,size: &str,urls: Vec<String>,local: bool,profile: &Value) -> Result<Prepared,String> {
-        let mut bytes=Cursor::new(Vec::new());
-        DynamicImage::new_rgb8(1,1).write_to(&mut bytes,ImageFormat::Png).unwrap();
-        let input=Input {request:ImageTestRequest {model:model.into(),prompt:"A quiet blue coast in soft morning light.".into(),
-            prompts:vec![],count:1,reference_paths:vec![],reference_urls:urls,size:size.into()},
-            provider:SavedProvider {home:PathBuf::new(),config:String::new(),api_base:"https://console.oceanway.tech/v1".into(),
-                key:"fixture-only".into(),default_model:None,allowed_models:vec![model.into()],local_mock:false},
-            references:if local {vec![Reference {bytes:bytes.into_inner().into(),mime:"image/png",extension:"png"}]} else {vec![]},directory:PathBuf::new(),protocol:ImageProtocol::Console};
-        prepare(&input,1,profile)
-    }
-    #[test]
-    fn native_console_profile_preserves_local_and_url_edits_and_defaults_to_sync() {
-        // Media PR #13, 3fb6f739: native generation/edit PNG variants.
-        let profile:Value=serde_json::from_str(include_str!("test-harness/image-profile-native.json")).unwrap();
-        let generate=prepared_profile("image-alias","1024x1024",vec![],false,&profile).unwrap();
-        assert_eq!(generate.path,"/v1/images/generations");
-        assert_eq!(generate.body["model"],"image-alias");
-        assert_eq!(generate.body["n"],1);
-        assert!(generate.body.get("async").is_none());
-        assert!(generate.body.get("response_format").is_none());
-        assert!(generate.body.get("images").is_none());
-        let edit=prepared_profile("image-alias","1024x1024",vec!["https://example.com/reference.png".into()],true,&profile).unwrap();
-        assert_eq!(edit.path,"/v1/images/edits");
-        assert_eq!(edit.body["n"],1);
-        assert_eq!(edit.body["images"].as_array().unwrap().len(),2);
-        let encoded=edit.body["images"][0]["image_url"].as_str().unwrap().strip_prefix("data:image/png;base64,").unwrap();
-        let bytes=STANDARD.decode(encoded).unwrap();
-        assert_eq!(image::load_from_memory(&bytes).unwrap().width(),1);
-        assert_eq!(edit.body["images"][1]["image_url"],"https://example.com/reference.png");
-        assert!(edit.body.get("reference_images").is_none());
-        assert!(edit.body.get("async").is_none());
-        assert!(edit.body.get("response_format").is_none());
-        let mut limited=profile.clone();
-        for variant in limited["variants"].as_array_mut().unwrap() {
-            for reference in variant["native_reference_inputs"].as_array_mut().into_iter().flatten() {
-                reference["max_total_bytes"]=json!(1);
-            }
-        }
-        let limit_error=prepared_profile("image-alias","1024x1024",vec![],true,&limited).err().unwrap();
-        assert!(limit_error.contains("compatible size or reference input format"));
-    }
-    #[test]
-    fn native_gemini_profile_accepts_optional_byte_limits_but_enforces_declared_limits() {
-        let profiles:Value=serde_json::from_str(include_str!("test-harness/image-profiles.json")).unwrap();
-        let mut profile=profiles["models"]["gemini-3-pro-image-preview"].clone();
-        for variant in profile["variants"].as_array_mut().unwrap() {
-            for reference in variant["native_reference_inputs"].as_array_mut().unwrap() {
-                reference.as_object_mut().unwrap().remove("max_item_bytes");
-                reference.as_object_mut().unwrap().remove("max_total_bytes");
-            }
-        }
-        let result=prepared_profile("gemini-alias","1024x1024",vec![],true,&profile).unwrap();
-        assert!(result.body.get("async").is_none());
-        assert!(result.body.pointer("/contents/0/parts/1/inlineData/data").is_some());
-        for variant in profile["variants"].as_array_mut().unwrap() {
-            for reference in variant["native_reference_inputs"].as_array_mut().unwrap() {
-                reference["max_total_bytes"]=json!(1);
-            }
-        }
-        assert!(prepared_profile("gemini-alias","1024x1024",vec![],true,&profile).is_err());
-    }
-    #[test]
-    fn console_local_references_follow_declared_transport_without_falling_back_to_text() {
-        for model in ["gpt-image-2","grok-imagine-image"] {
-            let error=prepared_with_local(model,"1024x1024",vec![],true).err().unwrap();
-            assert!(error.contains("only URL references"));
-            assert!(error.contains("No image request was sent"));
-        }
-        let gemini=prepared_with_local("gemini-3-pro-image-preview","1024x1024",vec![],true).unwrap();
-        assert!(gemini.body.get("async").is_none());
-        assert_eq!(gemini.body.pointer("/contents/0/parts/1/inlineData/mimeType"),Some(&json!("image/png")));
-        let raw=STANDARD.decode(gemini.body.pointer("/contents/0/parts/1/inlineData/data").and_then(Value::as_str).unwrap()).unwrap();
-        assert!(image::load_from_memory(&raw).is_ok());
-    }
-    #[test]
-    fn official_profiles_choose_openai_and_gemini_without_mixing_fields() {
-        let openai=prepared("gpt-image-2","1024x1024",vec!["https://example.com/a.png".into(),"https://example.com/b.png".into()]).unwrap();
-        assert_eq!(openai.path,"/v1/images/generations");
-        assert!(openai.body.get("async").is_none());
-        assert_eq!(openai.body["n"],1);
-        assert_eq!(openai.body["size"],"1024x1024");
-        assert_eq!(openai.body["reference_images"],json!(["https://example.com/a.png","https://example.com/b.png"]));
-        assert!(openai.body.get("generationConfig").is_none());
-        let gemini=prepared("gemini-3-pro-image-preview","2048x2048",vec!["https://example.com/ref.png".into()]).unwrap();
-        assert_eq!(gemini.path,"/v1beta/models/gemini-3-pro-image-preview:generateContent");
-        assert_eq!(gemini.query_base,"https://console.oceanway.tech/v1beta");
-        assert_eq!(gemini.body.pointer("/generationConfig/imageConfig/imageSize"),Some(&json!("2K")));
-        assert_eq!(gemini.body.pointer("/contents/0/parts/1/fileData/fileUri"),Some(&json!("https://example.com/ref.png")));
-        assert!(gemini.body.get("size").is_none());
-        assert!(gemini.body.get("n").is_none());
-        let grok=prepared("grok-imagine-image","1024x1024",vec![]).unwrap();
-        assert!(grok.body.get("output_format").is_none());
-    }
-    #[test]
-    fn model_size_and_reference_limits_are_checked_before_post() {
-        assert!(prepared("grok-imagine-image","1024x1024",vec!["https://example.com/1.png".into(),"https://example.com/2.png".into()]).is_err());
-        assert!(prepared("gemini-3-pro-image-preview","1900x1000",vec![]).is_err());
-        assert!(prepared("gpt-image-2","32x32",vec![]).is_err());
-    }
-}
+#[path = "image_protocol_tests.rs"]
+mod tests;

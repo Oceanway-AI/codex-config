@@ -7,6 +7,8 @@ pub struct RemoteTask {
     pub id: String,
     pub api_base: String,
     pub query_base: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query_url: Option<String>,
     pub credential_sha256: String,
 }
 
@@ -24,7 +26,27 @@ pub(super) fn validate_receipt(task: &RemoteTask) -> Result<(), String> {
     if task.query_base != task.api_base && task.query_base != gemini.as_str().trim_end_matches('/') {
         return Err("Image receipt query endpoint does not match its provider.".into());
     }
+    if let Some(url) = &task.query_url { validate_task_url(&task.api_base, &task.id, url)?; }
     Ok(())
+}
+
+pub(super) fn validate_task_url(base: &str, id: &str, raw: &str) -> Result<String,String> {
+    let base=Url::parse(base).map_err(|_|"Invalid image task provider.")?;
+    let url=base.join(raw).map_err(|_|"Invalid image task Location.")?;
+    let gemini=image_protocol::gemini_base(base.as_str())?;
+    let path=base.path().trim_end_matches('/');
+    let openai=path.strip_suffix("/v1beta").map(|prefix|format!("{prefix}/v1"));
+    let valid_path=[Some(path),Some(gemini.path().trim_end_matches('/')),openai.as_deref()].into_iter().flatten()
+        .any(|prefix|["images","tasks"].into_iter().any(|kind|url.path()==format!("{prefix}/{kind}/{id}")));
+    if !valid_id(id) || url.origin()!=base.origin() || !url.username().is_empty() || url.password().is_some()
+        || url.query().is_some() || url.fragment().is_some() || !valid_path {
+        return Err("Image task Location does not match the configured service and task.".into());
+    }
+    Ok(url.into())
+}
+
+fn query_url(task: &RemoteTask) -> String {
+    task.query_url.clone().unwrap_or_else(||format!("{}/images/{}",task.query_base,task.id))
 }
 
 pub(super) fn safe_error_code(body: &Value, key: &str) -> Option<String> {
@@ -39,16 +61,26 @@ pub(super) fn safe_error_code(body: &Value, key: &str) -> Option<String> {
 pub(super) fn submit_item(shared: &Arc<Shared>, id: &str, input: &Input, index: usize, started: Instant) -> Result<SavedResult, Failure> {
     verify_unused_slot(input,index)?;
     let (body,request_id,provider,query_base) = image_protocol::submit(input,index,started,||authorize_post(shared,id,index,input))?;
+    let mut saved_input=input.clone();
+    saved_input.provider=provider.clone();
+    let input=&saved_input;
     let body = image_protocol::normalize_sync(body);
     // Gateways may return a finished image with an X-Task-ID tracking header.
     // Consume that image before interpreting the header as a pending receipt.
     if body.get("data").and_then(Value::as_array).is_some_and(|entries|entries.iter().any(|entry|
         ["b64_json","url"].iter().any(|field|entry.get(*field).and_then(Value::as_str).is_some_and(|value|!value.is_empty())))) {
-        return save_response_images(input,index,&body,request_id,started);
+        match save_response_images(input,index,&body,request_id.clone(),started) {
+            Ok(saved)=>return Ok(saved),
+            Err(error) if body.get("_oceanway_task_location").is_none()=>return Err(error),
+            // A received task ID remains recoverable when delivery or saving
+            // fails. Persist it below before another GET; never re-POST.
+            Err(_)=>{}
+        }
     }
     let task_id = body.get("task_id").or_else(||body.get("id")).and_then(Value::as_str);
     if let Some(task_id) = task_id.filter(|_|body.get("status").is_some() || body.get("task_id").is_some()) {
         let task = RemoteTask { id: task_id.into(), api_base: provider.api_base.clone(), query_base,
+            query_url: body["_oceanway_task_location"].as_str().map(str::to_owned),
             credential_sha256: hash(provider.key.as_bytes()) };
         validate_receipt(&task)?;
         if task.id.contains(&provider.key) { return Err(Failure::new("Invalid accepted image task ID.")); }
@@ -147,7 +179,7 @@ fn refresh(input: &Input, index: usize, task: &RemoteTask) -> Result<Refresh,Fai
         return Err(Failure::new("Restore the original Oceanway Key to read this accepted image task."));
     }
     let client = provider_client(&provider)?;
-    let response = client.get(format!("{}/images/{}",task.query_base,task.id)).bearer_auth(&provider.key)
+    let response = client.get(query_url(task)).bearer_auth(&provider.key)
         .timeout(Duration::from_secs(25)).send().map_err(|_|Failure::new("Could not query the accepted image task."))?;
     let retry_after=response.headers().get("retry-after").and_then(|v|v.to_str().ok())
         .and_then(|v|v.parse::<u64>().ok()).map(Duration::from_secs);
@@ -217,7 +249,7 @@ fn save_downloaded_output(input: &Input,index: usize,position: usize,bytes: &[u8
 }
 
 fn download_output(client: &Client, provider: &SavedProvider, task: &RemoteTask, index: u64) -> Result<Vec<u8>,Failure> {
-    let response = client.get(format!("{}/images/{}/outputs/{index}/content",task.query_base,task.id))
+    let response = client.get(format!("{}/outputs/{index}/content",query_url(task)))
         .bearer_auth(&provider.key).send().map_err(|_|Failure::new("Could not download the original image output."))?;
     if response.status().is_redirection() {
         let location = response.headers().get(reqwest::header::LOCATION).and_then(|v|v.to_str().ok())

@@ -1,6 +1,58 @@
 # Oceanway Config 功能核验
 
-更新：2026-11-19。工作包：WP-CODEXCONFIG-001。分支：`codex/oceanway-config-rebuild`。
+更新：2026-11-25。本轮分支：`codex/image-mcp-catalog-20261125`；源码基线：`7cb0ad565c0a9cb7dff717b6d7811c57ad769f7a`。
+
+## 2026-11-25：Console 与 New API 图片 MCP
+
+按当天 Console 图片摘要、匹配修订的详情及 `native_request_variant` 更新图片 MCP。使用用户授权的两站 Key，从各自 `/models` 发现模型，再启动由本轮源码编译的独立 stdio MCP，实际生成图片。New API 的生成、查询和受保护结果下载使用其自身地址及 Key；Console 公开能力查询不携带客户凭据。
+
+| 验收项 | Console 直连 | model.ocean-way.top |
+| --- | --- | --- |
+| 图片模型发现（CFG-A19） | 10 款 | 5 款 GPT Image |
+| 文生图（CFG-A19/53） | 9/10 成功 | 5/5 成功 |
+| 已公布本地图能力的模型（CFG-A53/54） | 8/8 有成功结果；Gemini Pro 首轮 503，单独复测成功 | 5/5 成功 |
+| 一次生成两张本地图编辑（CFG-A20/42） | 通过，34.50 秒，2 张文件及预览 | 通过，42.97 秒，2 张文件及预览 |
+
+### 逐模型结果
+
+| 模型 | Console 文生图 | Console 本地图 | New API 文生图 | New API 本地图 |
+| --- | --- | --- | --- | --- |
+| gpt-image-2 | 通过 | 通过 | 通过 | 通过 |
+| gpt-image-2.5-flare | 通过 | 通过 | 通过 | 通过 |
+| gpt-image-2.5-sunburst | 通过 | 通过 | 通过 | 通过 |
+| gpt-image-2.6-flare | 通过 | 通过 | 通过 | 通过 |
+| gpt-image-2.6-sunburst | 通过 | 通过 | 通过 | 通过 |
+| gemini-3-pro-image-preview | 通过 | 首轮 503；单独复测通过 | Key 未提供 | Key 未提供 |
+| gemini-3.1-flash-image-preview | 通过 | 通过 | Key 未提供 | Key 未提供 |
+| gemini-nano-banana-2.1 | 通过 | 通过 | Key 未提供 | Key 未提供 |
+| grok-imagine-image-2.0 | 通过 | 当前目录未公布编辑能力 | Key 未提供 | Key 未提供 |
+| grok-imagine-image | HTTP 422 | 当前目录未公布编辑能力 | Key 未提供 | Key 未提供 |
+
+所有成功结果均实际下载、解码并核对文件 SHA256 与 MCP 图片预览。本地图测试核对原参考图哈希不变。两站的批量测试均在一次 MCP 调用中并行提交两个图片请求，每个请求生成一张，保留独立结果。
+
+### 实际修复与剩余失败
+
+- 目录从体积过大的 `/public/offering` 改为分页摘要及按需详情，按三项修订号更新缓存。
+- GPT 编辑发送原图 multipart `image[]`；Gemini 用原生 `inlineData` 和嵌套 `generationConfig`；Grok 使用公布的 `aspect_ratio` 与 `resolution`。元数据中的 `/n` 等 JSON Pointer 转为实际请求字段。
+- Grok 2.0 实际返回 `/v1/tasks/{id}/outputs/0/content` 相对地址，现已用原站 Key 取回图片。成功请求 ID：`202611251403497279229538268d9d6DAd4HgBh`。
+- 202 及携带有效任务回执的 503/504 保存同站 `Location`，继续 GET 原任务。回归确认恢复过程只发起一次生成 POST。
+- `grok-imagine-image` 按公布默认参数和独立最简 `{model,prompt,n:1}` 请求均返回 HTTP 422、`fail_to_fetch_task`，内层为 `INVALID_REQUEST` / `The image provider rejected the request parameters.`。MCP 请求 ID：`202611251356168370433588268d9d6VV2JnBLO`；最简请求任务 ID：`task_7RJtMAFynpmXpHh4fie0wmgxYJt79ZBN`。此模型仍需服务端排查。
+- Gemini Pro 首轮本地图任务 `task_cJ7Jni3ykEANhU685Ueru60qKRsAwAMX` 的原任务查询持续返回 503 / `Original media status unavailable`，独立 GET 亦复现。后续另一次本地图调用 48.46 秒成功；保留首轮失败，不能据此称服务已稳定。
+
+### 回归与证据
+
+独立 Rust 图片模块 115 项、真实自定义地址 stdio 子进程 1 项、其他 stdio 测试 5 项，共 **121 项通过**。当前 10 模型的能力快照覆盖两种 Base URL 下 20 个生成与 16 个编辑准备组合，另有真实本地 HTTP 接收端核对 Key、地址前缀、multipart 原图字节、数量和嵌套参数。
+
+证据目录：`.artifacts/image-mcp-20261125/`。
+
+- `rust-tests.log`：最终回归输出。
+- `live/console/{smoke,remaining-editable,grok,grok-delivery-fix,gemini-local-recheck,multi-final}/run.json`：Console 原始尝试、复测、结果与文件哈希。
+- `live/newapi/{matrix,multi-final}/run.json`：New API 全部可用图片模型及双图结果。
+- 各批次同目录的 MCP 事件、任务记录和真实图片；`local-edits-contact.png`、`gemini-edits.png` 为实际参考图编辑对照。
+
+本轮验收覆盖 MCP 进程与真实图片服务；文本模型、Agent 桌面操作、历史会话和安装包不重复计入本轮通过项。Console 在 WSL 直连，New API 使用本机已有代理的临时桥接，因此本轮不证明国内无代理网络的可达性。临时测试进程和凭据清理结果登记在同目录的 `cleanup-result.json`。
+
+本轮代码及规范已更新，尚未构建或发布新安装包。以下为各自日期和版本的历史执行记录。
 
 ## 2026-11-19：Codex 新装与已有安装（CFG-A15～16）
 
