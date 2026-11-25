@@ -1,0 +1,35 @@
+name: Verify native media MCP
+on:
+  workflow_dispatch:
+  push:
+    branches: ["codex/**"]
+    paths:
+      - "apps/desktop/src-tauri/src/oceanway_images/**"
+      - ".github/workflows/media-mcp.yml"
+permissions:
+  contents: read
+jobs:
+  media:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: apps/desktop/src-tauri/src/oceanway_images/test-harness
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@1.94.1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri/src/oceanway_images/test-harness
+      - run: cargo test --locked -- --test-threads=1
+      - run: cargo build --locked --release --bin oceanway-image-mcp-fixture
+      - uses: actions/upload-artifact@v6
+        with:
+          name: oceanway-media-mcp-${{ matrix.os }}
+          path: |
+            apps/desktop/src-tauri/src/oceanway_images/test-harness/target/release/oceanway-image-mcp-fixture.exe
+            apps/desktop/src-tauri/src/oceanway_images/test-harness/target/release/oceanway-image-mcp-fixture

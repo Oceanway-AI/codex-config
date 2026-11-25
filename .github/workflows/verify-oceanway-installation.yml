@@ -1,0 +1,70 @@
+name: Verify in-app agent package download
+on:
+  push:
+    branches: [codex/oceanway-config-rebuild]
+    paths:
+      - apps/desktop/src-tauri/src/oceanway_install.rs
+      - apps/desktop/src-tauri/src/agent_desktops.rs
+      - apps/desktop/src-tauri/src/codex_desktop_detection.rs
+      - apps/desktop/src-tauri/src/oceanway_codex_macos.rs
+      - apps/desktop/src-tauri/src/oceanway_desktop.rs
+      - .github/workflows/verify-oceanway-installation.yml
+  workflow_dispatch:
+    inputs:
+      app:
+        type: choice
+        description: Agent package to verify on disposable GitHub runners
+        options: [codex, claude-desktop, claude, dsh, hermes, kimi]
+        required: true
+        default: codex
+permissions:
+  contents: read
+jobs:
+  install:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.12.3
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: apps/desktop/pnpm-lock.yaml
+      - uses: dtolnay/rust-toolchain@1.94.1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri -> target
+      - name: Prepare renderer build inputs
+        working-directory: apps/desktop
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build:renderer
+      - name: Compile and test native installation service
+        working-directory: apps/desktop/src-tauri
+        run: |
+          cargo test --locked --lib oceanway_install -- --test-threads=1
+          cargo test --locked --lib oceanway_powershell -- --test-threads=1
+      - name: Verify complete download and wait for explicit installation
+        id: download
+        if: ${{ !(inputs.app == 'hermes' && matrix.os == 'macos-15-intel') }}
+        working-directory: apps/desktop/src-tauri
+        env:
+          OCEANWAY_INSTALL_TEST_TARGET: ${{ inputs.app || 'codex' }}
+        run: cargo test --locked --lib oceanway_install::tests::download_on_disposable_runner -- --ignored --nocapture --test-threads=1
+      - name: Install the exact Codex DMG downloaded by Oceanway
+        if: ${{ runner.os == 'macOS' && (inputs.app || 'codex') == 'codex' }}
+        shell: bash
+        env:
+          DMG: ${{ steps.download.outputs.codex_package }}
+        run: bash apps/desktop/tests/native/install-codex-dmg.sh "$DMG"
+      - name: Detect the existing app, clean background workers, and verify a new Codex window
+        if: ${{ runner.os == 'macOS' && (inputs.app || 'codex') == 'codex' }}
+        working-directory: apps/desktop/src-tauri
+        run: cargo test --locked --lib installed_mac_codex_lifecycle -- --ignored --nocapture --test-threads=1

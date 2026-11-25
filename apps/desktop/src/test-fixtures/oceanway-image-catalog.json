@@ -1,0 +1,46 @@
+{
+  "baseUrl": "https://console.oceanway.tech/v1",
+  "models": [
+    {
+      "id": "gemini-3-pro-image-preview",
+      "modelType": "image",
+      "supportedProtocols": ["oceanway-media-v1"]
+    },
+    {
+      "id": "gemini-3.1-flash-image-preview",
+      "modelType": "image",
+      "supportedProtocols": ["oceanway-media-v1"]
+    },
+    {
+      "id": "gemini-nano-banana-2.1",
+      "modelType": "image",
+      "supportedProtocols": ["oceanway-media-v1"]
+    },
+    {
+      "id": "gpt-image-2",
+      "modelType": "image",
+      "supportedProtocols": ["oceanway-media-v1"]
+    },
+    {
+      "id": "gpt-image-2.5-flare",
+      "modelType": "image",
+      "supportedProtocols": ["oceanway-media-v1"]
+    },
+    {
+      "id": "gpt-image-2.5-sunburst",
+      "modelType": "image",
+      "supportedProtocols": ["oceanway-media-v1"]
+    },
+    {
+      "id": "grok-imagine-image",
+      "modelType": "image",
+      "supportedProtocols": ["oceanway-media-v1"]
+    },
+    {
+      "id": "grok-imagine-image-2.0",
+      "modelType": "image",
+      "supportedProtocols": ["oceanway-media-v1"]
+    }
+  ],
+  "checkedAt": "2026-11-03"
+}

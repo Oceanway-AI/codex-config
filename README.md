@@ -1,269 +1,39 @@
-# codex-config
+# Oceanway Config
 
-> 需求、设计、决策以文档站为准：https://docs.oceanway.site/docs/06_开发/07_内部工具（本仓只保留运行与开发说明；决策见 https://docs.oceanway.site/docs/02_决策/ADR-0000_决策索引）。
+基于 CC Switch v4.0.24 的 Oceanway 桌面配置应用。
 
-`codex-config` is a lightweight OceanWay AI desktop helper for configuring Codex. It is built with Tauri and Rust, with a small HTML/CSS/JavaScript interface.
+**[下载最新 Windows 安装包](https://github.com/Oceanway-AI/codex-config/releases/download/oceanway-preview/Oceanway-Config-Windows-x64-setup.exe)** · **[macOS Apple Silicon](https://github.com/Oceanway-AI/codex-config/releases/download/oceanway-preview/Oceanway-Config-macos-arm64.zip)** · **[macOS Intel](https://github.com/Oceanway-AI/codex-config/releases/download/oceanway-preview/Oceanway-Config-macos-intel.zip)**
 
-This repository only contains the Rust/Tauri version. The old Python/PyQt packaging version has been removed from the cloud repository.
+以上是本开发分支最近一次完整构建成功的测试版，构建成功后自动更新。[查看版本、提交与安装说明](https://github.com/Oceanway-AI/codex-config/releases/tag/oceanway-preview) · [查看最新构建状态](https://github.com/Oceanway-AI/codex-config/actions/workflows/build.yml?query=branch%3Acodex%2Foceanway-config-rebuild)。Windows 下载后双击安装；macOS 解压后将应用放入“应用程序”。
 
-## What It Does
+新版本源码位于 `apps/desktop/`。沿用 CC Switch 的应用框架、组件和会话管理，提供 Oceanway Key 接入、模型选择与配置流程。
 
-- Writes the OceanWay provider to Codex config.
-- Uses a ChatGPT-login-preserving provider token when the user is already signed in, and falls back to an API Key mode compatible with the Codex Desktop local image tool when no ChatGPT login is detected.
-- Prepares the bundled `imagegen` skill's explicit CLI fallback by injecting `OPENAI_API_KEY` and `OPENAI_BASE_URL` into Codex tool subprocesses.
-- Reuses the previously saved OceanWay credential when the API Key field is left empty, without returning the full secret to the frontend.
-- Uses `https://ocean-way.top` as the default Base URL.
-- Preserves existing non-OceanWay Codex settings and providers.
-- Creates a first-use backup before changing user config.
-- Provides one-click diagnostics for provider, credential, image compatibility, Codex version, network, process state, and backup state.
-- Copies a redacted support report that never includes complete API keys or bearer tokens.
-- Can repair the saved configuration and restart Codex Desktop after confirmation.
-- Offers an explicit, backed-up history visibility migration for users who need old local sessions to appear under the current provider.
-- Restores the user's original files when they click restore.
-- Reserves a typed account/quota/model-permission surface without claiming live data before the customer account API is connected.
-- Checks and installs signed application updates from GitHub Releases.
-- Supports macOS and Windows builds.
+[Oceanway Config 项目文档](https://docs.oceanway.site/docs/03_项目/codex-config) 维护现行需求 DEV-X-07-001 与功能规格 DEV-X-07-002。追溯本重建分支的原始功能、[图片 MCP 设计](docs/PROJECT_REQUIREMENTS.md#image-mcp)及验收材料，见[重建需求基线](docs/PROJECT_REQUIREMENTS.md)。
 
-## User Guide
+当前版本提供文本模型接入和图片 MCP，支持多模型选择、批量生图及历史保留。构建流程、验证结果与后续维护见 [开发交接](docs/DEVELOPMENT_HANDOFF.md)。
 
-For non-technical users, see:
-
-- [codex-config 使用说明](docs/USER_GUIDE.md)
-
-## User Files
-
-The app reads and writes:
-
-```text
-~/.codex/config.toml
-~/.codex/auth.json
-```
-
-When the user explicitly clicks history migration, the app can also update:
-
-```text
-~/.codex/sessions/**/*.jsonl
-~/.codex/archived_sessions/**/*.jsonl
-~/.codex/state_5.sqlite
-~/.codex/oceanway-history-migration-backup/
-```
-
-For users who are already signed in to ChatGPT, the OceanWay provider written to `config.toml` looks like this:
-
-```toml
-model_provider = "OceanWay"
-model = "gpt-5.4"
-model_reasoning_effort = "high"
-disable_response_storage = true
-
-[model_providers.OceanWay]
-name = "OceanWay"
-base_url = "https://ocean-way.top"
-wire_api = "responses"
-experimental_bearer_token = "user-api-key"
-requires_openai_auth = true
-```
-
-In that mode, `auth.json` keeps the ChatGPT login state and does not store the third-party key:
-
-```json
-{
-  "auth_mode": "chatgpt",
-  "OPENAI_API_KEY": null
-}
-```
-
-If no ChatGPT login is detected before configuration, the app uses the fallback API key mode. The API key is written to `auth.json` without removing other existing auth fields:
-
-```toml
-model_provider = "OceanWay"
-model = "gpt-5.4"
-model_reasoning_effort = "high"
-disable_response_storage = true
-
-[model_providers.OceanWay]
-name = "OceanWay"
-base_url = "https://ocean-way.top"
-wire_api = "responses"
-requires_openai_auth = false
-http_headers = { "x-openai-actor-authorization" = "local-image-extension" }
-```
-
-The non-empty actor authorization header lets Codex Desktop `0.143.0` and later register its local `image_gen` extension for a custom API Key provider. The API key remains the Bearer credential and is written to `auth.json` without removing other existing auth fields:
-
-```json
-{
-  "OPENAI_API_KEY": "user-api-key"
-}
-```
-
-After configuration, fully quit and reopen Codex Desktop, then create a new task so the tool registry is rebuilt. The conversational model remains the configured GPT model; the local image extension calls the provider's image endpoint separately.
-
-## Imagegen CLI Fallback
-
-Both authentication modes also receive the following user-level Codex configuration:
-
-```toml
-[shell_environment_policy.set]
-OPENAI_API_KEY = "user-api-key"
-OPENAI_BASE_URL = "https://ocean-way.top"
-```
-
-This is a fallback for the bundled `imagegen` skill's official `scripts/image_gen.py` path. It does not replace the preferred built-in `image_gen` tool and does not modify the system skill. When the built-in tool is unavailable, the user must still explicitly choose the CLI fallback as required by the bundled skill.
-
-The values are injected into commands launched by Codex, including the imagegen CLI. They are not installed as global operating-system environment variables. This keeps the setup cross-platform, makes a second configuration click idempotently update stale values, and allows `恢复默认` to restore the original file snapshot.
-
-Existing users configured by an older release can reopen the app, switch to `运维工具`, and click `图片备用配置` → `同步`. The backend reuses the saved OceanWay credential without returning or displaying it in the UI.
-
-Starting with v1.2.0, the main form also reuses that saved credential when its API Key field is left empty. Entering a new value replaces the saved OceanWay credential. `恢复 Codex 默认配置` restores the first-use snapshot, including removal of the imagegen fallback values written by this tool.
-
-Security note: any command launched by Codex can read values configured under `shell_environment_policy.set`. Only use trusted repositories and prompts while this fallback is enabled.
-
-## History Visibility Migration
-
-History migration is optional and is not run during one-click configuration. It is only available when the current provider is OceanWay.
-
-When the user clicks `迁移历史`, the app first scans local Codex history and asks for confirmation. If confirmed, it changes only provider metadata for existing local session records so sessions created under a previous provider can appear under OceanWay. It does not rewrite conversation content.
-
-Before changing anything, the app creates a backup in:
-
-```text
-~/.codex/oceanway-history-migration-backup/
-```
-
-The migration updates the first `session_meta` line in matching JSONL files and matching rows in `state_5.sqlite` by thread id. If a session contains encrypted content, the app warns the user because the session may become visible in the list but may not be resumable or compactable under a different provider.
-
-## Restore Behavior
-
-On first configuration, the app stores a snapshot in:
-
-```text
-~/.codex/oceanway-ai-backup/
-```
-
-When the user clicks restore, the app restores that original snapshot. This lets users who already had a custom Codex setup return to their previous state, while users who had no config return to an empty/default state.
-
-Restore also undoes recorded history visibility migrations by using the migration manifest. It only restores files and database rows that were changed by this tool, so sessions created after the migration are left alone. The app does not provide a default flow for migrating OceanWay-created sessions into OpenAI Official.
-
-If no snapshot exists, restore falls back to removing the OceanWay provider, `OPENAI_API_KEY`, and the two imagegen CLI environment entries written by this tool.
-
-## Development
-
-Install dependencies:
-
-```bash
-npm install
-```
-
-Run the desktop app in development mode:
-
-```bash
-npm run dev
-```
-
-Run Rust tests:
-
-```bash
-cd src-tauri
-cargo test
-```
-
-## Diagnostics and Account Access
-
-Starting with v1.3.0, the main window is organized as a configuration workspace:
-
-- `问题诊断` runs read-only checks and can copy a redacted support report.
-- `运维工具` contains restart, repair, image fallback synchronization, history migration, backup-directory access, and restore.
-- `额度与权限` uses a backend response type ready for balance, plan, sync time, and per-model permission data. It intentionally returns `reserved` and empty values until the OceanWay customer account API is connected.
-
-## Signed Auto Update
-
-The updater endpoint is:
-
-```text
-https://github.com/Oceanway-AI/codex-config/releases/latest/download/latest.json
-```
-
-Update packages must be signed. The public key is committed in `src-tauri/tauri.conf.json`; the private key must remain outside the repository.
-
-For this workstation, the generated private key is expected at:
-
-```text
-~/.tauri/oceanway-codex-config.key
-```
-
-Before using `.github/workflows/release.yml`, configure the repository secret:
-
-```bash
-gh secret set TAURI_SIGNING_PRIVATE_KEY < ~/.tauri/oceanway-codex-config.key
-```
-
-Only set `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` if the private key was generated with a password. Pushing a `v*` tag or manually running the release workflow builds signed updater artifacts into a draft GitHub Release. Review the draft, then publish it to make the new version discoverable.
-
-## macOS Build
-
-Build Apple Silicon and Intel packages locally:
-
-```bash
-chmod +x ./build.sh
-./build.sh
-```
-
-Outputs are versioned under `dist/`, including:
-
-```text
-dist/codex-config-v1.3.0-macOS-arm64.dmg
-dist/codex-config-v1.3.0-macOS-arm64.zip
-dist/codex-config-v1.3.0-macOS-intel.dmg
-dist/codex-config-v1.3.0-macOS-intel.zip
-```
-
-When the local updater private key exists, the script also produces signed `.app.tar.gz` updater archives and `.sig` files. The current local build uses ad-hoc app signing; public distribution should use an Apple Developer ID and notarization.
-
-## Windows Build
-
-Build locally on Windows PowerShell:
+## 开发
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\build.ps1
+pnpm --dir apps/desktop install --frozen-lockfile
+pnpm dev
 ```
 
-Outputs are created under:
+本地原生开发需要 Rust 与对应平台的 Tauri 编译环境。GitHub Actions 的 **Build Oceanway Config** 在开发分支推送后运行 Windows / macOS 构建，测试安装包在该次运行的 Artifacts 下载。
 
-```text
-src-tauri\target\release\
-src-tauri\target\release\bundle\
+```powershell
+pnpm typecheck
+pnpm test:desktop
+pnpm build
 ```
 
-GitHub Actions can also build the Windows installer when you do not have a Windows machine.
+仅检查界面可运行 `pnpm preview:desktop` 并打开 `http://127.0.0.1:3012/fixture.html`。测试页面使用 `fixture-key`；模型目录来自 2026-11-03 同一个 Console 测试 Key 返回的脱敏快照：界面显示其中 36 个文本模型和 8 个图片模型。正式应用从当前 Key 实时获取模型。预览页面的保存和重启动作使用模拟结果。
 
-## GitHub Actions
+## 来源
 
-The validation workflow in `.github/workflows/build.yml` builds:
+- 上游与修改记录：[UPSTREAM.md](apps/desktop/UPSTREAM.md)
+- CC Switch MIT 许可证：[LICENSE](apps/desktop/LICENSE)
+- 根目录原配置程序保留为旧版对照，使用 `dev:legacy` / `build:legacy` 命令。
 
-- `codex-config-macOS-arm64`
-- `codex-config-macOS-intel`
-- `codex-config-Windows`
 
-The signed release workflow in `.github/workflows/release.yml` builds both macOS architectures and Windows, creates updater artifacts, and attaches them to a draft release.
-
-Run validation from GitHub:
-
-```text
-Actions -> Build codex-config -> Run workflow
-```
-
-The generated artifacts can be downloaded from the completed workflow run page.
-
-## Project Structure
-
-```text
-.github/workflows/build.yml   Pull-request build workflow
-.github/workflows/release.yml Signed updater release workflow
-src/                          Frontend UI
-src-tauri/                    Rust backend and Tauri configuration
-build.sh                      macOS build helper
-build.ps1                     Windows build helper
-package.json                  Tauri CLI dependency and npm scripts
-BUILD.md                      Short build notes
-```
+旧版使用和开发记录见 [1.3.0 归档](docs/legacy/README-v1.3.0.md)。

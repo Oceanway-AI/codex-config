@@ -1,0 +1,15 @@
+# Imported inside the existing api.ocean-way.top site block.
+@oceanway_agent_downloads {
+    host api.ocean-way.top
+    path /downloads/agents /downloads/agents/*
+}
+handle @oceanway_agent_downloads {
+    redir /downloads/agents /downloads/agents/ 308
+    uri strip_prefix /downloads/agents
+    root * /opt/oceanway-agent-downloads/current
+    header X-Content-Type-Options nosniff
+    header Cache-Control "public, max-age=300"
+    @archive path *.zip *.exe *.dmg *.pkg
+    header @archive Content-Disposition "attachment"
+    file_server
+}

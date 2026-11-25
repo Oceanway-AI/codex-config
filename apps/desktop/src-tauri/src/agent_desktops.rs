@@ -1,0 +1,157 @@
+//! Installed GUI discovery, independent of CLI availability and saved user data.
+use std::{path::PathBuf, process::{Command, Stdio}, time::{Duration, Instant}};
+
+#[cfg(target_os = "windows")]
+const WINDOWS_DISCOVERY: &str = include_str!("agent_desktops_windows.ps1");
+
+#[cfg(target_os = "windows")]
+pub(crate) fn windows_powershell(script: &str) -> Command {
+    // A launcher using PowerShell 7 can pass a module path that hides Windows
+    // PowerShell's Appx and Management modules. Use this runtime's own modules.
+    let script = format!(
+        "$env:PSModulePath=(Join-Path $PSHOME 'Modules')+';'+[Environment]::GetEnvironmentVariable('PSModulePath','Machine');\n[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);\n{script}"
+    );
+    let mut command = Command::new("powershell.exe");
+    command.args(["-NoProfile", "-NonInteractive", "-Command", &script]);
+    command
+}
+
+pub(crate) fn bounded_output(command: &mut Command, seconds: u64) -> Result<std::process::Output, String> {
+    command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    #[cfg(target_os = "windows")]
+    { use std::os::windows::process::CommandExt; command.creation_flags(0x08000000); }
+    let mut child = command.spawn().map_err(|e| e.to_string())?;
+    fn drain(pipe: Option<impl std::io::Read + Send + 'static>) -> std::thread::JoinHandle<Vec<u8>> {
+        std::thread::spawn(move || { let mut data=Vec::new(); if let Some(mut pipe)=pipe {let _=pipe.read_to_end(&mut data);} data })
+    }
+    let stdout=drain(child.stdout.take()); let stderr=drain(child.stderr.take());
+    let start = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Ok(std::process::Output {status,stdout:stdout.join().unwrap_or_default(),stderr:stderr.join().unwrap_or_default()}),
+            Ok(None) if start.elapsed() < Duration::from_secs(seconds) => std::thread::sleep(Duration::from_millis(50)),
+            _ => { let _ = child.kill(); let _ = child.wait(); return Err("应用操作超时，请重试".into()); }
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn find(app: &str) -> Result<Option<PathBuf>, String> {
+    let names = match app {
+        "claude-desktop" => "Claude",
+        "dsh" => "DeepSeek Harness",
+        "kimi" => "Kimi Code",
+        "hermes" => "Hermes Agent",
+        _ => return Ok(None),
+    };
+    let output=bounded_output(windows_powershell(WINDOWS_DISCOVERY).env("OCEANWAY_DESKTOP_NAME",names), 12)?;
+    if !output.status.success() { return Err("桌面应用检测失败，请重新检测".into()); }
+    Ok(String::from_utf8_lossy(&output.stdout).lines().map(str::trim).find(|line| !line.is_empty()).map(PathBuf::from))
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn find(app: &str) -> Result<Option<PathBuf>, String> {
+    let names: &[&str]=match app {
+        "claude-desktop" => &["Claude"], "dsh" => &["DeepSeek Harness"],
+        "kimi" => &["Kimi Code","KimiCode"], "hermes" => &["Hermes Agent","Hermes"], _=>return Ok(None),
+    };
+    for root in [PathBuf::from("/Applications"), crate::config::get_home_dir().join("Applications")] {
+        for name in names { let path=root.join(format!("{name}.app"));
+            if path.join("Contents/Info.plist").is_file() && path.join("Contents/MacOS").is_dir() {return Ok(Some(path));}
+        }
+    }
+    Ok(None)
+}
+#[cfg(not(any(target_os="windows",target_os="macos")))]
+pub(crate) fn find(_app: &str) -> Result<Option<PathBuf>, String> { Ok(None) }
+
+pub(crate) fn launch(app: &str, restart: bool) -> Result<String, String> {
+    let path=find(app)?.ok_or("尚未找到桌面应用，请下载安装后重新检测")?;
+    #[cfg(target_os="windows")]
+    {
+        const SCRIPT:&str=r#"
+$ErrorActionPreference='Stop'
+[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
+try {
+  $path=$env:OCEANWAY_DESKTOP_PATH
+  if($env:OCEANWAY_DESKTOP_RESTART -eq '1') {
+    $running=@(Get-Process | Where-Object {$_.Path -eq $path -and $_.MainWindowHandle -ne 0})
+    foreach($p in $running) { if(-not $p.CloseMainWindow() -or -not $p.WaitForExit(10000)) {throw '应用尚未退出，请保存任务并关闭后重试。'} }
+  }
+  Start-Process -FilePath $path | Out-Null
+} catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }
+"#;
+        let result=bounded_output(windows_powershell(SCRIPT).env("OCEANWAY_DESKTOP_PATH",path).env("OCEANWAY_DESKTOP_RESTART",if restart {"1"} else {"0"}),25)?;
+        if !result.status.success() {return Err(String::from_utf8_lossy(&result.stderr).trim().into());}
+    }
+    #[cfg(target_os="macos")]
+    {
+        if restart {
+            // Pass the bundle path as argv, not interpolated AppleScript source.
+            let script="on run argv\ntell application (item 1 of argv) to quit\nend run";
+            let result=bounded_output(Command::new("osascript").args(["-e",script]).arg(&path),15)?;
+            if !result.status.success() {return Err("应用没有接受退出请求，请保存任务后重试".into());}
+        }
+        let output=bounded_output(Command::new("open").arg(&path),8)?;
+        if !output.status.success() {return Err("无法打开桌面应用，请检查安装是否完成".into());}
+    }
+    #[cfg(not(any(target_os="windows",target_os="macos")))]
+    { let _=(path,restart); return Err("当前系统尚无桌面启动支持".into()); }
+    #[allow(unreachable_code)]
+    Ok(if restart {"已重新打开应用，请开始新请求加载配置"} else {"已请求打开桌面应用"}.into())
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod tests {
+    #[test]
+    fn oceanway_desktop_discovers_registry_icon_without_install_location() {
+        let fixture = tempfile::tempdir().unwrap();
+        let exe = fixture.path().join("Oceanway Probe Fixture.exe");
+        std::fs::write(&exe, b"fixture").unwrap();
+        std::fs::create_dir(fixture.path().join("resources")).unwrap();
+        std::fs::write(fixture.path().join("resources/app.asar"), b"fixture").unwrap();
+        let script = format!(r#"
+function Get-ItemProperty {{ [pscustomobject]@{{DisplayName=$env:OCEANWAY_DESKTOP_NAME;DisplayIcon=$env:OCEANWAY_TEST_ICON}} }}
+function Get-AppxPackage {{}}
+function Get-Process {{}}
+{}
+"#, super::WINDOWS_DISCOVERY);
+        let mut command = super::windows_powershell(&script);
+        command.env("OCEANWAY_DESKTOP_NAME", "Oceanway Probe Fixture")
+            .env("OCEANWAY_TEST_ICON", format!("\"{}\",0", exe.display()));
+        let output = super::bounded_output(&mut command, 20).unwrap();
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8(output.stdout).unwrap().trim(), exe.to_str().unwrap());
+    }
+
+    #[test]
+    fn oceanway_desktop_does_not_detect_kimi_as_another_app() {
+        let fixture = tempfile::tempdir().unwrap();
+        let app = fixture.path().join("kimi-code-app");
+        std::fs::create_dir_all(app.join("resources")).unwrap();
+        std::fs::write(app.join("kimi-code-app.exe"), b"fixture").unwrap();
+        std::fs::write(app.join("resources/app.asar"), b"fixture").unwrap();
+        let script = format!("function Get-ItemProperty {{}}\nfunction Get-AppxPackage {{}}\nfunction Get-Process {{}}\n{}", super::WINDOWS_DISCOVERY);
+        let mut command = super::windows_powershell(&script);
+        command.env("OCEANWAY_DESKTOP_NAME", "Oceanway Missing Fixture")
+            .env("LOCALAPPDATA", fixture.path()).env("ProgramFiles", fixture.path());
+        let output = super::bounded_output(&mut command, 20).unwrap();
+        assert!(output.status.success());
+        assert!(String::from_utf8(output.stdout).unwrap().trim().is_empty());
+    }
+
+    #[test]
+    fn oceanway_powershell_loads_system_modules_with_an_incompatible_parent_path() {
+        let empty = tempfile::tempdir().unwrap();
+        let mut command = super::windows_powershell(
+            "$ErrorActionPreference='Stop'; Get-Command Get-FileHash,Get-AppxPackage,Get-ItemProperty,Start-Process | ForEach-Object Name; Write-Output '安装检测正常'",
+        );
+        command.env("PSModulePath", empty.path());
+        let output = super::bounded_output(&mut command, 20).unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        let text = String::from_utf8(output.stdout).unwrap();
+        for expected in ["Get-FileHash", "Get-AppxPackage", "Get-ItemProperty", "Start-Process", "安装检测正常"] {
+            assert!(text.contains(expected), "Missing {expected}: {text}");
+        }
+    }
+}

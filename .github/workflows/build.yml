@@ -1,92 +1,195 @@
-name: Build codex-config
+name: Build Oceanway Config
 
 on:
+  workflow_call:
   workflow_dispatch:
   push:
-    branches:
-      - main
-      - master
-      - codex/**
+    branches: [main, master, "codex/**"]
   pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: oceanway-build-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build:
     name: Build ${{ matrix.platform }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: apps/desktop
     strategy:
       fail-fast: false
       matrix:
         include:
+          - platform: windows-x64
+            os: windows-latest
+            rust_target: x86_64-pc-windows-msvc
+            smoke_exe: src-tauri/target/release/oceanway-config.exe
+            bundle_args: --bundles nsis
+            download_platform: windows
+            download_arch: x86_64
+            artifact_path: |
+              apps/desktop/src-tauri/target/release/bundle/nsis/*.exe
           - platform: macos-arm64
             os: macos-latest
             rust_target: aarch64-apple-darwin
+            smoke_exe: src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Oceanway Config.app/Contents/MacOS/oceanway-config
             bundle_args: --target aarch64-apple-darwin --bundles app
-            artifact_name: codex-config-macOS-arm64
+            download_platform: darwin
+            download_arch: aarch64
             artifact_path: |
-              dist/codex-config-macOS-arm64.zip
+              apps/desktop/dist/Oceanway-Config-macos-arm64.zip
           - platform: macos-intel
-            os: macos-latest
+            os: macos-15-intel
             rust_target: x86_64-apple-darwin
+            smoke_exe: src-tauri/target/x86_64-apple-darwin/release/bundle/macos/Oceanway Config.app/Contents/MacOS/oceanway-config
             bundle_args: --target x86_64-apple-darwin --bundles app
-            artifact_name: codex-config-macOS-intel
+            download_platform: darwin
+            download_arch: x86_64
             artifact_path: |
-              dist/codex-config-macOS-intel.zip
-          - platform: windows-x64
-            os: windows-latest
-            rust_target: ""
-            bundle_args: --bundles nsis
-            artifact_name: codex-config-Windows
-            artifact_path: |
-              src-tauri/target/release/bundle/nsis/*.exe
-              src-tauri/target/release/codex-config.exe
-
+              apps/desktop/dist/Oceanway-Config-macos-intel.zip
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.12.3
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: package-lock.json
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+          cache: pnpm
+          cache-dependency-path: apps/desktop/pnpm-lock.yaml
+      - uses: dtolnay/rust-toolchain@1.94.1
         with:
           targets: ${{ matrix.rust_target }}
-
-      - name: Cache Rust
-        uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri -> target
-
-      - name: Install frontend dependencies
-        run: npm ci
-
-      - name: Run frontend tests
-        run: npm test
-
-      - name: Run Rust tests
-        run: cargo test
-        working-directory: src-tauri
-
-      - name: Build Tauri bundle
-        run: npm exec tauri -- build ${{ matrix.bundle_args }}
-
+          workspaces: apps/desktop/src-tauri -> target
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Typecheck
+        run: pnpm typecheck
+      - name: Test all desktop frontend features
+        # Intel macOS runners need more time for the full component suite.
+        run: pnpm exec vitest run --maxWorkers=2 --minWorkers=1 --testTimeout=15000 --hookTimeout=15000
+      - name: Test native Oceanway services
+        working-directory: apps/desktop/src-tauri
+        run: cargo test --locked --lib oceanway -- --test-threads=1
+      - name: Test native Codex history
+        working-directory: apps/desktop/src-tauri
+        run: cargo test --locked --lib session_manager::providers::codex -- --test-threads=1
+      - name: Test native Claude history
+        working-directory: apps/desktop/src-tauri
+        run: cargo test --locked --lib session_manager::providers::claude -- --test-threads=1
+      - name: Test native prompt templates
+        working-directory: apps/desktop/src-tauri
+        run: cargo test --locked --lib services::prompt::tests -- --test-threads=1
+      - name: Test branded tray and desktop profile
+        working-directory: apps/desktop/src-tauri
+        run: |
+          cargo test --locked --lib tray::tests -- --test-threads=1
+          cargo test --locked --lib claude_desktop_config::tests -- --test-threads=1
+      - name: Test native Codex configuration projection
+        working-directory: apps/desktop/src-tauri
+        run: cargo test --locked --lib live::project::codex::tests -- --test-threads=1
+      - name: Test Codex installation without Node.js
+        working-directory: apps/desktop/src-tauri
+        run: cargo test --locked --lib codex_fresh_install -- --test-threads=1
+      - name: Test agent runtime installation
+        working-directory: apps/desktop/src-tauri
+        run: cargo test --locked --lib tool_install_runtime -- --test-threads=1
+      - name: Build desktop installer
+        env:
+          TAURI_ENV_PLATFORM: ${{ matrix.download_platform }}
+          TAURI_ENV_ARCH: ${{ matrix.download_arch }}
+        run: pnpm tauri build ${{ matrix.bundle_args }}
+      - name: Verify packaged MCP in an isolated home
+        run: python src-tauri/src/oceanway_images/scripts/mcp_bundle_smoke.py --executable "${{ matrix.smoke_exe }}"
       - name: Package macOS app
         if: startsWith(matrix.platform, 'macos-')
+        env:
+          RUST_TARGET: ${{ matrix.rust_target }}
+          PLATFORM: ${{ matrix.platform }}
         run: |
-          mkdir -p dist
-          ARCH_LABEL="${{ matrix.platform == 'macos-arm64' && 'arm64' || 'intel' }}"
-          TARGET="${{ matrix.rust_target }}"
-          ditto -c -k --keepParent \
-            "src-tauri/target/$TARGET/release/bundle/macos/codex-config.app" \
-            "dist/codex-config-macOS-$ARCH_LABEL.zip"
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v6
+          ditto -c -k --keepParent "src-tauri/target/$RUST_TARGET/release/bundle/macos/Oceanway Config.app" "dist/Oceanway-Config-$PLATFORM.zip"
+      - uses: actions/upload-artifact@v6
         with:
-          name: ${{ matrix.artifact_name }}
+          name: Oceanway-Config-${{ matrix.platform }}-${{ github.sha }}
           path: ${{ matrix.artifact_path }}
           if-no-files-found: error
+          retention-days: 14
+      - name: Upload Windows executable for isolated integration tests
+        if: matrix.platform == 'windows-x64'
+        uses: actions/upload-artifact@v6
+        with:
+          name: Oceanway-Config-windows-native-${{ github.sha }}
+          path: apps/desktop/src-tauri/target/release/oceanway-config.exe
+          if-no-files-found: error
+          retention-days: 14
+
+  publish-preview:
+    name: Publish branch installers
+    needs: build
+    if: github.ref == 'refs/heads/codex/oceanway-config-rebuild' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: oceanway-preview-release
+      cancel-in-progress: false
+    steps:
+      - uses: actions/download-artifact@v6
+        with:
+          path: artifacts
+      - name: Publish verified installers
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          BUILD_SHA: ${{ github.sha }}
+          BUILD_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          current=$(gh api "repos/$GH_REPO/git/ref/heads/codex/oceanway-config-rebuild" --jq .object.sha)
+          if [[ "$current" != "$BUILD_SHA" ]]; then
+            echo 'A newer branch revision exists; its build will publish the preview.'
+            exit 0
+          fi
+          mkdir -p release
+          cp "artifacts/Oceanway-Config-windows-x64-$BUILD_SHA/"*.exe release/Oceanway-Config-Windows-x64-setup.exe
+          cp "artifacts/Oceanway-Config-macos-arm64-$BUILD_SHA/Oceanway-Config-macos-arm64.zip" release/
+          cp "artifacts/Oceanway-Config-macos-intel-$BUILD_SHA/Oceanway-Config-macos-intel.zip" release/
+          (cd release && sha256sum * > SHA256SUMS.txt)
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          Path('notes.md').write_text(f"""Oceanway Config 开发分支测试版
+
+          源码提交：`{os.environ['BUILD_SHA']}`
+          [查看构建与测试记录]({os.environ['BUILD_URL']})
+
+          - Windows：下载 `Oceanway-Config-Windows-x64-setup.exe`，双击安装。
+          - macOS：下载对应芯片的 ZIP，解压后将应用放入“应用程序”。
+          - 三个平台的前端测试、原生定向测试、安装包构建及包内 MCP 检查均通过后更新此测试版。
+          - 当前功能：Oceanway 文本多模型接入、图片 MCP、批量生图和历史保留；包内 MCP 仅提供五个图片工具。
+          - [查看此版本的实际接入与图片测试结果](https://github.com/{os.environ['GH_REPO']}/blob/{os.environ['BUILD_SHA']}/docs/functional-verification.md)。
+
+          应用安装页提供 Codex、Claude Desktop、Claude Code、DeepSeek Harness、Hermes 和 Kimi Code Desktop。点击“下载安装”后从 Oceanway 下载完整包并显示进度；下载完成后点击“打开安装包”，按系统提示安装，再检测结果。Claude Code 下载后点击“安装 Claude Code”。Hermes 当前有 Windows x64 和 Apple 芯片 Mac 完整包。此版本属于开发测试版。
+          """, encoding='utf-8')
+          PY
+          tag=oceanway-preview
+          if gh api "repos/$GH_REPO/git/ref/tags/$tag" >/dev/null 2>&1; then
+            gh api --method PATCH "repos/$GH_REPO/git/refs/tags/$tag" -f sha="$BUILD_SHA" -F force=true
+          else
+            gh api --method POST "repos/$GH_REPO/git/refs" -f ref="refs/tags/$tag" -f sha="$BUILD_SHA"
+          fi
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" release/* --clobber
+            gh release edit "$tag" --title 'Oceanway Config 最新测试版' --notes-file notes.md --prerelease --latest=false
+          else
+            gh release create "$tag" release/* --target "$BUILD_SHA" --title 'Oceanway Config 最新测试版' --notes-file notes.md --prerelease --latest=false
+          fi

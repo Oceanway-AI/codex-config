@@ -1,0 +1,1137 @@
+{
+  "default_variant": "ee9e689a91c3d2dd65730979c9901a89e429cb8f88c46b467013a06b7f0d52c7",
+  "prompt_min_characters": 1,
+  "contract_version": "media-generation.v1",
+  "revision": "c15468ca9afa3302f8610cd1da9e9ec4fcdd2cbcd72e48859ed393e720785218",
+  "variants": [
+    {
+      "id": "bcb3521f327f8378c87521475e869cfaf521dfa1e1639aef43a31e429c33733e",
+      "protocol": "openai-images",
+      "operation": "edit",
+      "method": "POST",
+      "path": "/images/edits",
+      "defaults": {
+        "async": false,
+        "background": "auto",
+        "moderation": "auto",
+        "n": 1,
+        "output_format": "png",
+        "partial_images": 0,
+        "quality": "auto",
+        "size": "auto",
+        "stream": false
+      },
+      "specifications_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "async": {
+            "default": false,
+            "type": "boolean"
+          },
+          "background": {
+            "default": "auto",
+            "enum": [
+              "auto",
+              "opaque",
+              "transparent"
+            ],
+            "type": "string"
+          },
+          "moderation": {
+            "default": "auto",
+            "enum": [
+              "auto",
+              "low"
+            ],
+            "type": "string"
+          },
+          "n": {
+            "default": 1,
+            "maximum": 10,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "output_format": {
+            "default": "png",
+            "enum": [
+              "png"
+            ],
+            "type": "string"
+          },
+          "partial_images": {
+            "default": 0,
+            "maximum": 3,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "quality": {
+            "default": "auto",
+            "enum": [
+              "auto",
+              "low",
+              "medium",
+              "high"
+            ],
+            "type": "string"
+          },
+          "safety_identifier": {
+            "type": "string"
+          },
+          "size": {
+            "default": "auto",
+            "examples": [
+              "auto",
+              "1024x1024",
+              "1536x1024",
+              "1024x1536",
+              "2048x2048",
+              "2048x1152",
+              "3840x2160",
+              "2160x3840"
+            ],
+            "type": "string",
+            "x-size-constraints": {
+              "allow_auto": true,
+              "allowed_resolution_tiers": [
+                "1k",
+                "2k",
+                "4k"
+              ],
+              "long_edge_ranges": [
+                [
+                  1,
+                  1535
+                ],
+                [
+                  1536,
+                  3071
+                ],
+                [
+                  3072,
+                  3840
+                ]
+              ],
+              "max_aspect_ratio": 3,
+              "max_edge": 3840,
+              "max_pixels": 8294400,
+              "min_pixels": 655360,
+              "multiple_of": 16
+            }
+          },
+          "stream": {
+            "default": false,
+            "type": "boolean"
+          },
+          "user": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "parameter_bindings": {
+        "async": "async",
+        "background": "background",
+        "moderation": "moderation",
+        "n": "n",
+        "output_format": "output_format",
+        "partial_images": "partial_images",
+        "quality": "quality",
+        "safety_identifier": "safety_identifier",
+        "size": "size",
+        "stream": "stream",
+        "user": "user"
+      },
+      "size_presets": [
+        {
+          "resolution": "auto",
+          "aspect_ratio": "auto",
+          "parameters": {
+            "size": "auto"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "1:1",
+          "width": 1024,
+          "height": 1024,
+          "parameters": {
+            "size": "1024x1024"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "2:3",
+          "width": 992,
+          "height": 1488,
+          "parameters": {
+            "size": "992x1488"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "3:2",
+          "width": 1488,
+          "height": 992,
+          "parameters": {
+            "size": "1488x992"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "3:4",
+          "width": 1104,
+          "height": 1472,
+          "parameters": {
+            "size": "1104x1472"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "4:3",
+          "width": 1472,
+          "height": 1104,
+          "parameters": {
+            "size": "1472x1104"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "4:5",
+          "width": 1216,
+          "height": 1520,
+          "parameters": {
+            "size": "1216x1520"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "5:4",
+          "width": 1520,
+          "height": 1216,
+          "parameters": {
+            "size": "1520x1216"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "9:16",
+          "width": 720,
+          "height": 1280,
+          "parameters": {
+            "size": "720x1280"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "16:9",
+          "width": 1280,
+          "height": 720,
+          "parameters": {
+            "size": "1280x720"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "21:9",
+          "width": 1456,
+          "height": 624,
+          "parameters": {
+            "size": "1456x624"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "9:21",
+          "width": 624,
+          "height": 1456,
+          "parameters": {
+            "size": "624x1456"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "1:2",
+          "width": 752,
+          "height": 1504,
+          "parameters": {
+            "size": "752x1504"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "2:1",
+          "width": 1504,
+          "height": 752,
+          "parameters": {
+            "size": "1504x752"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "5:2",
+          "width": 1520,
+          "height": 608,
+          "parameters": {
+            "size": "1520x608"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "2:5",
+          "width": 608,
+          "height": 1520,
+          "parameters": {
+            "size": "608x1520"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "1:1",
+          "width": 2048,
+          "height": 2048,
+          "parameters": {
+            "size": "2048x2048"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "2:3",
+          "width": 1344,
+          "height": 2016,
+          "parameters": {
+            "size": "1344x2016"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "3:2",
+          "width": 2016,
+          "height": 1344,
+          "parameters": {
+            "size": "2016x1344"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "3:4",
+          "width": 1536,
+          "height": 2048,
+          "parameters": {
+            "size": "1536x2048"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "4:3",
+          "width": 2048,
+          "height": 1536,
+          "parameters": {
+            "size": "2048x1536"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "4:5",
+          "width": 1600,
+          "height": 2000,
+          "parameters": {
+            "size": "1600x2000"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "5:4",
+          "width": 2000,
+          "height": 1600,
+          "parameters": {
+            "size": "2000x1600"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "9:16",
+          "width": 1152,
+          "height": 2048,
+          "parameters": {
+            "size": "1152x2048"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "16:9",
+          "width": 2048,
+          "height": 1152,
+          "parameters": {
+            "size": "2048x1152"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "21:9",
+          "width": 2016,
+          "height": 864,
+          "parameters": {
+            "size": "2016x864"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "9:21",
+          "width": 864,
+          "height": 2016,
+          "parameters": {
+            "size": "864x2016"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "1:2",
+          "width": 1024,
+          "height": 2048,
+          "parameters": {
+            "size": "1024x2048"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "2:1",
+          "width": 2048,
+          "height": 1024,
+          "parameters": {
+            "size": "2048x1024"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "5:2",
+          "width": 2000,
+          "height": 800,
+          "parameters": {
+            "size": "2000x800"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "2:5",
+          "width": 800,
+          "height": 2000,
+          "parameters": {
+            "size": "800x2000"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "2:3",
+          "width": 2336,
+          "height": 3504,
+          "parameters": {
+            "size": "2336x3504"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "3:2",
+          "width": 3504,
+          "height": 2336,
+          "parameters": {
+            "size": "3504x2336"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "3:4",
+          "width": 2448,
+          "height": 3264,
+          "parameters": {
+            "size": "2448x3264"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "4:3",
+          "width": 3264,
+          "height": 2448,
+          "parameters": {
+            "size": "3264x2448"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "4:5",
+          "width": 2560,
+          "height": 3200,
+          "parameters": {
+            "size": "2560x3200"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "5:4",
+          "width": 3200,
+          "height": 2560,
+          "parameters": {
+            "size": "3200x2560"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "9:16",
+          "width": 2160,
+          "height": 3840,
+          "parameters": {
+            "size": "2160x3840"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "16:9",
+          "width": 3840,
+          "height": 2160,
+          "parameters": {
+            "size": "3840x2160"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "21:9",
+          "width": 3808,
+          "height": 1632,
+          "parameters": {
+            "size": "3808x1632"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "9:21",
+          "width": 1632,
+          "height": 3808,
+          "parameters": {
+            "size": "1632x3808"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "1:2",
+          "width": 1920,
+          "height": 3840,
+          "parameters": {
+            "size": "1920x3840"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "2:1",
+          "width": 3840,
+          "height": 1920,
+          "parameters": {
+            "size": "3840x1920"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "5:2",
+          "width": 3840,
+          "height": 1536,
+          "parameters": {
+            "size": "3840x1536"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "2:5",
+          "width": 1536,
+          "height": 3840,
+          "parameters": {
+            "size": "1536x3840"
+          }
+        }
+      ],
+      "native_reference_inputs": [
+        {
+          "image_format": "openai",
+          "protocol": "openai-images",
+          "operation": "edit",
+          "field": "images",
+          "transport": "image-reference-array",
+          "roles": [
+            "reference_image"
+          ],
+          "min_items": 1,
+          "max_items": 16,
+          "max_item_bytes": 52428800,
+          "mime_types": [
+            "image/png",
+            "image/jpeg",
+            "image/webp"
+          ]
+        },
+        {
+          "image_format": "openai",
+          "protocol": "openai-images",
+          "operation": "edit",
+          "field": "mask",
+          "transport": "image-reference",
+          "roles": [
+            "mask"
+          ],
+          "max_items": 1,
+          "max_item_bytes": 52428800,
+          "mime_types": [
+            "image/png"
+          ]
+        }
+      ],
+      "required_any_of": [
+        [
+          "images"
+        ]
+      ]
+    },
+    {
+      "id": "ee9e689a91c3d2dd65730979c9901a89e429cb8f88c46b467013a06b7f0d52c7",
+      "protocol": "openai-images",
+      "operation": "generate",
+      "method": "POST",
+      "path": "/images/generations",
+      "defaults": {
+        "async": false,
+        "background": "auto",
+        "moderation": "auto",
+        "n": 1,
+        "output_format": "png",
+        "partial_images": 0,
+        "quality": "auto",
+        "size": "auto",
+        "stream": false
+      },
+      "specifications_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "async": {
+            "default": false,
+            "type": "boolean"
+          },
+          "background": {
+            "default": "auto",
+            "enum": [
+              "auto",
+              "opaque",
+              "transparent"
+            ],
+            "type": "string"
+          },
+          "moderation": {
+            "default": "auto",
+            "enum": [
+              "auto",
+              "low"
+            ],
+            "type": "string"
+          },
+          "n": {
+            "default": 1,
+            "maximum": 10,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "output_format": {
+            "default": "png",
+            "enum": [
+              "png"
+            ],
+            "type": "string"
+          },
+          "partial_images": {
+            "default": 0,
+            "maximum": 3,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "quality": {
+            "default": "auto",
+            "enum": [
+              "auto",
+              "low",
+              "medium",
+              "high"
+            ],
+            "type": "string"
+          },
+          "safety_identifier": {
+            "type": "string"
+          },
+          "size": {
+            "default": "auto",
+            "examples": [
+              "auto",
+              "1024x1024",
+              "1536x1024",
+              "1024x1536",
+              "2048x2048",
+              "2048x1152",
+              "3840x2160",
+              "2160x3840"
+            ],
+            "type": "string",
+            "x-size-constraints": {
+              "allow_auto": true,
+              "allowed_resolution_tiers": [
+                "1k",
+                "2k",
+                "4k"
+              ],
+              "long_edge_ranges": [
+                [
+                  1,
+                  1535
+                ],
+                [
+                  1536,
+                  3071
+                ],
+                [
+                  3072,
+                  3840
+                ]
+              ],
+              "max_aspect_ratio": 3,
+              "max_edge": 3840,
+              "max_pixels": 8294400,
+              "min_pixels": 655360,
+              "multiple_of": 16
+            }
+          },
+          "stream": {
+            "default": false,
+            "type": "boolean"
+          },
+          "user": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "parameter_bindings": {
+        "async": "async",
+        "background": "background",
+        "moderation": "moderation",
+        "n": "n",
+        "output_format": "output_format",
+        "partial_images": "partial_images",
+        "quality": "quality",
+        "safety_identifier": "safety_identifier",
+        "size": "size",
+        "stream": "stream",
+        "user": "user"
+      },
+      "size_presets": [
+        {
+          "resolution": "auto",
+          "aspect_ratio": "auto",
+          "parameters": {
+            "size": "auto"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "1:1",
+          "width": 1024,
+          "height": 1024,
+          "parameters": {
+            "size": "1024x1024"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "2:3",
+          "width": 992,
+          "height": 1488,
+          "parameters": {
+            "size": "992x1488"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "3:2",
+          "width": 1488,
+          "height": 992,
+          "parameters": {
+            "size": "1488x992"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "3:4",
+          "width": 1104,
+          "height": 1472,
+          "parameters": {
+            "size": "1104x1472"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "4:3",
+          "width": 1472,
+          "height": 1104,
+          "parameters": {
+            "size": "1472x1104"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "4:5",
+          "width": 1216,
+          "height": 1520,
+          "parameters": {
+            "size": "1216x1520"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "5:4",
+          "width": 1520,
+          "height": 1216,
+          "parameters": {
+            "size": "1520x1216"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "9:16",
+          "width": 720,
+          "height": 1280,
+          "parameters": {
+            "size": "720x1280"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "16:9",
+          "width": 1280,
+          "height": 720,
+          "parameters": {
+            "size": "1280x720"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "21:9",
+          "width": 1456,
+          "height": 624,
+          "parameters": {
+            "size": "1456x624"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "9:21",
+          "width": 624,
+          "height": 1456,
+          "parameters": {
+            "size": "624x1456"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "1:2",
+          "width": 752,
+          "height": 1504,
+          "parameters": {
+            "size": "752x1504"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "2:1",
+          "width": 1504,
+          "height": 752,
+          "parameters": {
+            "size": "1504x752"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "5:2",
+          "width": 1520,
+          "height": 608,
+          "parameters": {
+            "size": "1520x608"
+          }
+        },
+        {
+          "resolution": "1K",
+          "aspect_ratio": "2:5",
+          "width": 608,
+          "height": 1520,
+          "parameters": {
+            "size": "608x1520"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "1:1",
+          "width": 2048,
+          "height": 2048,
+          "parameters": {
+            "size": "2048x2048"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "2:3",
+          "width": 1344,
+          "height": 2016,
+          "parameters": {
+            "size": "1344x2016"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "3:2",
+          "width": 2016,
+          "height": 1344,
+          "parameters": {
+            "size": "2016x1344"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "3:4",
+          "width": 1536,
+          "height": 2048,
+          "parameters": {
+            "size": "1536x2048"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "4:3",
+          "width": 2048,
+          "height": 1536,
+          "parameters": {
+            "size": "2048x1536"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "4:5",
+          "width": 1600,
+          "height": 2000,
+          "parameters": {
+            "size": "1600x2000"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "5:4",
+          "width": 2000,
+          "height": 1600,
+          "parameters": {
+            "size": "2000x1600"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "9:16",
+          "width": 1152,
+          "height": 2048,
+          "parameters": {
+            "size": "1152x2048"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "16:9",
+          "width": 2048,
+          "height": 1152,
+          "parameters": {
+            "size": "2048x1152"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "21:9",
+          "width": 2016,
+          "height": 864,
+          "parameters": {
+            "size": "2016x864"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "9:21",
+          "width": 864,
+          "height": 2016,
+          "parameters": {
+            "size": "864x2016"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "1:2",
+          "width": 1024,
+          "height": 2048,
+          "parameters": {
+            "size": "1024x2048"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "2:1",
+          "width": 2048,
+          "height": 1024,
+          "parameters": {
+            "size": "2048x1024"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "5:2",
+          "width": 2000,
+          "height": 800,
+          "parameters": {
+            "size": "2000x800"
+          }
+        },
+        {
+          "resolution": "2K",
+          "aspect_ratio": "2:5",
+          "width": 800,
+          "height": 2000,
+          "parameters": {
+            "size": "800x2000"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "2:3",
+          "width": 2336,
+          "height": 3504,
+          "parameters": {
+            "size": "2336x3504"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "3:2",
+          "width": 3504,
+          "height": 2336,
+          "parameters": {
+            "size": "3504x2336"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "3:4",
+          "width": 2448,
+          "height": 3264,
+          "parameters": {
+            "size": "2448x3264"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "4:3",
+          "width": 3264,
+          "height": 2448,
+          "parameters": {
+            "size": "3264x2448"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "4:5",
+          "width": 2560,
+          "height": 3200,
+          "parameters": {
+            "size": "2560x3200"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "5:4",
+          "width": 3200,
+          "height": 2560,
+          "parameters": {
+            "size": "3200x2560"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "9:16",
+          "width": 2160,
+          "height": 3840,
+          "parameters": {
+            "size": "2160x3840"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "16:9",
+          "width": 3840,
+          "height": 2160,
+          "parameters": {
+            "size": "3840x2160"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "21:9",
+          "width": 3808,
+          "height": 1632,
+          "parameters": {
+            "size": "3808x1632"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "9:21",
+          "width": 1632,
+          "height": 3808,
+          "parameters": {
+            "size": "1632x3808"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "1:2",
+          "width": 1920,
+          "height": 3840,
+          "parameters": {
+            "size": "1920x3840"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "2:1",
+          "width": 3840,
+          "height": 1920,
+          "parameters": {
+            "size": "3840x1920"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "5:2",
+          "width": 3840,
+          "height": 1536,
+          "parameters": {
+            "size": "3840x1536"
+          }
+        },
+        {
+          "resolution": "4K",
+          "aspect_ratio": "2:5",
+          "width": 1536,
+          "height": 3840,
+          "parameters": {
+            "size": "1536x3840"
+          }
+        }
+      ],
+      "native_reference_inputs": null
+    }
+  ]
+}

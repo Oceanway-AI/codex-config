@@ -1,0 +1,101 @@
+name: Verify Windows offline package installation
+on:
+  push:
+    tags: ['qa-codex-lifecycle-*']
+    branches: [codex/oceanway-config-rebuild]
+    paths:
+      - scripts/agent-downloads/install-desktop.ps1
+      - apps/desktop/src-tauri/src/oceanway_codex_windows.ps1
+      - apps/desktop/src-tauri/src/oceanway_desktop.rs
+      - apps/desktop/tests/native/codex-lifecycle.windows.ps1
+      - .github/workflows/verify-windows-desktop-package.yml
+  workflow_dispatch:
+    inputs:
+      app:
+        type: choice
+        options: [codex, claude-desktop]
+        default: codex
+        required: true
+permissions:
+  contents: read
+jobs:
+  install:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+      - name: Check tray exit, replacement workers and restart on Windows
+        if: ${{ (inputs.app || 'codex') == 'codex' }}
+        shell: powershell
+        run: '& ./apps/desktop/tests/native/codex-lifecycle.windows.ps1'
+      - name: Download and verify the independent offline package
+        shell: pwsh
+        env:
+          TARGET_APP: ${{ inputs.app || 'codex' }}
+        run: |
+          $base = 'https://api.ocean-way.top/downloads/agents/'
+          $manifest = Invoke-RestMethod ($base + 'manifest.json')
+          $entry = $manifest.packages | Where-Object { $_.app -eq $env:TARGET_APP -and $_.filename -like '*-windows-x64-offline.exe' } | Select-Object -First 1
+          if (!$entry) { throw 'Offline package not found' }
+          $zip = Join-Path $env:RUNNER_TEMP 'offline.exe'
+          curl.exe --fail --connect-timeout 15 --max-time 600 --output $zip ($base + $entry.filename)
+          if ($LASTEXITCODE -ne 0) { throw 'Download failed' }
+          if ((Get-FileHash $zip -Algorithm SHA256).Hash -ne $entry.sha256) { throw 'Checksum mismatch' }
+      - name: Run the same unmodified offline installer offered by Oceanway
+        shell: pwsh
+        run: |
+          $env:OCEANWAY_INSTALL_LOG = Join-Path $env:RUNNER_TEMP 'desktop-install.log'
+          $p = Start-Process -FilePath (Join-Path $env:RUNNER_TEMP 'offline.exe') -WindowStyle Hidden -PassThru -ArgumentList '/S'
+          $deadline = (Get-Date).AddMinutes(12)
+          while (!$p.HasExited -and (Get-Date) -lt $deadline) {
+            Start-Sleep -Seconds 15
+            if (Test-Path $env:OCEANWAY_INSTALL_LOG) { Get-Content $env:OCEANWAY_INSTALL_LOG -Tail 6 }
+            $p.Refresh()
+          }
+          if (!$p.HasExited) { taskkill.exe /PID $p.Id /T /F; throw 'Windows offline installer timed out' }
+          if ($p.ExitCode -ne 0) { throw "Windows offline installer exit: $($p.ExitCode)" }
+      - name: Detect and restart Codex after installing from Oceanway
+        if: ${{ (inputs.app || 'codex') == 'codex' }}
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          . ([ScriptBlock]::Create([IO.File]::ReadAllText((Resolve-Path 'apps/desktop/src-tauri/src/oceanway_codex_windows.ps1'))))
+          $target = Find-CodexTarget @() @(Get-CodexPackages) $null
+          if (!$target.AppId) { throw 'Installed offline package has no registered Codex desktop entry' }
+          if (!(Invoke-CodexLifecycle discover $null).found) { throw 'Fresh install not detected by Oceanway' }
+          function Get-WindowProcess {
+            (Get-CodexInstances | Where-Object { $_.Gui -and $_.Path -eq $target.Path -and $_.Process.MainWindowHandle -ne 0 } | Select-Object -First 1).Process
+          }
+          $VerbosePreference = 'Continue'
+          try {
+            Write-Host "Closing any installed Codex clients"
+            $null = Invoke-CodexLifecycle close $null
+            Write-Host "Opening registered desktop $($target.AppId)"
+            $null = Invoke-CodexLifecycle open $null
+            $first = Get-WindowProcess
+            if (!$first) { throw 'Store activation did not open a Codex window' }
+            Write-Host "Window opened: $($first.Id); restarting"
+            $null = Invoke-CodexLifecycle restart $null
+            $next = Get-WindowProcess
+            if (!$next -or !$first.HasExited -or $next.Id -eq $first.Id) { throw 'Restart did not open a fresh Codex window' }
+            Write-Host "Verified $($target.AppId): window PID $($first.Id) -> $($next.Id)"
+          } catch {
+            Get-CodexInstances | ForEach-Object { Write-Host "Remaining: $($_.Process.Id) $($_.Process.ProcessName) gui=$($_.Gui) hwnd=$($_.Process.MainWindowHandle)" }
+            throw
+          } finally { try { $null = Invoke-CodexLifecycle close $null } catch { Write-Warning $_ } }
+      - name: Collect Windows installation diagnostics
+        if: always()
+        shell: pwsh
+        run: |
+          Get-AppxPackage | Select-Object Name,Version,Status | ConvertTo-Json > "$env:RUNNER_TEMP/packages.json"
+          Get-WinEvent -LogName 'Microsoft-Windows-AppXDeploymentServer/Operational' -MaxEvents 35 -ErrorAction Continue | Format-List TimeCreated,Id,Message > "$env:RUNNER_TEMP/appx-events.txt"
+          if (Test-Path C:/Windows/Logs/DISM/dism.log) { Get-Content C:/Windows/Logs/DISM/dism.log -Tail 150 > "$env:RUNNER_TEMP/dism-tail.txt" }
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: windows-${{ inputs.app || 'codex' }}-install-diagnostics
+          path: |
+            ${{ runner.temp }}/desktop-install.log
+            ${{ runner.temp }}/packages.json
+            ${{ runner.temp }}/appx-events.txt
+            ${{ runner.temp }}/dism-tail.txt
